@@ -1,0 +1,18 @@
+{
+  "language": "JavaScript (Node)",
+  "environment": {
+    "toolchain": {
+      "image": "node:20-bookworm",
+      "setup": ["npm", "ci", "--ignore-scripts"],
+      "checks": { "test": ["npm", "test"] },
+      "protectedPaths": ["package.json", "package-lock.json", ".github"]
+    }
+  },
+  "grader": {
+    "image": "node:20-bookworm",
+    "test": ["node", "--test"],
+    "hiddenTest": ["node", "--test", "{files}"],
+    "assertionFailure": "ERR_ASSERTION"
+  },
+  "testFiles": "^tests/"
+}

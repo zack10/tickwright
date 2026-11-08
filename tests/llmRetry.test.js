@@ -78,3 +78,68 @@ test("withLLMRetry does not retry permanent failures", async () => {
   );
   assert.equal(calls, 1);
 });
+
+test("dropped connections, timeouts and server errors are retried with jittered backoff", async () => {
+  const network = (code) => ({ isAxiosError: true, code, message: code });
+  for (const failure of [network("ECONNRESET"), network("ETIMEDOUT"), httpError(500), httpError(502), httpError(408)]) {
+    assert.equal(isRetryableLLMError(failure), true, failure.code ?? failure.response.status);
+    let calls = 0;
+    const result = await withLLMRetry(
+      async () => {
+        if (++calls < 2) throw failure;
+        return "ok";
+      },
+      { retries: 3, wait: async () => undefined },
+    );
+    assert.equal(result, "ok");
+    assert.equal(calls, 2);
+  }
+  assert.equal(retryDelayMs(network("ECONNRESET"), 0, () => 0), 500);
+  assert.equal(retryDelayMs(network("ECONNRESET"), 2, () => 1), 4000);
+  assert.equal(retryDelayMs(httpError(500), 10, () => 1), 30_000, "capped");
+});
+
+test("a rejected request fails at once with the provider's reason, keys masked", async () => {
+  const { NonRetryableError } = require("../dist/utils/safeError");
+  const rejected = httpError(400, {
+    data: { error: { message: "Invalid 'messages[3].tool_call_id': no tool call found. Key sk-proj-abcdefghijklmnopqrstuvwxyz0123 was used." } },
+  });
+  let calls = 0;
+  await assert.rejects(
+    withLLMRetry(async () => { calls++; throw rejected; }, { retries: 3, wait: async () => undefined }),
+    (error) =>
+      error instanceof NonRetryableError &&
+      /no tool call found/.test(error.message) &&
+      !/abcdefghijklmnop/.test(error.message) &&
+      /\[redacted\]/.test(error.message),
+  );
+  assert.equal(calls, 1);
+  // Errors that are not HTTP failures (e.g. unusable output) pass through unchanged.
+  const output = new Error("empty response");
+  await assert.rejects(withLLMRetry(async () => { throw output; }, { retries: 3 }), (error) => error === output);
+});
+
+test("a request the safety filter flagged is retried once, then fails with the reason", async () => {
+  const { NonRetryableError } = require("../dist/utils/safeError");
+  const flagged = httpError(400, {
+    data: { error: { code: "invalid_prompt", message: "Invalid prompt: your prompt was flagged as potentially violating our usage policy." } },
+  });
+  let calls = 0;
+  const waits = [];
+  const result = await withLLMRetry(
+    async () => {
+      if (++calls === 1) throw flagged;
+      return "ok";
+    },
+    { retries: 3, wait: async (ms) => waits.push(ms) },
+  );
+  assert.equal(result, "ok");
+  assert.deepEqual(waits, [2000]);
+
+  calls = 0;
+  await assert.rejects(
+    withLLMRetry(async () => { calls++; throw flagged; }, { retries: 3, wait: async () => undefined }),
+    (error) => error instanceof NonRetryableError && /flagged/.test(error.message),
+  );
+  assert.equal(calls, 2, "only one retry");
+});

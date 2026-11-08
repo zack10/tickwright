@@ -1,0 +1,7 @@
+{
+  "title": "Nightly job ran several times after downtime",
+  "description": "After the service was down for the weekend, the nightly report job ran several times in a row as soon as it came back, once for each missed night. It should just run once, at the first scheduled time after it comes back (a run due at the very moment it comes back counts as missed).",
+  "expect": "fix",
+  "expectedFiles": ["schedule/schedule.go"],
+  "measures": "go/03 without its worked example: the ticket allows two readings; in real use the plan the person approves shows which one the agent took"
+}

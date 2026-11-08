@@ -17,6 +17,7 @@ build/
 .env.cloud
 !.env.example
 !.env.e2e.example
+!.env.prod.example
 
 # Debug logs
 npm-debug.log*
@@ -48,3 +49,9 @@ opencode.json
 
 # Local experiments (kept on disk, not tracked)
 scratch/
+
+# Graphify knowledge graph (generated locally)
+graphify-out/
+
+# Codex project config (personal Graphify MCP setup)
+.codex/

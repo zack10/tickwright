@@ -1,0 +1,7 @@
+{
+  "title": "Invoice totals are a few cents off",
+  "description": "Some invoice totals are a cent or more off. Example: 3 x 19.99 plus 1 x 5.01 with a 15% discount should come to 55.23, but we get 55.20. A discount applies once, to the invoice total, and amounts are rounded half up to the cent.",
+  "expect": "fix",
+  "expectedFiles": ["shop/money.py", "shop/invoice.py"],
+  "measures": "Fix that needs changes in two files"
+}

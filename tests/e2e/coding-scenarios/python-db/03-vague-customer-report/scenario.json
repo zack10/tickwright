@@ -1,0 +1,7 @@
+{
+  "title": "Customer order counts are missing people",
+  "description": "The customer order counts are missing people. Carla signed up last week and is not in them at all, but Ben, who ordered twice, is.",
+  "expect": "fix",
+  "expectedFiles": ["shop/customers.py"],
+  "measures": "Vague ticket: the agent has to find the cause (a join) from the symptom"
+}

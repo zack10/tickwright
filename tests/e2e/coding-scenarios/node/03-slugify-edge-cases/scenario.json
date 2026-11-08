@@ -1,0 +1,9 @@
+{
+  "title": "slugify breaks on accented and padded titles",
+  "description": "slugify in src/text.js produces bad slugs. \"Crème Brûlée\" should become \"creme-brulee\" but accents are turned into dashes, and \"  Hello World!  \" should become \"hello-world\" but the result starts and ends with dashes. Input with no letters or digits should give an empty string.",
+  "expect": "fix",
+  "expectedFiles": [
+    "src/text.js"
+  ],
+  "measures": "Edge-case handling"
+}

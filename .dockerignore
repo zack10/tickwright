@@ -1,0 +1,9 @@
+# Only what the image build needs; never secrets or run data.
+*
+!package.json
+!package-lock.json
+!prisma/
+!prisma.config.ts
+!tsconfig.json
+!scripts/
+!src/

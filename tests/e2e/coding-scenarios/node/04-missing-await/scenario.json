@@ -1,0 +1,9 @@
+{
+  "title": "Admin dashboard always shows 0 active users",
+  "description": "countActiveUsers in src/userService.js returns 0 even when some of the users are active. The repository's findById is async.",
+  "expect": "fix",
+  "expectedFiles": [
+    "src/userService.js"
+  ],
+  "measures": "Async reasoning"
+}

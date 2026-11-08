@@ -1,13 +1,18 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { approve, createIntegration, createPlan, createRepository, getExecution, getWorkItem, listExecutions, listIntegrations, listRepositories, listWorkItems, startExecution, syncIntegration } from '../controllers/executionController';
+import { approve, createIntegration, createPlan, createRepository, getExecution, updateRepository, approveEnvironment, getWorkItem, listExecutions, listIntegrations, listRepositories, listWorkItems, startExecution, syncIntegration } from '../controllers/executionController';
 import { validate } from '../middleware/validate';
+import { TOOL_OUTPUT_CEILINGS } from '../services/sandbox/tools';
+import { verificationConfigSchema } from '../services/toolchain';
 
 const router = Router();
 const uuid = z.string().uuid();
-router.post('/repositories', validate(z.object({ body: z.object({ projectId: uuid, owner: z.string().regex(/^[a-zA-Z0-9_.-]+$/), name: z.string().regex(/^[a-zA-Z0-9_.-]+$/), defaultBranch: z.string().regex(/^[a-zA-Z0-9_./-]+$/).default('main'), githubInstallationId: z.string().min(1), verificationConfig: z.object({ scripts: z.array(z.string().regex(/^[a-zA-Z0-9:_-]+$/)).min(1) }), executionPolicy: z.object({ maxChangedFiles: z.number().int().min(1).max(100).default(20), protectedPaths: z.array(z.string()).default(['package.json', 'package-lock.json', '.github']) }) }) })), createRepository);
+const executionPolicySchema = z.object({ maxChangedFiles: z.number().int().min(1).max(100).default(20), protectedPaths: z.array(z.string()).optional(), maxToolOutputChars: z.number().int().min(1000).max(TOOL_OUTPUT_CEILINGS.maxOutputChars).optional(), maxReadLines: z.number().int().min(50).max(TOOL_OUTPUT_CEILINGS.maxReadLines).optional(), setupTimeoutSeconds: z.number().int().min(60).max(7200).optional(), maxAgentSteps: z.number().int().min(5).max(200).optional(), maxRunSeconds: z.number().int().min(300).max(14400).optional() });
+router.post('/repositories', validate(z.object({ body: z.object({ projectId: uuid, owner: z.string().regex(/^[a-zA-Z0-9_.-]+$/), name: z.string().regex(/^[a-zA-Z0-9_.-]+$/), defaultBranch: z.string().regex(/^[a-zA-Z0-9_./-]+$/).default('main'), githubInstallationId: z.string().min(1), verificationConfig: verificationConfigSchema.default({}), executionPolicy: executionPolicySchema.default({}) }) })), createRepository);
+router.patch('/repositories/:id', validate(z.object({ params: z.object({ id: uuid }), body: z.object({ verificationConfig: verificationConfigSchema.optional(), executionPolicy: executionPolicySchema.optional() }).strict().refine((body) => Object.keys(body).length > 0, 'nothing to update') })), updateRepository);
+router.post('/repositories/:id/environment/approve', validate(z.object({ params: z.object({ id: uuid }), body: z.object({ proposalHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict() })), approveEnvironment);
 router.get('/repositories', listRepositories);
-router.post('/integrations', validate(z.object({ body: z.object({ projectId: uuid, type: z.enum(['TRELLO', 'GITHUB']), name: z.string().min(1), config: z.record(z.unknown()) }) })), createIntegration);
+router.post('/integrations', validate(z.object({ body: z.object({ projectId: uuid, type: z.enum(['TRELLO', 'GITHUB']), name: z.string().min(1), config: z.record(z.unknown()).refine((config) => config.approvers === undefined || (Array.isArray(config.approvers) && config.approvers.every((approver) => typeof approver === 'string' && approver.trim() !== '')), { message: 'approvers must be a list of tracker user names or ids', path: ['approvers'] }) }) })), createIntegration);
 router.get('/integrations', listIntegrations);
 router.post('/integrations/:id/sync', validate(z.object({ params: z.object({ id: uuid }) })), syncIntegration);
 router.get('/work-items', listWorkItems);
@@ -16,5 +21,5 @@ router.post('/executions', validate(z.object({ body: z.object({ projectId: uuid,
 router.get('/executions', listExecutions);
 router.get('/executions/:id', validate(z.object({ params: z.object({ id: uuid }) })), getExecution);
 router.post('/executions/:id/plans', validate(z.object({ params: z.object({ id: uuid }), body: z.object({ summary: z.string().min(1), acceptanceCriteria: z.array(z.unknown()).min(1), tasks: z.array(z.object({ key: z.string().min(1), title: z.string().min(1), description: z.string().min(1), type: z.string().optional(), dependsOn: z.array(z.string()).optional() })).min(1).max(20) }) })), createPlan);
-router.post('/executions/:id/approvals/:type', validate(z.object({ params: z.object({ id: uuid, type: z.enum(['plan', 'publish']) }), body: z.object({ approved: z.boolean(), snapshotHash: z.string().regex(/^[a-f0-9]{64}$/), comment: z.string().max(2000).optional() }) })), approve);
+router.post('/executions/:id/approvals/:type', validate(z.object({ params: z.object({ id: uuid, type: z.enum(['plan', 'publish']) }), body: z.object({ approved: z.boolean(), snapshotHash: z.string().regex(/^[a-f0-9]{64}$/), comment: z.string().max(2000).optional(), revise: z.boolean().optional() }).refine((body) => !body.revise || (!body.approved && !!body.comment?.trim()), { message: 'revise needs approved: false and the feedback as comment', path: ['revise'] }) })), approve);
 export default router;

@@ -1,0 +1,9 @@
+{
+  "title": "Contacts missing after spreadsheet import",
+  "description": "When we import our customer spreadsheet, anyone whose name is written like \"Smith, John\" doesn't show up at all. The other rows are imported fine. Names can also contain quotes, written as \"O\"\"Brien, Pat\" in the file.",
+  "expect": "fix",
+  "expectedFiles": [
+    "src/csv.js"
+  ],
+  "measures": "File selection from a vague ticket (known weak spot)"
+}

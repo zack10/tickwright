@@ -1,0 +1,9 @@
+{
+  "title": "Order totals are sometimes one cent too low",
+  "description": "orderTotal in src/pricing.js loses a cent on some orders. Three items at 6.67 should total 20.01 but we get 20.00, and 19.99 with 8.25% tax should be 21.64 but we get 21.63. Totals must be rounded to the nearest cent; half a cent rounds up.",
+  "expect": "fix",
+  "expectedFiles": [
+    "src/pricing.js"
+  ],
+  "measures": "Logic, numeric edge cases"
+}

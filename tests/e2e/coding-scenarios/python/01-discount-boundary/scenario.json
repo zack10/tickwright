@@ -1,0 +1,7 @@
+{
+  "title": "Orders of exactly 100 or 500 miss their discount",
+  "description": "discount_rate in shop/discounts.py gives no discount to an order of exactly 100.00 and only 10% to an order of exactly 500.00. Each tier applies from its minimum, inclusive: 10% from 100, 20% from 500.",
+  "expect": "fix",
+  "expectedFiles": ["shop/discounts.py"],
+  "measures": "Basic single-file fix"
+}

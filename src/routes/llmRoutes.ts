@@ -4,12 +4,18 @@ import { asyncHandler } from "../middleware/asyncHandler";
 import { validate } from "../middleware/validate";
 import { discoverProviderSchema, providerQuerySchema } from "../schemas";
 import { LLMService } from "../services/llm/LLMService";
+import { getProviderRegistry } from "../services/llm/registry";
 
 const router = Router();
 const llmService = new LLMService();
 
 router.get("/providers", (_req, res) => {
-  res.json({ providers: ["gemini", "openai", "anthropic"] });
+  const registry = getProviderRegistry();
+  res.json({
+    providers: registry.list().map((provider) => provider.key),
+    details: registry.list(),
+    default: { provider: registry.defaultProvider, model: registry.defaultModel },
+  });
 });
 
 router.post(
@@ -30,6 +36,14 @@ router.get(
     const apiKey = req.header("x-provider-api-key");
     const models = await llmService.listModels(provider, apiKey);
     res.json({ models });
+  }),
+);
+
+// Tokens all model calls used today (UTC), against LLM_DAILY_TOKEN_LIMIT.
+router.get(
+  "/usage/today",
+  asyncHandler(async (_req, res) => {
+    res.json(await llmService.usageToday());
   }),
 );
 

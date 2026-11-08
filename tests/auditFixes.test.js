@@ -254,3 +254,42 @@ test("C3: malformed messages are dead-lettered, not dropped or looped", async ()
   assert.equal(channel.calls.sent[0].queue, "q.dead");
   assert.equal(channel.calls.acks, 1);
 });
+
+test("a channel the broker closes alone (consumer timeout) is reopened, not a crash", async () => {
+  const { EventEmitter } = require("node:events");
+  const channels = [];
+  const model = {
+    createConfirmChannel: async () => {
+      const channel = Object.assign(new EventEmitter(), {
+        consumed: [],
+        assertExchange: async () => undefined,
+        assertQueue: async () => undefined,
+        bindQueue: async () => undefined,
+        prefetch: async () => undefined,
+        consume: async (queue) => channel.consumed.push(queue),
+      });
+      channels.push(channel);
+      return channel;
+    },
+    close: async () => undefined,
+  };
+  const service = Object.create(Object.getPrototypeOf(rabbitMQService));
+  Object.assign(service, { model, channel: null, closing: false, subscriptions: new Map() });
+  service.subscriptions.set("execution_run", { queueName: "execution_run", routingKey: "execution.run", onMessage: async () => undefined });
+  await service.openChannel();
+  assert.deepEqual(channels[0].consumed, ["execution_run"]);
+
+  // Without a listener this "error" would throw and stop the process.
+  channels[0].emit("error", new Error("PRECONDITION_FAILED - delivery acknowledgement on channel 1 timed out"));
+  channels[0].emit("close");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(channels.length, 2, "a new channel is opened");
+  assert.equal(service.channel, channels[1]);
+  assert.deepEqual(channels[1].consumed, ["execution_run"], "subscriptions are restored on it");
+
+  // Closing the service on purpose does not reopen anything.
+  service.closing = true;
+  channels[1].emit("close");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(channels.length, 2);
+});

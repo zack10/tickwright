@@ -1,0 +1,19 @@
+{
+  "language": "Python",
+  "environment": {
+    "toolchain": {
+      "image": "python:3.12-slim",
+      "setup": null,
+      "checks": { "test": ["python", "-m", "unittest"] },
+      "protectedPaths": ["pyproject.toml", ".github"]
+    }
+  },
+  "grader": {
+    "image": "python:3.12-slim",
+    "env": { "PYTHONDONTWRITEBYTECODE": "1" },
+    "test": ["python", "-m", "unittest"],
+    "hiddenTest": ["python", "-m", "unittest", "{files}"],
+    "assertionFailure": "^FAIL: "
+  },
+  "testFiles": "^tests/"
+}

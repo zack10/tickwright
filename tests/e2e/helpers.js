@@ -31,16 +31,26 @@ const baseUrl = () => env("E2E_BASE_URL", "http://localhost:3001").replace(/\/$/
  */
 const api = async (method, path, { body, headers = {}, auth = true, expectStatus } = {}) => {
   const token = env("E2E_API_TOKEN");
-  const response = await fetch(`${baseUrl()}${path}`, {
-    method,
-    headers: {
-      "content-type": "application/json",
-      ...(auth && token ? { authorization: `Bearer ${token}` } : {}),
-      ...headers,
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-    signal: AbortSignal.timeout(30_000),
-  });
+  const send = () =>
+    fetch(`${baseUrl()}${path}`, {
+      method,
+      headers: {
+        "content-type": "application/json",
+        ...(auth && token ? { authorization: `Bearer ${token}` } : {}),
+        ...headers,
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(30_000),
+    });
+  // A busy server (several builds at once) can drop a request; a read is safe to repeat.
+  let response;
+  for (let attempt = 1; !response; attempt++)
+    try {
+      response = await send();
+    } catch (error) {
+      if (method !== "GET" || attempt >= 4) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 5000 * attempt));
+    }
   const text = await response.text();
   let data = text;
   try {

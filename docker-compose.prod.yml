@@ -1,0 +1,73 @@
+# The app as a user runs it: built image, NODE_ENV=production, its own database
+# and broker that nothing outside this stack can reach. See docs/guides/PRODUCTION_RUN.md.
+#   docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
+name: agent-orchestration-prod
+
+services:
+  postgres:
+    image: postgres:15
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: agent
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.prod}
+      POSTGRES_DB: agent_orchestration
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agent -d agent_orchestration"]
+      interval: 5s
+      retries: 20
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: agent
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD in .env.prod}
+      # A worker holds a run's message until the run ends (see docker-compose.yml).
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "-rabbit consumer_timeout 21600000"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      # `ping` passes before AMQP accepts connections; this waits for the port.
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 10s
+      retries: 20
+
+  migrate:
+    build: { context: ., target: build }
+    command: ["npx", "prisma", "migrate", "deploy"]
+    environment:
+      DATABASE_URL: postgresql://agent:${POSTGRES_PASSWORD}@postgres:5432/agent_orchestration
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  app:
+    build: { context: ., target: runtime }
+    restart: unless-stopped
+    env_file: .env.prod
+    environment:
+      NODE_ENV: production
+      PORT: "3001"
+      DATABASE_URL: postgresql://agent:${POSTGRES_PASSWORD}@postgres:5432/agent_orchestration
+      RABBITMQ_URL: amqp://agent:${RABBITMQ_PASSWORD}@rabbitmq:5672
+      WORKSPACE_ROOT: ${AGENT_DATA_DIR:?set AGENT_DATA_DIR in .env.prod}/workspaces
+      ARTIFACT_ROOT: ${AGENT_DATA_DIR}/artifacts
+    volumes:
+      # Root-equivalent access to the host's Docker: fine on a machine you own,
+      # not on a shared server (roadmap Phase 14).
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Same path inside and outside: the app passes workspace paths to the host's
+      # Docker, which must find them there.
+      - ${AGENT_DATA_DIR}:${AGENT_DATA_DIR}
+      - ${AGENT_DATA_DIR}/generated-code:/app/generated-code
+    ports:
+      # This machine only; never other machines on the network.
+      - "127.0.0.1:${APP_PORT:-3001}:3001"
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      rabbitmq: { condition: service_healthy }
+
+volumes:
+  postgres_data:
+  rabbitmq_data:

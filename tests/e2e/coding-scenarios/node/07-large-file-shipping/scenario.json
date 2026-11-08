@@ -1,0 +1,9 @@
+{
+  "title": "Parcels exactly on a weight limit are charged the next tier",
+  "description": "shippingCost in src/shippingRates.js charges a parcel that weighs exactly 1 kg at the 1-5 kg rate, and a parcel of exactly 20 kg is refused as too heavy. A tier covers parcels up to and including its limit.",
+  "expect": "fix",
+  "expectedFiles": [
+    "src/shippingRates.js"
+  ],
+  "measures": "Bug in a file larger than 20 KB (truncation risk, known weak spot)"
+}

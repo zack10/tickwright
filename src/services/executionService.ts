@@ -1,5 +1,6 @@
 import { ApprovalType, ExecutionStatus, Prisma } from "@prisma/client";
 import crypto from "crypto";
+import { config } from "../config";
 import prisma from "../db";
 import { AppError } from "../errors/AppError";
 
@@ -52,8 +53,8 @@ export const createExecution = async (input: {
         budget: {
           maxAttempts: 3,
           maxChangedFiles: 20,
-          maxDurationSeconds: 1800,
-          maxTokens: 200000,
+          maxDurationSeconds: config.executionMaxDurationSeconds,
+          maxTokens: config.executionMaxTokens,
         },
       },
     });
@@ -89,6 +90,8 @@ export const submitPlan = async (
       description: string;
       type?: string;
       dependsOn?: string[];
+      /** What the agent wrote for the task (its plan), shown and approved with it. */
+      expectedOutput?: unknown;
     }>;
   },
 ) => {
@@ -129,7 +132,7 @@ export const submitPlan = async (
           title: task.title,
           description: task.description,
           type: task.type ?? "IMPLEMENT",
-          expectedOutput: {},
+          expectedOutput: json(task.expectedOutput ?? {}),
         },
       });
       created.set(task.key, row.id);
@@ -175,6 +178,66 @@ const approvalTransitions: Record<
     topic: "execution.publish",
   },
 };
+
+/**
+ * A plan approval answered with feedback instead of a decision: the pending
+ * plan is superseded and the plan step writes the next version with the
+ * feedback. After config.planMaxVersions plans the execution is blocked, so
+ * a conversation cannot go on forever.
+ */
+export const requestPlanRevision = async (
+  executionId: string,
+  snapshotHash: string,
+  actor: string,
+  feedback: string,
+) =>
+  prisma.$transaction(async (tx) => {
+    const execution = await tx.execution.findUnique({ where: { id: executionId } });
+    if (!execution) throw AppError.notFound("Execution not found");
+    if (execution.status !== "AWAITING_PLAN_APPROVAL")
+      throw AppError.conflict("Execution is not awaiting plan approval");
+    const approval = await tx.approval.findFirst({
+      where: { executionId, type: "PLAN", status: "PENDING" },
+      orderBy: { requestedAt: "desc" },
+    });
+    if (!approval) throw AppError.notFound("Pending approval not found");
+    if (approval.snapshotHash !== snapshotHash)
+      throw AppError.conflict(
+        "Snapshot hash does not match the pending approval; review the latest snapshot",
+      );
+    const versions = await tx.plan.count({ where: { executionId } });
+    const revised = versions < config.planMaxVersions;
+    const decidedCount = await tx.approval.updateMany({
+      where: { id: approval.id, status: "PENDING" },
+      data: { status: "REJECTED", actor, comment: feedback, decidedAt: new Date() },
+    });
+    const moved = await tx.execution.updateMany({
+      where: { id: executionId, status: "AWAITING_PLAN_APPROVAL" },
+      data: revised
+        ? { status: "PLANNING" }
+        : {
+            status: "BLOCKED",
+            lastError: `The plan was revised ${versions} times without being approved (PLAN_MAX_VERSIONS)`,
+            completedAt: new Date(),
+          },
+    });
+    if (decidedCount.count !== 1 || moved.count !== 1)
+      throw AppError.conflict("Approval was already decided");
+    await tx.plan.updateMany({
+      where: { executionId, status: "PENDING_APPROVAL" },
+      data: { status: "SUPERSEDED" },
+    });
+    if (revised)
+      await tx.outboxEvent.create({
+        data: {
+          topic: "execution.plan",
+          aggregateId: executionId,
+          payload: { executionId, correlationId: execution.correlationId },
+        },
+      });
+    await event(tx, executionId, "PLAN_REVISION_REQUESTED", { actor, feedback, revised }, execution.correlationId);
+    return { revised };
+  });
 
 export const decideApproval = async (
   executionId: string,

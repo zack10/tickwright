@@ -1,9 +1,11 @@
 import { execFile } from "node:child_process";
 import crypto from "node:crypto";
+import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { config } from "../config";
+import { SANDBOX_ROOT, ServiceContainer, Toolchain, commandText } from "./toolchain";
 
 const exec = promisify(execFile);
 const safeId = (id: string) => {
@@ -22,6 +24,8 @@ export const createWorkspace = async (id: string) => {
 };
 export const removeWorkspace = async (id: string) => {
   const root = workspacePath(id);
+  await removeEnvironmentSnapshot(id);
+  await removeServices(id);
   try {
     await fs.rm(root, { recursive: true, force: true });
   } catch (error) {
@@ -60,30 +64,59 @@ const SAFE_GIT_ARGS = [
 // is never written to .git/config or placed on the docker command line.
 const AUTH_GIT = `${SAFE_GIT} -c http.extraHeader="Authorization: Basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"`;
 
+// Clone, diff, reset and cleanup only: any image with git and a shell. The
+// repository's own commands run in its toolchain's image instead.
+const GIT_IMAGE = "node:20-bookworm";
+const LIMIT_ARGS = ["--cpus", "2", "--memory", "2g", "--pids-limit", "256"];
+const SETUP_TIMEOUT_MS = 900_000;
+
+const envArgs = (env: Record<string, string> = {}) =>
+  Object.entries(env).flatMap(([name, value]) => ["-e", `${name}=${value}`]);
+
+// On a Linux host the workspace belongs to the host user, not the container's,
+// and git refuses it ("dubious ownership"). We cloned it ourselves, so trust it;
+// env config also covers git run by the repository's own checks, in any image.
+const TRUST_WORKSPACE = envArgs({
+  GIT_CONFIG_COUNT: "1",
+  GIT_CONFIG_KEY_0: "safe.directory",
+  GIT_CONFIG_VALUE_0: SANDBOX_ROOT,
+});
+
 const dockerArgs = (
   root: string,
   network: boolean,
   withToken: boolean,
   command: string[],
+  options: { image?: string; env?: Record<string, string>; services?: string } = {},
 ) => [
   "run",
   "--rm",
-  "--cpus",
-  "2",
-  "--memory",
-  "2g",
-  "--pids-limit",
-  "256",
+  ...LIMIT_ARGS,
   "--network",
-  network ? "bridge" : "none",
+  network ? "bridge" : (options.services ?? "none"),
   // `-e NAME` without a value makes docker read it from our process env.
   ...(withToken ? ["-e", "GITHUB_TOKEN"] : []),
-  "-v",
-  `${root}:/workspace`,
+  ...envArgs(options.env),
+  ...TRUST_WORKSPACE,
+  ...workspaceMounts(root, !options.image),
   "-w",
-  "/workspace",
-  "node:20-bookworm",
+  SANDBOX_ROOT,
+  options.image ?? GIT_IMAGE,
   ...command,
+];
+
+/**
+ * The repository's own commands (checks, the agent's commands) see .git
+ * read-only: through it they could hide changes from the diff that is
+ * reviewed and published (assume-unchanged, exclude entries, commits).
+ * Only our git operations, in the git image, may write it.
+ */
+const workspaceMounts = (root: string, writableGit: boolean) => [
+  "-v",
+  `${root}:${SANDBOX_ROOT}`,
+  ...(writableGit || !existsSync(path.join(root, ".git"))
+    ? []
+    : ["-v", `${path.join(root, ".git")}:${SANDBOX_ROOT}/.git:ro`]),
 ];
 
 /**
@@ -109,10 +142,10 @@ const dockerFailure = (error: unknown, token?: string) => {
   );
 };
 
-const execDocker = async (args: string[], token?: string) => {
+const execDocker = async (args: string[], token?: string, timeout = 300_000) => {
   try {
     return await exec("docker", args, {
-      timeout: 300_000,
+      timeout,
       maxBuffer: 5_000_000,
       env: token ? { ...process.env, GITHUB_TOKEN: token } : process.env,
     });
@@ -126,8 +159,12 @@ export const runDocker = async (
   command: string[],
   network = false,
 ) => {
+  // Git commands here walk everything setup installed (e.g. a Rust target/
+  // tree), so they get setup's bound, not the 5-minute default (found on fd).
   const result = await execDocker(
     dockerArgs(workspacePath(id), network, false, command),
+    undefined,
+    SETUP_TIMEOUT_MS,
   );
   return { stdout: result.stdout, stderr: result.stderr };
 };
@@ -148,20 +185,331 @@ export const cloneGithubWorkspace = async (
   // Start from an empty directory so a partial earlier clone cannot wedge retries.
   await removeWorkspace(id);
   const root = await createWorkspace(id);
-  const script = `${AUTH_GIT} clone https://github.com/${owner}/${repo}.git . && ${SAFE_GIT} checkout ${sha} && npm ci --ignore-scripts`;
+  const script = `${AUTH_GIT} clone https://github.com/${owner}/${repo}.git . && ${SAFE_GIT} checkout ${sha}`;
   await execDocker(dockerArgs(root, true, true, ["sh", "-c", script]), token);
+};
+
+/** Untracked files git doesn't ignore; `directories` collapses whole new folders. */
+const untrackedFiles = async (
+  id: string,
+  directories = false,
+  which: "visible" | "ignored" | "all" = "visible",
+) =>
+  (
+    await runDocker(id, [
+      ...SAFE_GIT_ARGS,
+      "ls-files",
+      "-z",
+      "--others",
+      ...(which === "all" ? [] : ["--exclude-standard"]),
+      ...(which === "ignored" ? ["--ignored"] : []),
+      ...(directories ? ["--directory"] : []),
+    ])
+  ).stdout
+    .split("\0")
+    .filter(Boolean);
+
+const excludeFromDiffs = async (id: string, entries: string[]) => {
+  if (entries.length)
+    await fs.appendFile(
+      path.join(workspacePath(id), ".git", "info", "exclude"),
+      entries.map((entry) => `/${entry.replace(/([*?[\\!#])/g, "\\$1")}\n`).join(""),
+    );
+};
+
+/**
+ * Runs `work` (a check) and keeps whatever it creates out of diffs and
+ * resets: build output and caches a check writes (__pycache__, target/,
+ * coverage) are never part of the change, whatever the language.
+ */
+export const keepOutputOutOfDiffs = async <T>(id: string, work: () => Promise<T>) => {
+  const before = new Set(await untrackedFiles(id));
+  try {
+    return await work();
+  } finally {
+    await excludeFromDiffs(
+      id,
+      (await untrackedFiles(id)).filter((file) => !before.has(file)),
+    );
+  }
+};
+
+const setupContainer = (id: string) => `agent-setup-${safeId(id).toLowerCase()}`;
+const snapshotImage = (id: string) => `agent-env-${safeId(id).toLowerCase()}`;
+
+/** Deletes an execution's environment snapshot, if it has one. */
+export const removeEnvironmentSnapshot = async (id: string) => {
+  for (const args of [["rm", "-f", setupContainer(id)], ["rmi", "-f", snapshotImage(id)]])
+    await exec("docker", args).catch(() => undefined);
+};
+
+/** Starting the image or running the setup command failed; the message is its output. */
+export class SetupFailedError extends Error {
+  name = "SetupFailedError";
+}
+
+/**
+ * The toolchain's service containers (a database, a cache) for one run, on
+ * an internal Docker network: the run's containers reach them by name, and
+ * nothing on it reaches the internet. Started when a container that needs
+ * them starts (setup, the sandbox, verification), so a resumed run gets them
+ * back; removed with the workspace. Returns the network, or undefined when
+ * the toolchain has no services.
+ */
+const servicesNetwork = (id: string) => `agent-net-${safeId(id).toLowerCase()}`;
+const serviceContainer = (id: string, name: string) => `agent-svc-${safeId(id).toLowerCase()}-${name}`;
+const SERVICES_LABEL = "agent.services";
+
+export const startServices = async (id: string, toolchain: Toolchain) => {
+  if (!toolchain.services?.length) return undefined;
+  const network = servicesNetwork(id);
+  const label = ["--label", `${SERVICES_LABEL}=${safeId(id)}`];
+  const exists = await exec("docker", ["network", "inspect", network]).then(() => true, () => false);
+  if (!exists) await execDocker(["network", "create", "--internal", ...label, network]);
+  for (const service of toolchain.services) {
+    const name = serviceContainer(id, service.name);
+    const running = await exec("docker", ["inspect", "--format", "{{.State.Running}}", name]).then(
+      (result) => result.stdout.trim() === "true",
+      () => false,
+    );
+    if (running) continue;
+    await exec("docker", ["rm", "-f", "-v", name]).catch(() => undefined);
+    // The daemon pulls the image, so the internal network does not stop that.
+    await execDocker(
+      ["run", "-d", "--name", name, ...label, ...LIMIT_ARGS, "--network", network, "--network-alias", service.name, ...envArgs(service.env), service.image],
+      undefined,
+      SETUP_TIMEOUT_MS,
+    );
+    if (service.ready) await waitUntilReady(name, service);
+  }
+  return network;
+};
+
+const waitUntilReady = async (container: string, service: ServiceContainer) => {
+  const seconds = service.readyTimeoutSeconds ?? 120;
+  const deadline = Date.now() + seconds * 1000;
+  for (;;)
+    try {
+      await exec("docker", ["exec", container, ...service.ready!], { timeout: 30_000 });
+      return;
+    } catch (error) {
+      if (Date.now() > deadline)
+        throw new Error(`service "${service.name}" was not ready after ${seconds}s: ${dockerFailure(error).message}`);
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+};
+
+export const removeServices = async (id: string) => {
+  const { stdout } = await exec("docker", ["ps", "-aq", "--filter", `label=${SERVICES_LABEL}=${safeId(id)}`]).catch(() => ({ stdout: "" }));
+  const containers = stdout.split(/\s+/).filter(Boolean);
+  // -v: database images declare volumes, which would otherwise pile up.
+  if (containers.length) await exec("docker", ["rm", "-f", "-v", ...containers]).catch(() => undefined);
+  await exec("docker", ["network", "rm", servicesNetwork(id)]).catch(() => undefined);
+};
+
+/** How a check did on the unmodified code, during setup. */
+export interface BaselineResult {
+  check: string;
+  passed: boolean;
+  output: string;
+}
+
+/**
+ * Prepares the environment and returns the image every later command uses.
+ * In one container with network (package registries) but never the GitHub
+ * token, since this runs repository-controlled code:
+ *
+ * 1. the repository's setup command, if any;
+ * 2. each check once, on the unmodified code. Tools fetch some things only
+ *    when they really run (test-framework providers, plugins, modules), and
+ *    the later checks have no network. The results are the baseline: how the
+ *    code did before the agent changed anything.
+ *
+ * Tools install to different places (~/.m2, ~/.cache, /usr/local), so the
+ * container is then snapshotted with `docker commit` instead of knowing any
+ * of them; the workspace is a bind mount, so it is not in the snapshot.
+ * What setup installed inside the workspace (node_modules, .venv, vendor)
+ * is copied into the snapshot too, so verification can restore it exactly
+ * (see prepareVerification). Whatever this created inside the workspace is
+ * excluded from diffs.
+ */
+export const setupWorkspace = async (
+  id: string,
+  toolchain: Toolchain,
+  checks: Array<{ name: string; command: string[] }>,
+  options: { cacheFor?: string; setupTimeoutMs?: number } = {},
+) => {
+  const baseline: BaselineResult[] = [];
+  let setupOutputs: string[] = [];
+  if (!toolchain.setup && !checks.length)
+    return { image: toolchain.image, baseline, setupOutputs, cache: "none" as CacheUse };
+
+  await removeEnvironmentSnapshot(id);
+  const cache =
+    options.cacheFor && config.executionSnapshotMaxAgeHours
+      ? environmentCacheImage(options.cacheFor, toolchain, checks)
+      : undefined;
+  const reuse = cache !== undefined && (await isFreshImage(cache, config.executionSnapshotMaxAgeHours));
+  const args = dockerArgs(workspacePath(id), true, false, ["sleep", "infinity"], {
+    image: reuse ? cache : toolchain.image,
+    env: toolchain.env,
+  });
+  // Same limits as every container, but long-lived so it can be committed.
+  args.splice(args.indexOf("--rm"), 1, "-d", "--name", setupContainer(id));
+  const run = (command: string[]) =>
+    execDocker(["exec", setupContainer(id), ...command], undefined, options.setupTimeoutMs ?? SETUP_TIMEOUT_MS);
+  try {
+    try {
+      const services = await startServices(id, toolchain);
+      await execDocker(args);
+      // Setup keeps the bridge for package registries and joins the services' network too.
+      if (services) await execDocker(["network", "connect", services, setupContainer(id)]);
+      if (toolchain.setup) await run(toolchain.setup);
+    } catch (error) {
+      throw new SetupFailedError((error as Error).message);
+    }
+    if (toolchain.setup) {
+      // A fresh clone has no untracked files: these all came from setup.
+      setupOutputs = (await untrackedFiles(id, true, "all")).map((entry) => entry.replace(/\/$/, ""));
+      // A reused snapshot holds an earlier run's copy; only this run's counts.
+      await run(["rm", "-rf", SETUP_COPY_DIR]);
+      if (setupOutputs.length)
+        await run(["sh", "-c", COPY_ENTRIES, "sh", SANDBOX_ROOT, SETUP_COPY_DIR, ...setupOutputs]);
+    }
+    for (const { name, command } of checks)
+      try {
+        const result = await run(command);
+        baseline.push({ check: name, passed: true, output: `${result.stdout}\n${result.stderr}`.slice(-4000) });
+      } catch (error) {
+        baseline.push({ check: name, passed: false, output: (error as Error).message.slice(-4000) });
+      }
+    await execDocker([
+      "commit",
+      "--change",
+      `LABEL ${CACHE_LABEL}=${cache ? cacheRepository(cache) : "none"}`,
+      setupContainer(id),
+      snapshotImage(id),
+    ]);
+  } finally {
+    await exec("docker", ["rm", "-f", setupContainer(id)]).catch(() => undefined);
+  }
+  // Only a snapshot built from the plain image becomes the cache, so layers
+  // never pile up across runs; a stale cache is rebuilt the same way.
+  if (cache && !reuse) await storeEnvironmentCache(snapshotImage(id), cache);
+  // A fresh clone has no untracked files, so everything here came from setup.
+  await excludeFromDiffs(id, await untrackedFiles(id, true));
+  return { image: snapshotImage(id), baseline, setupOutputs, cache: (cache ? (reuse ? "reused" : "built") : "none") as CacheUse };
+};
+
+/**
+ * Environment snapshots are reused across runs of one repository, the way
+ * Codex caches its containers: a run starts from the cached snapshot and
+ * runs setup again with network, so dependency changes are still installed
+ * but what is already there is not downloaded again. Nothing is chosen per
+ * tool or language. The key is the environment (image, setup, env, checks),
+ * so a changed or newly approved environment starts fresh. A snapshot holds
+ * whatever the repository's setup ran, so it is never shared between
+ * repositories.
+ */
+export type CacheUse = "none" | "built" | "reused";
+const CACHE_LABEL = "agent.environment-cache";
+const cacheRepository = (image: string) => image.split(":")[0];
+
+export const environmentCacheImage = (
+  scope: string,
+  toolchain: Pick<Toolchain, "image" | "setup" | "env">,
+  checks: Array<{ name: string; command: string[] }>,
+) => {
+  const key = crypto
+    .createHash("sha256")
+    .update(JSON.stringify([toolchain.image, toolchain.setup, Object.entries(toolchain.env).sort(), checks]))
+    .digest("hex")
+    .slice(0, 32);
+  return `agent-cache-${safeId(scope).toLowerCase()}:${key}`;
+};
+
+/** Whether an image was created less than maxAgeHours ago (false if it doesn't exist). */
+export const isFresh = (created: string, maxAgeHours: number, now = Date.now()) => {
+  const time = Date.parse(created);
+  return Number.isFinite(time) && now - time < maxAgeHours * 3_600_000;
+};
+const isFreshImage = async (image: string, maxAgeHours: number) => {
+  try {
+    const { stdout } = await exec("docker", ["image", "inspect", "--format", "{{.Created}}", image]);
+    return isFresh(stdout.trim(), maxAgeHours);
+  } catch {
+    return false;
+  }
+};
+
+/** Tags the snapshot as the repository's cache and drops its older caches that nothing uses. */
+const storeEnvironmentCache = async (snapshot: string, cache: string) => {
+  await execDocker(["tag", snapshot, cache]);
+  const { stdout } = await exec("docker", ["images", cacheRepository(cache), "--format", "{{.Repository}}:{{.Tag}}"]);
+  for (const old of stdout.split("\n").map((line) => line.trim()).filter((line) => line && line !== cache))
+    await exec("docker", ["rmi", old]).catch(() => undefined);
+  // Replaced caches still used by a running execution's snapshot stay until it ends.
+  // Removed by ID: on Docker's containerd store `image prune`, whatever its filter,
+  // breaks another execution's `docker commit` that is in progress ("No such image").
+  const { stdout: dangling } = await exec("docker", [
+    "images", "-q", "--filter", "dangling=true", "--filter", `label=${CACHE_LABEL}=${cacheRepository(cache)}`,
+  ]).catch(() => ({ stdout: "" }));
+  for (const image of new Set(dangling.split("\n").map((line) => line.trim()).filter(Boolean)))
+    await exec("docker", ["rmi", image]).catch(() => undefined);
+};
+
+// Inside the snapshot, outside the workspace: what setup installed there.
+const SETUP_COPY_DIR = "/opt/agent-setup-output";
+// sh -c COPY_ENTRIES sh <from> <to> <entry>...: replaces each entry under <to>
+// with a full copy of it from <from>, keeping modes and links.
+const COPY_ENTRIES =
+  'from=$1; to=$2; shift 2; for e in "$@"; do rm -rf "$to/$e" && mkdir -p "$(dirname "$to/$e")" && cp -a "$from/$e" "$to/$e" || exit 1; done';
+
+/**
+ * Makes the workspace hold only the change before the checks that judge it.
+ * Anything the agent or a check left that the diff doesn't show (ignored or
+ * excluded files: a conftest.py hidden from git, edited dependencies, build
+ * output) is deleted, and what setup installed is restored from the copy in
+ * the snapshot. So checks see exactly the base commit, the setup, and the
+ * diff that is reviewed and published.
+ */
+export const prepareVerification = async (id: string, image: string, setupOutputs: string[]) => {
+  const isSetupOutput = (entry: string) =>
+    setupOutputs.some((output) => entry === output || entry.startsWith(`${output}/`));
+  const leftovers = (await untrackedFiles(id, true, "ignored"))
+    .map((entry) => entry.replace(/\/$/, ""))
+    .filter((entry) => !isSetupOutput(entry));
+  if (leftovers.length) await runDocker(id, ["rm", "-rf", "--", ...leftovers]);
+  if (setupOutputs.length)
+    await execDocker(
+      dockerArgs(workspacePath(id), false, false, ["sh", "-c", COPY_ENTRIES, "sh", SETUP_COPY_DIR, SANDBOX_ROOT, ...setupOutputs], {
+        image,
+      }),
+      undefined,
+      SETUP_TIMEOUT_MS,
+    );
 };
 /**
  * Commands that return a clone to its checked-out commit: tracked changes,
- * intent-to-add entries and new files are dropped. Ignored files (installed
- * node_modules) are kept so retries don't reinstall dependencies.
+ * intent-to-add entries and new files are dropped. Ignored files (what
+ * setup installed, tool caches) are kept so retries don't set up again.
  */
 export const WORKSPACE_RESET_COMMANDS = [
   [...SAFE_GIT_ARGS, "reset", "--hard", "--quiet"],
-  [...SAFE_GIT_ARGS, "clean", "-fd", "--quiet", "-e", "node_modules"],
+  [...SAFE_GIT_ARGS, "clean", "-fd", "--quiet"],
 ];
 export const resetWorkspace = async (id: string) => {
   for (const command of WORKSPACE_RESET_COMMANDS) await runDocker(id, command);
+};
+/**
+ * Returns the workspace to a fresh clone: no changes, no untracked or ignored
+ * files and no diff exclusions, so another environment can be set up in it.
+ */
+export const restoreClone = async (id: string) => {
+  await removeEnvironmentSnapshot(id);
+  await runDocker(id, [...SAFE_GIT_ARGS, "reset", "--hard", "--quiet"]);
+  await runDocker(id, [...SAFE_GIT_ARGS, "clean", "-ffdx", "--quiet"]);
+  await fs.writeFile(path.join(workspacePath(id), ".git", "info", "exclude"), "");
 };
 export const gitDiff = async (id: string) => {
   await runDocker(id, [...SAFE_GIT_ARGS, "add", "-N", "."]);
@@ -175,15 +523,34 @@ export const gitDiff = async (id: string) => {
     ])
   ).stdout;
 };
-export const changedFiles = async (id: string) => {
+export const changedFiles = async (id: string) =>
+  (await changes(id)).map((change) => change.file);
+
+/** A changed file and how: A added, M modified, D deleted, T type changed. */
+export interface FileChange {
+  status: string;
+  file: string;
+}
+
+/** The change as the diff shows it; renames appear as a deletion and an addition. */
+export const changes = async (id: string): Promise<FileChange[]> => {
   await runDocker(id, [...SAFE_GIT_ARGS, "add", "-N", "."]);
-  return (
-    await runDocker(id, [...SAFE_GIT_ARGS, "diff", "--name-only", "--no-ext-diff"])
+  const fields = (
+    await runDocker(id, [...SAFE_GIT_ARGS, "diff", "--name-status", "--no-renames", "-z", "--no-ext-diff"])
   ).stdout
-    .split(/\r?\n/)
-    .map((value) => value.trim())
+    .split("\0")
     .filter(Boolean);
+  const result: FileChange[] = [];
+  for (let index = 0; index + 1 < fields.length; index += 2)
+    result.push({ status: fields[index], file: fields[index + 1] });
+  return result;
 };
+
+/** Files in the checked-out commit, whatever the index or working tree hold now. */
+export const trackedFiles = async (id: string) =>
+  (await runDocker(id, [...SAFE_GIT_ARGS, "ls-tree", "-r", "-z", "--name-only", "HEAD"])).stdout
+    .split("\0")
+    .filter(Boolean);
 
 /**
  * Publishes an approved diff from a fresh clone. The verification workspace
@@ -226,31 +593,197 @@ export const publishApprovedDiff = async (input: {
     await removeWorkspace(publishId);
   }
 };
-export const verifyWorkspace = async (id: string, scripts: string[]) => {
-  const results: Array<{ script: string; passed: boolean; output: string }> =
-    [];
-  for (const script of scripts)
+export interface CheckResult {
+  script: string;
+  passed: boolean;
+  output: string;
+  /** Configured, but the toolchain has no command for it. */
+  unavailable?: true;
+  /** Failed on the unmodified code too, so its failure does not block the change. */
+  failingBefore?: true;
+}
+
+/**
+ * Runs the toolchain's checks in its image, without internet (only its services), stopping at
+ * the first failure. A check in `failingBefore` failed on the unmodified
+ * code, so failing again doesn't block: established agents report a test
+ * that was already broken instead of refusing the change, and a person
+ * decides. It is recorded, and the next check still runs. A configured check that doesn't exist is recorded as
+ * unavailable and does not fail the verification: it says nothing about
+ * the change.
+ */
+export const verifyWorkspace = async (
+  id: string,
+  toolchain: Toolchain,
+  checks: { run: Array<{ name: string; command: string[] }>; unavailable: string[] },
+  failingBefore: string[] = [],
+) => {
+  const results: CheckResult[] = checks.unavailable.map((script) => ({
+    script,
+    passed: true,
+    unavailable: true,
+    output: `No "${script}" check is configured for this repository.`,
+  }));
+  let failed = false;
+  const services = checks.run.length ? await startServices(id, toolchain) : undefined;
+  for (const { name, command } of checks.run)
     try {
-      const result = await runDocker(id, ["npm", "run", script]);
+      const result = await keepOutputOutOfDiffs(id, () =>
+        execDocker(
+          dockerArgs(workspacePath(id), false, false, command, {
+            image: toolchain.image,
+            env: toolchain.env,
+            services,
+          }),
+        ),
+      );
       results.push({
-        script,
+        script: name,
         passed: true,
         output: `${result.stdout}\n${result.stderr}`.slice(-100_000),
       });
     } catch (error) {
       const output = error instanceof Error ? error.message : String(error);
-      results.push({ script, passed: false, output });
+      if (failingBefore.includes(name)) {
+        results.push({ script: name, passed: false, failingBefore: true, output });
+        continue;
+      }
+      results.push({ script: name, passed: false, output });
+      failed = true;
       break;
     }
-  return {
-    passed:
-      results.length === scripts.length &&
-      results.every((result) => result.passed),
-    results,
-  };
+  return { passed: !failed, checksRun: checks.run.length, results };
 };
-export const hashFile = async (filePath: string) =>
-  crypto
-    .createHash("sha256")
-    .update(await fs.readFile(filePath))
-    .digest("hex");
+/** The reviewer's unresolved objections to a change, for whoever decides on it; "" when there are none. */
+export const describeReviewObjections = (verification: unknown) => {
+  const { reviewObjections } = (verification ?? {}) as { reviewObjections?: string[] };
+  if (!reviewObjections?.length) return "";
+  return [
+    "**The reviewer objected to this change.** The checks pass, but the reviewer still objected after the last attempt. Check these points before approving:",
+    ...reviewObjections.map((objection) => `- ${objection.replace(/\s+/g, " ").trim()}`),
+  ].join("\n");
+};
+
+/** Checks that failed before the change and still fail, for whoever decides on it; "" when there are none. */
+export const describeFailingBefore = (verification: unknown) => {
+  const { results } = (verification ?? {}) as { results?: CheckResult[] };
+  const names = (results ?? []).filter((result) => result.failingBefore).map((result) => result.script);
+  if (!names.length) return "";
+  return `**Already failing before this change:** ${names.join(", ")}. ${names.length > 1 ? "They" : "It"} failed on the unmodified code too, so ${names.length > 1 ? "they" : "it"} could not show whether this change breaks something ${names.length > 1 ? "they cover" : "it covers"}. Check the output before approving.`;
+};
+
+/** What a verification proved, for the PR body: which checks passed, which already failed, and which did not exist. */
+export const describeVerification = (verification: unknown) => {
+  const { checksRun, results } = (verification ?? {}) as {
+    checksRun?: number;
+    results?: CheckResult[];
+  };
+  const ran = (results ?? []).filter((result) => !result.unavailable).map((result) => result.script);
+  const passed = (results ?? []).filter((result) => !result.unavailable && !result.failingBefore).map((result) => result.script);
+  const unavailable = (results ?? []).filter((result) => result.unavailable).map((result) => result.script);
+  const objections = describeReviewObjections(verification);
+  const failing = describeFailingBefore(verification);
+  // Artifacts from before toolchains have results but no checksRun.
+  const lines = [
+    ...(objections ? [objections, ""] : []),
+    !(checksRun ?? ran.length)
+      ? "**Unverified:** no checks are available for this repository, so nothing was run against this change."
+      : passed.length
+        ? `Checks passed: ${passed.join(", ")}.`
+        : "No check passed.",
+    ...(failing ? [failing] : []),
+  ];
+  if (unavailable.length) lines.push(`Not available in this repository: ${unavailable.join(", ")}.`);
+  const { environmentProposal: proposal } = (verification ?? {}) as {
+    environmentProposal?: { repositoryId: string; hash: string; checks: Record<string, string[]> };
+  };
+  if (proposal)
+    lines.push(
+      "",
+      "**These checks were proposed by the agent from the project's files and are not approved yet:**",
+      ...Object.entries(proposal.checks).map(([name, command]) => `- ${name}: \`${commandText(command)}\``),
+      `Approve them once and every later run uses them as fixed checks: \`POST /api/repositories/${proposal.repositoryId}/environment/approve\` with \`{ "proposalHash": "${proposal.hash}" }\`.`,
+    );
+  return lines.join("\n");
+};
+
+/**
+ * Long-lived sandbox for one run: started once, then each command is a
+ * `docker exec`, instead of a new container per command. Same limits as
+ * every other workspace container; no internet, only the run's services.
+ */
+const sandboxName = (id: string) => `agent-sandbox-${safeId(id)}`;
+
+export const startSandbox = async (id: string, toolchain: Toolchain) => {
+  // A crashed earlier attempt may have left one behind.
+  await stopSandbox(id);
+  const services = await startServices(id, toolchain);
+  await execDocker([
+    "run",
+    "-d",
+    "--name",
+    sandboxName(id),
+    ...LIMIT_ARGS,
+    "--network",
+    services ?? "none",
+    // `docker exec` inherits these, so every command sees the toolchain's caches.
+    ...envArgs(toolchain.env),
+    ...TRUST_WORKSPACE,
+    ...workspaceMounts(workspacePath(id), false),
+    "-w",
+    SANDBOX_ROOT,
+    toolchain.image,
+    "sleep",
+    "infinity",
+  ]);
+};
+
+export const stopSandbox = async (id: string) => {
+  try {
+    await exec("docker", ["rm", "-f", sandboxName(id)], { timeout: 60_000 });
+  } catch {
+    // Not running: nothing to stop.
+  }
+};
+
+export interface SandboxResult {
+  exitCode: number;
+  timedOut: boolean;
+  output: string;
+}
+
+/**
+ * Runs a command in the run's sandbox. A non-zero exit is a result, not an
+ * error (a failing test is information for the agent). The time limit is
+ * enforced inside the container, so a runaway process is killed there
+ * instead of only detaching the host-side client.
+ */
+export const execInSandbox = async (
+  id: string,
+  command: string[],
+  timeoutMs: number,
+): Promise<SandboxResult> => {
+  const seconds = Math.max(1, Math.ceil(timeoutMs / 1000));
+  try {
+    const result = await exec(
+      "docker",
+      ["exec", sandboxName(id), "timeout", "-s", "KILL", String(seconds), ...command],
+      { timeout: timeoutMs + 30_000, maxBuffer: 5_000_000 },
+    );
+    return { exitCode: 0, timedOut: false, output: `${result.stdout}\n${result.stderr}` };
+  } catch (error) {
+    const failure = error as { code?: unknown; stdout?: string; stderr?: string; killed?: boolean };
+    // Docker itself failed (no daemon, container gone): not the command's result.
+    if (
+      typeof failure.code !== "number" ||
+      /Error response from daemon|Cannot connect to the Docker daemon/.test(failure.stderr ?? "")
+    )
+      throw dockerFailure(error);
+    return {
+      exitCode: failure.code,
+      // `timeout -s KILL` exits 137 when it had to kill the command.
+      timedOut: failure.code === 137 || failure.killed === true,
+      output: `${failure.stdout ?? ""}\n${failure.stderr ?? ""}`,
+    };
+  }
+};

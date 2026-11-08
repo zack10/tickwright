@@ -1,0 +1,6 @@
+[project]
+name = "benchmark-shop"
+version = "1.0.0"
+description = "Small order and billing helpers used as a coding benchmark."
+requires-python = ">=3.11"
+dependencies = []

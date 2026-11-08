@@ -1,0 +1,7 @@
+{
+  "title": "Refund amounts come out wrong",
+  "description": "Refunds come out wrong. The amount \"-1.05\" is read as -0.95 and written back as \"-1.-5\". Negative amounts must be read and written correctly, like positive ones.",
+  "expect": "fix",
+  "expectedFiles": ["money/parse.go", "money/format.go"],
+  "measures": "Fix that needs changes in two files"
+}

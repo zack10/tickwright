@@ -24,6 +24,16 @@ export interface TrackerFetchResult {
   items: NormalizedWorkItem[];
 }
 
+/** A comment on a ticket, as the conversation with the agent reads it. */
+export interface TrackerComment {
+  id: string;
+  /** The tracker's own id for the author, and the name people know them by. */
+  authorId: string;
+  authorName: string;
+  text: string;
+  createdAt: Date;
+}
+
 /**
  * Adapter for an issue tracker (Trello today). Adapters only talk to the
  * tracker API; persistence and execution creation live in ingestionService.
@@ -38,4 +48,10 @@ export interface IssueTrackerAdapter {
     externalId: string,
     text: string,
   ): Promise<void>;
+  /** Comments on the ticket made after `since`, oldest first. */
+  fetchComments(
+    config: Record<string, unknown>,
+    externalId: string,
+    since: Date,
+  ): Promise<TrackerComment[]>;
 }

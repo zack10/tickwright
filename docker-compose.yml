@@ -20,6 +20,10 @@ services:
     environment:
       RABBITMQ_DEFAULT_USER: guest
       RABBITMQ_DEFAULT_PASS: guest
+      # A worker holds a run's message until the run ends, and runs on real
+      # projects take longer than the default 30 minutes; 6 h covers the
+      # longest maxRunSeconds (4 h) plus setup.
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "-rabbit consumer_timeout 21600000"
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
 

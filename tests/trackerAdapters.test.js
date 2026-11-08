@@ -30,6 +30,15 @@ test("Trello revision hash is unchanged by the adapter refactor", () => {
   );
 });
 
+test("Trello revision hash ignores label fields that change with other cards", () => {
+  const label = (uses, color) => ({ id: "label-1", name: "Agent", uses, color });
+  const [before] = toWorkItems([card({ labels: [label(10, "sky")] })], config);
+  const [after] = toWorkItems([card({ labels: [label(11, "green")] })], config);
+  const [renamed] = toWorkItems([card({ labels: [{ ...label(11), name: "agent" }] })], config);
+  assert.equal(after.revisionHash, before.revisionHash);
+  assert.notEqual(renamed.revisionHash, before.revisionHash);
+});
+
 test("Trello adapter keeps only cards with the eligible label (case-insensitive)", () => {
   const items = toWorkItems(
     [card(), card({ id: "card-2", labels: [{ name: "Other" }] }), card({ id: "card-3", labels: [] })],

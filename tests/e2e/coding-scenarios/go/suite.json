@@ -1,0 +1,21 @@
+{
+  "language": "Go",
+  "environment": {
+    "toolchain": {
+      "image": "golang:1.23-alpine",
+      "setup": null,
+      "checks": { "test": ["go", "test", "./..."] },
+      "env": { "CGO_ENABLED": "0", "GOTOOLCHAIN": "local" },
+      "protectedPaths": ["go.mod", "go.sum", ".github"]
+    }
+  },
+  "grader": {
+    "image": "golang:1.23-alpine",
+    "env": { "CGO_ENABLED": "0", "GOTOOLCHAIN": "local" },
+    "cache": "/root/.cache",
+    "test": ["go", "test", "./..."],
+    "hiddenTest": ["go", "test", "./..."],
+    "assertionFailure": "--- FAIL:"
+  },
+  "testFiles": "_test\\.go$"
+}

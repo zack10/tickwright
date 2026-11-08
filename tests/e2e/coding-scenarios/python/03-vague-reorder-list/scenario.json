@@ -1,0 +1,7 @@
+{
+  "title": "Reorder list is missing things",
+  "description": "The reorder list is missing things. Yesterday we ran out of AA batteries completely and they were not on it, even though the half-empty shelf of AAA batteries was.",
+  "expect": "fix",
+  "expectedFiles": ["shop/inventory.py"],
+  "measures": "Vague ticket: the agent has to find the cause from the symptom"
+}

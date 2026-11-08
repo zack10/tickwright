@@ -12,10 +12,13 @@
     "prisma:push:cloud": "dotenv -e .env.cloud -- npx prisma db push",
     "prisma:migrate:local": "dotenv -e .env.local -- npx prisma migrate dev",
     "prisma:migrate:deploy": "npx prisma migrate deploy",
-    "build": "prisma generate && rimraf dist && tsc",
-    "test": "npm run build && node --test tests/codeWriter.test.js tests/llmUtils.test.js tests/executionSecurity.test.js tests/agentGraphHelpers.test.js tests/auditFixes.test.js tests/trackerAdapters.test.js tests/llmRetry.test.js",
+    "build": "prisma generate && rimraf dist && tsc && node scripts/copy-prompts.js",
+    "test": "npm run build && node --test tests/codeWriter.test.js tests/llmUtils.test.js tests/executionSecurity.test.js tests/agentGraphHelpers.test.js tests/triage.test.js tests/ticketConversation.test.js tests/auditFixes.test.js tests/trackerAdapters.test.js tests/llmRetry.test.js tests/checkpointer.test.js tests/reviewOutcome.test.js tests/llmRegistry.test.js tests/llmTools.test.js tests/llmUsage.test.js tests/sandboxTools.test.js tests/agentLoop.test.js tests/toolchain.test.js tests/environmentDiscovery.test.js tests/prompts.test.js tests/codingScenarios.test.js",
     "test:e2e": "dotenv -e .env.e2e -- node --test --test-concurrency=1 tests/e2e/smoke.test.js tests/e2e/taskPipeline.test.js tests/e2e/executionPipeline.test.js",
     "test:e2e:smoke": "dotenv -e .env.e2e -- node --test tests/e2e/smoke.test.js",
+    "eval:coding": "dotenv -e .env.e2e -- node tests/e2e/codingEval.js",
+    "eval:reference": "dotenv -e .env.e2e -- node tests/e2e/referenceEval.js",
+    "eval:reviewer": "dotenv -e .env.local -e .env.e2e -- node tests/e2e/reviewerEval.js",
     "verify": "npm run lint && npm test",
     "lint": "eslint . --ext .ts",
     "lint:fix": "eslint . --ext .ts --fix"
@@ -29,7 +32,6 @@
     "@types/express": "^4.17.21",
     "@types/node": "^20.12.7",
     "@types/pg": "^8.20.0",
-    "@types/uuid": "^10.0.0",
     "@typescript-eslint/eslint-plugin": "^7.7.0",
     "@typescript-eslint/parser": "^7.7.0",
     "dotenv-cli": "^11.0.0",
@@ -40,19 +42,16 @@
     "typescript": "^5.4.5"
   },
   "dependencies": {
-    "@google/generative-ai": "^0.24.1",
     "@langchain/core": "^1.2.9",
     "@langchain/langgraph": "^1.4.12",
     "@prisma/adapter-pg": "^7.7.0",
     "@prisma/client": "^7.8.0",
-    "@prisma/extension-accelerate": "^3.0.1",
     "amqplib": "^1.0.3",
     "axios": "^1.15.0",
     "cors": "^2.8.5",
     "dotenv": "^17.4.1",
     "express": "^4.19.2",
     "pg": "^8.20.0",
-    "uuid": "^13.0.0",
     "zod": "^3.23.0"
   },
   "overrides": {

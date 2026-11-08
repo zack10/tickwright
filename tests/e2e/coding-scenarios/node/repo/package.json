@@ -1,0 +1,9 @@
+{
+  "name": "benchmark-shop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Small order and billing utilities used as a coding benchmark.",
+  "scripts": {
+    "test": "node --test"
+  }
+}

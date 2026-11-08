@@ -1,15 +1,40 @@
 import { z } from "zod";
+import { EXECUTION_PROMPTS, ExecutionPromptName } from "../prompts";
+import { getProviderRegistry } from "../services/llm/registry";
 
 const uuid = z.string().uuid();
 
+// Any provider in the registry: built-ins plus LLM_PROVIDERS profiles.
+const providerKey = z
+  .string()
+  .refine((key) => getProviderRegistry().has(key), {
+    message: "Unknown LLM provider; see GET /api/llm/providers",
+  });
+
 // Agent schemas
+// config is free-form; the parts the server reads are checked.
+const callKind = z.enum(Object.keys(EXECUTION_PROMPTS) as [ExecutionPromptName, ...ExecutionPromptName[]]);
+const callModel = z
+  .object({ provider: providerKey, model: z.string().min(1), apiKey: z.string().min(1).optional() })
+  .strict();
+const agentConfig = z
+  .object({
+    // A separate model for reviewing diffs; default the agent's own. Same as models.review and models.reviewer.
+    reviewer: callModel.optional(),
+    // A model per kind of execution call, e.g. { "triage": { "provider": "openai", "model": "gpt-5-nano" } }.
+    models: z.record(callKind, callModel).optional(),
+    // Reasoning effort per kind of execution call, e.g. { "triage": "low" }; unset keeps the model's default.
+    reasoningEffort: z.record(callKind, z.enum(["low", "medium", "high"])).optional(),
+  })
+  .passthrough();
+
 export const createAgentSchema = z.object({
   body: z.object({
     name: z.string().min(1, "Name is required"),
     description: z.string().optional(),
-    config: z.record(z.unknown()).optional(),
+    config: agentConfig.optional(),
     projectId: uuid.optional(),
-    provider: z.enum(["gemini", "openai", "anthropic"]).optional(),
+    provider: providerKey.optional(),
     model: z.string().min(1).optional(),
     baseInstructions: z.string().max(20_000).optional(),
   }),
@@ -20,9 +45,9 @@ export const updateAgentSchema = z.object({
   body: z.object({
     name: z.string().min(1).optional(),
     description: z.string().optional(),
-    config: z.record(z.unknown()).optional(),
+    config: agentConfig.optional(),
     projectId: uuid.optional(),
-    provider: z.enum(["gemini", "openai", "anthropic"]).optional(),
+    provider: providerKey.optional(),
     model: z.string().min(1).optional(),
     baseInstructions: z.string().max(20_000).optional(),
   }),
@@ -68,13 +93,13 @@ export const createTaskSchema = z.object({
 
 export const discoverProviderSchema = z.object({
   body: z.object({
-    provider: z.enum(["gemini", "openai", "anthropic"]),
+    provider: providerKey,
     apiKey: z.string().min(1),
   }),
 });
 
 export const providerQuerySchema = z.object({
-  query: z.object({ provider: z.enum(["gemini", "openai", "anthropic"]) }),
+  query: z.object({ provider: providerKey }),
 });
 
 // Project schemas
@@ -96,34 +121,6 @@ export const updateProjectSchema = z.object({
     techStack: z.string().optional(),
     architectureDecisions: z.string().optional(),
     contextData: z.record(z.unknown()).optional(),
-  }),
-});
-
-// Message schemas
-export const messageTypeSchema = z.enum([
-  "AGENT_MESSAGE",
-  "TASK_UPDATE",
-  "RESOURCE_REQUEST",
-  "WORKITEM_STATUS",
-  "CONTRACT_PROPOSAL",
-  "CONTRACT_ACCEPTED",
-  "CONTRACT_REJECTED",
-]);
-
-export const messageMetadataSchema = z.object({
-  timestamp: z.string().datetime().or(z.string()), // Flexible ISO string
-  conversationId: uuid.optional(),
-  correlationId: uuid.optional(),
-});
-
-export const agentMessageSchema = z.object({
-  body: z.object({
-    id: uuid,
-    type: messageTypeSchema,
-    senderId: uuid,
-    receiverId: uuid.nullable(),
-    payload: z.record(z.unknown()),
-    metadata: messageMetadataSchema,
   }),
 });
 

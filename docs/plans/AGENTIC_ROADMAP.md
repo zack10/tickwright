@@ -4,24 +4,105 @@ Created 2026-10-19. Tracks the work to turn the run step from "an LLM inside a f
 
 The existing plumbing stays: Docker sandbox, LangGraph run graph, snapshot-bound approvals, outbox/inbox, leases, retries, dead-lettering, and the end-to-end suites. The phases change what happens **inside** the run step.
 
-**Rule for every phase:** finish by re-running the Phase 0 benchmark and recording the result in the [results log](#results-log).
+**Rule for every phase:** finish by re-running the Phase 0 benchmark and recording the result in the [results log](#results-log). From Phase 4 on, also run the [reference projects](#reference-projects): real projects in different stacks. Limitations nobody has found yet are expected to show up there, as failing rows, and go into the [known limitations](#known-limitations-audit-2026-10-26) table before the phase counts as done.
+
+**Rule for prompt and agent changes (2026-11-01): no conclusions from 1 to 3 runs.** A change to a prompt or to the agent's code (plan step, run graph, tools, reviewer) is committed only after the full benchmark x3, run in parallel (`npm run eval:coding -- --runs 3 --parallel 4`, about 40 minutes and $1.20 on `gpt-5-mini`), shows no drop in pass rate and no new wrong fixes against the last recorded x3 run. A single scenario's result says nothing unless it was run at least 10 times. Infrastructure, eval and documentation changes are exempt.
+
+**Rule for every phase: no language lock-in.** The agent must work on repositories in any language, framework and platform, not only Node/TypeScript. New code must not assume a language, package manager, build tool or test runner; anything toolchain-specific comes from the repository's detected or configured toolchain (Phase 4), and prompts must not name a language unless it comes from that toolchain.
+
+**Deployment (decided 2026-10-26): developer laptop first, shared server later.** First each developer runs the orchestrator on their own machine for their own tickets; once that works well, a team installs it on a server and shares it. Both run executions in containers: runs are started by tickets, not watched command by command, so the agent never gets the developer's machine (files, SSH keys, credentials), and it works on its own clone so it never touches the developer's checkout. Design for both from now on: what runs on a laptop must also work on a server (several users, several executions at once, Phase 8), and laptop costs matter (disk for images, Docker Desktop speed, one-command install, a per-developer token budget). A supervised "host mode" that uses the developer's own environment, like Claude Code, can be added later as an explicit option for runs a person starts and watches.
 
 ## Progress
 
 | Phase | Problem it solves | How (concept) | Size | Status |
 | --- | --- | --- | --- | --- |
-| 0. Coding evaluation + prompt management | We can't tell whether the agent writes correct code, or whether a change made it better or worse. | A benchmark of 8 realistic bugs scored by hidden tests the agent never sees; prompts move to versioned files so every result is tied to the exact prompts used. | M | Not started |
-| 1. Tool calling in the LLM layer | The LLM layer can only send text and get text back, so the model can't ask to do anything. | Add function calling to the Gemini, OpenAI and Anthropic providers behind one shared format. | M | Not started |
-| 2. Sandbox tools | The agent only sees files chosen by name, cut at 20 KB, and must rewrite whole files; it can also edit tests. | Give it safe tools inside the Docker sandbox (list, read, search, edit, run checks) with the safety rules enforced in each tool, and log every call. | M | Not started |
-| 3. Agent loop | The agent gets one shot per attempt and can't explore, check its work or change course. | A loop where the model picks a tool, sees the result and decides the next step, until it finishes or hits a step/token/time budget; the existing checks still run after it. | L | Not started |
-| 4. Parallel executions (several tickets at once) | Tickets run one after another, so one slow ticket holds up the rest. | Allow several runs at once with limits on runs, CPU/memory and LLM rate, keep each run isolated, and let workers scale as separate processes. | M–L | Not started |
-| 5. Agent roles and a real planner | Every step uses the project's first agent, and plan approval reviews a fixed template. | Give agents roles (planner, implementer, reviewer) picked per step, and add a planner that reads the repo and proposes a real plan to approve. | M | Not started |
-| 6. Agent skills | Stored skills never reach the agent, so reusable know-how goes unused. | The agent sees a short list of its role's skills and loads the full instructions only when needed; skills guide but never grant permissions. | M | Not started |
-| 7. Real MCP | Tools are hard-coded and there's no standard way to plug in new ones. | Serve the sandbox tools over the Model Context Protocol and have the agent discover tools, so allowlisted external tool servers can be added safely. | M | Not started |
-| 8. Retrieval | Tickets that don't name the right file can miss the relevant code. | Index the repo by meaning (embeddings in Postgres with pgvector) and add a semantic search tool. | M | Not started |
-| 9. Collaborating agents and memory | The same agent reviews its own work, and nothing learned in one run helps the next. | An independent reviewer using structured, capped hand-offs controlled by the graph, plus per-repo lessons kept only once a real result confirms them. | M | Not started |
+| 0. Coding evaluation + prompt management | We can't tell whether the agent writes correct code, or whether a change made it better or worse. | A benchmark of 8 realistic bugs scored by hidden tests the agent never sees; prompts move to versioned files so every result is tied to the exact prompts used. | M | Done (baseline 2026-10-25: 6/8 pass, 1 wrong fix shipped) |
+| 1. Provider registry + tool calling in the LLM layer | Each new LLM needs its own code and edits in several places, and the LLM layer can only send text and get text back, so the model can't ask to do anything. | One generic OpenAI-compatible provider configured per vendor (new vendors need configuration only), a single provider registry, then function calling behind one shared format. | M–L | Done; live check pending for Anthropic only (no key yet) |
+| 2. Sandbox tools | The agent only sees files chosen by name, cut at 20 KB, and must rewrite whole files; it can also edit tests. | Give it safe tools inside the Docker sandbox (list, read, search, edit, run checks) with the safety rules enforced in each tool, and log every call. | M | Done (tools built and tested; used from Phase 3) |
+| 3. Agent loop | The agent gets one shot per attempt and can't explore, check its work or change course. | A loop where the model picks a tool, sees the result and decides the next step, until it finishes or hits a step/token/time budget; the existing checks still run after it. | L | Done |
+| 4. Any language, framework and platform | The pipeline assumes Node: a Node-only sandbox image, `npm ci`, checks run as `npm run <script>`, `package.json`-based context and prompts that say "Node/TypeScript". A PHP, Java, Python or Go repository cannot be fixed at all. | Detect each repository's toolchain (with per-repository overrides) and take the sandbox image, install step and checks from it; give the agent a general command tool inside the sandbox like a real coding agent; enforce test and protected-file rules on the final diff; language-neutral prompts; benchmark scenarios in other languages. | L | In progress |
+| 5. Any source host and issue tracker | Only GitHub repositories and Trello cards work; the agent reads only a card's title and description, and always targets the default branch. | Pluggable source-control adapters (GitLab, Bitbucket, Azure DevOps) like the tracker adapters, more tracker adapters (Jira, Linear, GitHub Issues), ticket attachments and comments passed to the agent, and a chosen target branch. | L | Not started |
+| 6. Any kind of task | The agent only fixes bugs, with one task in one repository per ticket. | Task types (bug, feature, refactor, dependency upgrade, migration) with matching prompts and checks, plans with several tasks, and changes across several repositories; benchmark scenarios for each type. | L | Not started |
+| 7. Feedback loop after the PR | The agent stops at the draft PR: it never sees review comments or the repository's own CI. | Read PR review comments and CI results, and run a follow-up attempt on the same branch, within the same budgets and approvals. | M | Not started |
+| 8. Parallel executions (several tickets at once) | Tickets run one after another, so one slow ticket holds up the rest. | Allow several runs at once with limits on runs, CPU/memory and LLM rate, keep each run isolated, and let workers scale as separate processes. | M–L | Not started |
+| 9. Agent roles and a real planner | Every step uses the project's first agent, and plan approval reviews a fixed template. | Give agents roles (planner, implementer, reviewer) picked per step, and add a planner that reads the repo and proposes a real plan to approve. | M | In progress: the real plan and the conversation on the ticket pulled forward (2026-11-01) |
+| 10. Agent skills | Stored skills never reach the agent, so reusable know-how goes unused. | The agent sees a short list of its role's skills and loads the full instructions only when needed; skills guide but never grant permissions. | M | Not started |
+| 11. Real MCP | Tools are hard-coded and there's no standard way to plug in new ones. | Serve the sandbox tools over the Model Context Protocol and have the agent discover tools, so allowlisted external tool servers can be added safely. | M | Not started |
+| 12. Retrieval | Tickets that don't name the right file can miss the relevant code. | Index the repo by meaning (embeddings in Postgres with pgvector) and add a semantic search tool. | M | Not started |
+| 13. Collaborating agents and memory | The same agent reviews its own work, and nothing learned in one run helps the next. | An independent reviewer using structured, capped hand-offs controlled by the graph, plus per-repo lessons kept only once a real result confirms them. | M | Not started |
+| 14. Other platforms and running the app | Everything runs in Linux containers, so iOS/macOS, Windows-only, Android, GPU and browser-based work can't be built or tested, and the agent can't run the app to reproduce UI or runtime bugs. | Platform runners selected by the toolchain (macOS and Windows build machines, Android emulators, headless browsers), and tools to start the app and observe it (HTTP requests, browser screenshots, logs). | L | Not started |
 
-Phase 4 does not depend on Phases 1–3; it can be pulled forward any time after Phase 0.
+Phase 8 does not depend on Phases 1–7; it can be pulled forward any time after Phase 0.
+
+## Known limitations (audit 2026-10-26)
+
+Every place where the agent is tied to one language, platform, service or kind of problem, and the phase that removes it. **No phase is done while it leaves one of its rows open.** New limitations of this kind go in this table first.
+
+| # | Limitation | Where in the code | Effect | Phase |
+| --- | --- | --- | --- | --- |
+| 1 | Node/TypeScript only | `node:20-bookworm` image, `npm ci`, `npm run` (`workspaceService.ts`, `run_check`, `verifyWorkspace`), `package.json` context, prompts | Other languages can't be fixed at all | 4 |
+| 2 | Tests that need services can't run | Sandbox runs with `--network none` and nothing beside it | Web backends whose tests need Postgres, MySQL, Redis, queues (Laravel, Django, Rails, Spring, ...) can't be verified | 4 |
+| 3 | Linux containers only | All work runs in a Linux Docker container | iOS/macOS (Xcode), Windows-only .NET Framework, Android, GPU and browser tests can't be built or run | 14 |
+| 4 | GitHub only | GitHub App for clone, push and PRs (`integrations/githubApp.ts`) | GitLab, Bitbucket, Azure DevOps repositories can't be used | 5 |
+| 5 | Trello only | One `IssueTrackerAdapter` (Trello) | Jira, Linear, GitHub Issues tickets can't come in | 5 |
+| 6 | Private dependencies fail | Install has no registry credentials; submodules and Git LFS not fetched | Private npm/Maven/Composer/PyPI packages, submodules and LFS files are missing | 4 |
+| 7 | Missing check scripts block every run | Default checks `lint`, `build`, `test` (`executionGraph.ts`, `toolRunner.ts`) | A repository without one of them fails verification on every attempt, even with a correct fix | 4 |
+| 8 | Bug fixes only | Prompts say "fix this bug"; the plan is a fixed template | Features, refactors, upgrades and migrations aren't supported or measured | 6 |
+| 9 | One task in one repository | `plans[0].tasks[0]`; one repository per execution | Multi-step tickets and changes across repositories (e.g. frontend + backend) can't be done | 6 |
+| 10 | Fixed size limits | 20 changed files, 500 KB per file, 2 CPU / 2 GB per sandbox, 5-minute checks, 250-file context tree, all hard-coded | Large builds (Java, C++, monorepos) run out of memory or time; large changes are rejected | 4 |
+| 11 | Only the ticket title and description are read | Trello fetch reads `name,desc` | Screenshots, attached logs, stack traces and comments never reach the agent | 5 |
+| 12 | Monorepos and subprojects | Checks always run at the repository root | A fix in a subproject can't be verified with that subproject's own toolchain | 4 |
+| 13 | Always targets the default branch | `repository.defaultBranch` for base and PR | Release or hotfix branches can't be fixed | 5 |
+| 14 | Stops at the draft PR | No PR comment or CI integration | Review feedback and CI failures are never acted on | 7 |
+| 15 | Can't run the app | Only file tools and check scripts | UI and runtime bugs can't be reproduced or confirmed | 14 |
+| 16 | Single-shot is still the default | `EXECUTION_AGENT_MODE=single_shot` | Whole-file rewrites unless `tool_loop` is switched on, although it measured better | 4 |
+| 17 | Tests that need secrets or environment config | No way to give a run environment variables or `.env` values | Suites that need API keys, config files or feature flags won't start | 4 |
+| 18 | Flaky or slow test suites | Checks run once, as a whole, with a 5-minute timeout | A random failure looks like a bad fix and burns attempts; long suites always time out; failures that existed before the change are blamed on it | 4 |
+| 19 | Few or no tests | Verification only runs what exists | A passing check proves nothing, and nobody is told; the agent doesn't write the missing tests first | 4, 6 |
+| 20 | Infrastructure and config repositories (Terraform, Kubernetes, Helm, Ansible) | No checks beyond test scripts | Changes can't be validated; a real check (`terraform plan`) needs cloud or cluster access | 4 (static checks), 14 (real environments) |
+| 21 | Very large repositories | Full clone per execution (`cloneGithubWorkspace`), `search_code` reads every file on each call, 250-file overview, 500-entry `list_files`, whole suite per check | Slow and expensive runs, a tiny view of the code, missed related code in other modules | 4, 12 |
+| 22 | Quality depends on the model | Measured only on `gemini-flash-lite-latest` with Node scenarios | Results in other languages and on hard tickets are unknown; a weak model fails where a strong one would succeed | 4 (and every phase) |
+| 23 | Prompt injection | Ticket text, attachments, comments and repository files reach the prompt | Text written to steer the agent (e.g. "also send the .env file to ...") could change what it does | 5, 7 (and every phase) |
+| 24 | ~~Newest OpenAI models can't run the tool loop~~ Fixed 2026-11-07: OpenAI tool calls go through `/v1/responses` | `OpenAICompatibleProvider.generateWithTools` used `/v1/chat/completions` only | `gpt-6-luna`, `gpt-5.6-luna` reject function tools there with reasoning on (400, "use /v1/responses or set reasoning_effort to 'none'"); found 2026-10-29, benchmark switched to `gpt-5-mini` | 4 |
+| 25 | A check that already fails on the unmodified code can't catch new breakage in it | `verifyWorkspace` judges a whole check by its exit code; baseline failures (`failingBefore`) no longer block (found 2026-10-30 on gson, whose `DefaultDateTypeAdapterTest` fails on Java 11 before any change) | A change that breaks another test inside an already-failing check is not blocked; the reviewer and the approver are told the check was already failing. Comparing test by test (benchmarks' FAIL_TO_PASS / PASS_TO_PASS, e.g. from JUnit XML reports) if a real case needs it | 4 |
+| 26 | A long setup shows no sign of life | Discovery and setup record an event only when a step ends (`GRAPH_TOOLCHAIN_RESOLVED`, then nothing until the agent starts); setup commands run with no output kept while they run (found 2026-11-01 on fd, Rust: 9 minutes of `cargo` dependency builds with no event and no model call) | A person or a frontend can't tell a slow build from a hung one without reading the database, and a hung setup is only noticed at its timeout (45 minutes for the reference projects) | 4 |
+| 27 | Workspaces must be on a Linux filesystem | `workspaceMounts` bind-mounts a host folder (`WORKSPACE_ROOT`) into every execution container (found 2026-11-02: on Windows that folder is on `F:\` and fd's 18 agent minutes were 14 minutes of `cargo test` compiles) | Run from Windows directly, installs and builds are many times slower; the production stack needs WSL2 there. Fix: workspaces in a Docker named volume, mounted per execution with `volume-subpath` | 14 |
+| 28 | Executions share the host's Docker | The app drives the host's Docker daemon (production: through the mounted socket, as root) | Fine on a machine its user owns; on a shared server whoever controls the app controls the machine. Needs rootless Docker or a separate machine for executions | 14 |
+| 29 | Environment images are never swept | A run's snapshot (`agent-env-<execution>`) is removed with its workspace, and each repository's cache (`agent-cache-<repository>`) is kept for reuse; nothing removes what a cleanup missed (found 2026-11-05: 5 snapshots left by runs stopped outside the app or when Docker itself crashed). Everything builds on the 15 GB universal image | Disk fills over time on a laptop or server; found by hand only. Needs a sweep of snapshots whose execution has ended and of caches past `EXECUTION_SNAPSHOT_MAX_AGE_HOURS`, and a disk cap | 4 |
+| 30 | The agent changes behaviour the ticket did not ask about | Nothing in the prompts or the review asks to keep existing messages, outputs and edge cases (found 2026-11-02 on fd: a reworded error message and a new error for partly valid input) | A fix that works for the reported case breaks callers, scripts or tests that rely on the old behaviour; the project's own checks may not notice | 4 |
+| 31 | The agent cannot update existing tests that the requested change makes outdated | Existing test files are protected paths (tool policy, `enforce_policy`) | A change that rightly alters tested behaviour cannot be finished: the old tests fail and the agent may not edit them (found 2026-11-05 on darkreader: the fix modifies 4 existing tests, so it was dropped from the diagnosis) | 6 |
+| 32 | A plan can state the reverse of an ambiguous ticket | Planning (`plan.v5`) turns the ticket's sentences into `expectedBehaviour` without separating what happens now from what should happen; the agent, its tests and the reviewer (`reviewer.v6`) all follow the approved plan | A ticket sentence that can be read as the bug or as the goal can end up as an expected result. The plan states it plainly in its examples, so the person approving the plan can catch it; an approval given without reading them (and the benchmark's automatic one) ships a wrong fix. Found 2026-11-07 on node/07: "1 kg → 1100, the 1-5 kg rate" in run 2 of the `agent.v7` pass (shipped) and run 3 of the `gpt-5.6-luna` baseline (flagged for another reason) | None for now: plan approval is the safeguard, as with other agents. Revisit (plan lists the current behaviour separately, reviewer checks examples against the ticket's rules) if approvers miss it |
+| 33 | The agent can leave a "must stay the same" example untested | Nothing checks that the agent's tests cover each example of the approved plan; in jq's test format an expected error has to be written as `try ... catch .`, and the agent writes it as a `# Runtime error: ...` comment instead, which checks nothing | A fix can break behaviour the ticket says must not change while every test the agent wrote passes, and the reviewer misses it. Found 2026-11-07 on jq-2821: the one wrong fix in 10 for `gpt-5.6-luna` (before and after `agent.v7`) and both for `gpt-6-luna` break `"foobar" | .[1.5:3.5] = "xyz"` (must still fail with `Cannot update string slices`). Codex CLI with `gpt-5.6-luna` breaks the same line in 3 of its 4 wrong fixes. Tried and reverted: `agent.v7` plus a `finish` check for each plan example's quoted values in the new tests (plans often quote nothing, so it missed the case) | 4 |
+
+## Reference projects
+
+The benchmark (8 bugs in one small Node repository) proves the agent can fix code, not that it copes with real projects. A code review found 23 limitations; others only show up when the agent runs on a real project (an unusual build, a test runner that needs a display, a package manager that behaves differently in a container). So every phase from Phase 4 is confirmed on a fixed set of small, real-world reference projects, each with a known bug and hidden tests, graded like the benchmark:
+
+| Stack | What it exercises |
+| --- | --- |
+| Laravel (PHP) + MySQL | Composer, a database in tests, framework conventions |
+| Spring Boot (Java, Maven) | JVM build, slow startup, memory |
+| Django (Python) + Postgres | pip/poetry, migrations, a database in tests |
+| Rails (Ruby) | Bundler, framework conventions |
+| Go service | Go modules, `go test` |
+| React frontend (TypeScript) | Frontend build, component tests |
+| .NET (C#) | `dotnet` SDK, solution files |
+| Monorepo (several packages) | Subprojects with their own toolchains |
+| Terraform repository | Static checks without cloud access |
+
+A project that can't be supported yet stays in the matrix as a known failure, linked to its limitation row, so progress is visible. The matrix grows with each phase (another tracker or source host in Phase 5, feature and refactor tickets in Phase 6, a UI bug in Phase 14).
+
+Run so far (instances from Multi-SWE-bench, `tests/e2e/reference-projects/projects.json`, graded by their own FAIL_TO_PASS and PASS_TO_PASS tests):
+
+| Project | Stack | Environment | Latest result | Open limitation |
+| --- | --- | --- | --- | --- |
+| `java/gson-1555` | Java, Maven (JDK 11) | written once by a person | correct (2026-10-31) | discovery can't pick an older JDK on its own |
+| `go/go-zero-1969` | Go modules | discovery | correct, draft PR #7 (2026-11-01) | |
+| `js/dayjs-589` | JavaScript, npm, Jest | discovery | correct twice (2026-11-02) | |
+| `rust/fd-590` | Rust, Cargo | discovery | wrong fix (2026-11-02) | 30, diagnosis pending |
+| `c/jq-2821` | C, autotools | discovery | wrong fix (2026-11-02) | ambiguous issue, diagnosis pending |
+| `ts/darkreader-6747` | TypeScript, npm | discovery | wrong fix (2026-11-02) | issue refers to another; out of the diagnosis: the fix must change existing tests (limitation 31) |
+| `cpp/catch2-2723` | C++, CMake | discovery | grader checked (2026-11-05), agent not run yet; replaces `catch2-2187`, which could not be graded | |
 
 ## Why: what the project does not teach yet
 
@@ -30,21 +111,24 @@ Found while reviewing the code after the first passing end-to-end run (draft PR 
 | Gap | Where it shows up | Addressed by |
 | --- | --- | --- |
 | No way to measure coding quality; one easy pass proves plumbing, not ability | Only e2e ticket is "append a line to README" against a repo whose `test` script just echoes | Phase 0 |
-| Execution prompts are hard-coded, unversioned and not recorded per run, so a prompt change can't be linked to a result | 5 inline prompt strings in `executionGraph.ts` (task, plan, implement, analyze, review); no system prompt; the agent's `baseInstructions` is ignored by this pipeline (only `promptBuilder.ts` uses it) | Phases 0, 5 |
-| Skills are stored and assignable but have no effect | `Skill` model and `POST /api/skills/assign` exist; no prompt in either pipeline reads them | Phase 6 |
+| Execution prompts are hard-coded, unversioned and not recorded per run, so a prompt change can't be linked to a result | 5 inline prompt strings in `executionGraph.ts` (task, plan, implement, analyze, review); no system prompt; the agent's `baseInstructions` is ignored by this pipeline (only `promptBuilder.ts` uses it) | Phases 0, 9 |
+| Skills are stored and assignable but have no effect | `Skill` model and `POST /api/skills/assign` exist; no prompt in either pipeline reads them | Phase 10 |
+| Every new LLM needs its own code; only one OpenAI-compatible endpoint can be configured at a time | Provider list hard-coded in `LLMService.ts`, 4 Zod enums, `llmRoutes.ts`; single global `OPENAI_BASE_URL`; `listModels` keeps only `gpt-*`/`o1-*` | Phase 1 |
 | No tool calling: the model never decides what to read, search or run | `implement_change` sends one prompt and gets whole files back | Phases 1–3 |
-| Repo context is chosen by **file name** only | `repoContext.ts` scores paths by ticket words, max 12 files | Phases 2, 6 |
+| Repo context is chosen by **file name** only | `repoContext.ts` scores paths by ticket words, max 12 files | Phases 2, 12 |
 | Files are cut at **20 KB** but the agent returns **whole files** | `MAX_FILE_BYTES` in `repoContext.ts` + whole-file `FILE` blocks; large files can be silently truncated | Phase 2 |
 | The agent can **edit or delete existing tests** to pass verification | Default `protectedPaths` covers only `package.json`, `package-lock.json`, `.github` | Phases 0 (hidden tests), 2 (tool policy) |
-| `Execution.budget.maxTokens` is stored but never enforced | `createExecution` in `executionService.ts` | Phase 3 |
-| Tickets run one after another in a single process | Each consumer takes one message at a time (`channel.prefetch(1)`, `rabbitMQService.ts`); no concurrency setting | Phase 4 |
-| Parallel runs would share LLM rate limits with nothing coordinating them | Retries exist per call (`retry.ts`), but no shared limiter | Phase 4 |
-| API and workers always run in the same process | `src/index.ts` starts both | Phase 4 |
-| A run always uses the project's **first** agent, in no guaranteed order | `execution.project.agents[0]` in `executionGraph.ts`; `Agent` has no role field (the `AgentRole` enum is only used by `WorkItem`) | Phase 5 |
-| Plan approval approves almost nothing | `executionWorker.plan` submits a fixed template ("Investigate and fix: <title>") | Phase 5 |
-| Not real MCP; MCP resources never reach prompts | `mcpService` + one allowlisted HTTP connector | Phase 7 |
-| Vague tickets can miss the relevant code | File-name matching only | Phase 8 |
-| Review is one LLM call by the same agent; no memory between runs | `review_diff` in `executionGraph.ts` uses the run's agent; nothing is carried between executions | Phase 9 |
+| ~~`Execution.budget.maxTokens` is stored but never enforced~~ Enforced for every model call of an execution, plus a daily limit across all of them (see "Cost guardrails") | `createExecution` in `executionService.ts` | Phase 3 |
+| Nothing stops many executions from adding up to a large bill: budgets are per execution only | No usage records, no total across executions | Phase 3 (daily limit), Phase 8 (pause and resume, alerts) |
+| Only Node/TypeScript repositories can be fixed | Sandbox image `node:20-bookworm` and `npm ci --ignore-scripts` (`workspaceService.ts`); `npm run <script>` in `verifyWorkspace` and the `run_check` tool; `verificationConfig` holds npm script names; `repoContext.ts` reads `package.json`; default protected paths are npm files; prompts say "Node/TypeScript" | Phase 4 |
+| Tickets run one after another in a single process | Each consumer takes one message at a time (`channel.prefetch(1)`, `rabbitMQService.ts`); no concurrency setting | Phase 8 |
+| Parallel runs would share LLM rate limits with nothing coordinating them | Retries exist per call (`retry.ts`), but no shared limiter | Phase 8 |
+| API and workers always run in the same process | `src/index.ts` starts both | Phase 8 |
+| A run always uses the project's **first** agent, in no guaranteed order | `execution.project.agents[0]` in `executionGraph.ts`; `Agent` has no role field (the `AgentRole` enum is only used by `WorkItem`) | Phase 9 |
+| Plan approval approves almost nothing | `executionWorker.plan` submits a fixed template ("Investigate and fix: <title>") | Phase 9 |
+| Not real MCP; MCP resources never reach prompts | `mcpService` + one allowlisted HTTP connector | Phase 11 |
+| Vague tickets can miss the relevant code | File-name matching only | Phase 12 |
+| Review is one LLM call by the same agent; no memory between runs | `review_diff` in `executionGraph.ts` uses the run's agent; nothing is carried between executions | Phase 13 |
 
 ---
 
@@ -56,10 +140,11 @@ Found while reviewing the code after the first passing end-to-end run (draft PR 
 
 ### Design
 
-- **Benchmark repo:** turn `zack10/agent-orchestration-test` into a small real JS project. Modules: pricing, pagination, text utils, a small CSV parser, an async service. Tests use `node:test` with no dependencies, so `npm ci` is instant and verification works with `--network none`.
-- **One branch per scenario** (`scenario/01-…`), each starting from a known bug. Before each run, the harness points `main` at that branch. This rewrites `main`, which is only acceptable because the repo is a throwaway sandbox.
-- **Hidden acceptance tests** live in this repo (`tests/e2e/coding-scenarios/<id>/`), never in the sandbox repo, so the agent cannot see or game them.
-- **Harness flow per run:** set up the scenario → create the Trello card → approve the plan → wait for the diff → approve publish → clone the PR branch in Docker → run the hidden test and the repo's own tests → inspect the diff → close the PR and delete the branch → record the result.
+- **Benchmark repo:** a small real JS project (`tests/e2e/coding-scenarios/repo/`): pagination, pricing, text utils, a CSV contact import, invoices and a money helper, an async user service, and a 30 KB shipping-rates module. Tests use `node:test` with no dependencies, so `npm ci` is instant and verification works with `--network none`.
+- **Scenarios are sources in this repo, not branches.** Each `tests/e2e/coding-scenarios/NN-*/` has `scenario.json` (ticket, expected files), `bug/` (files that plant the bug over the clean project) and `hidden.test.js`. Before each run, the runner commits the scenario's code to the sandbox repo's `main` through the GitHub API, and afterwards it restores the clean project. This rewrites `main`, which is only acceptable because the repo is a throwaway sandbox.
+- **Hidden acceptance tests** never leave this repo, so the agent cannot see or game them.
+- **Every scenario is checked for fairness** in `npm test` (`tests/codingScenarios.test.js`): the clean project passes everything, and each bug passes the repo's own tests but fails its hidden test by an assertion.
+- **Harness flow per run:** commit the scenario to `main` → create the Trello card → approve the plan → wait for a diff or `BLOCKED` → **reject publishing** (reaching publish approval already means a PR would be opened, so no real PRs pile up) → grade the diff in a network-less Docker container: apply it, run the repo's own tests, then the hidden test → record the result.
 
 ### Scenarios
 
@@ -80,14 +165,17 @@ Each run is recorded with outcome, attempts used, duration, LLM calls and tokens
 
 - **Correct fix**: a PR was opened and the hidden test passes.
 - **Wrong fix shipped**: a PR was opened but the hidden test fails. **This is the key number.** It is what a human reviewer would have to catch.
-- **Correctly blocked**: no PR on an impossible ticket, or a justified give-up.
+- **Correctly blocked**: no PR on an impossible ticket.
+- **No fix (blocked)**: the run gave up on a fixable ticket. Not harmful, but not a success.
 - **Infrastructure failure**: Docker, rate limit or crash; counted separately so it doesn't skew the coding numbers.
+
+Tokens are not recorded yet; the pipeline starts tracking usage in Phase 3.
 
 ### Open decisions (needed before starting)
 
-- [ ] OK to rewrite `main` on `zack10/agent-orchestration-test` before each scenario? (Alternative: one sandbox repo per scenario; slower to set up.)
-- [ ] Model and budget: 24 runs (8 scenarios × 3) at roughly 5–10 LLM calls each is 120–240 calls, far above the Gemini free tier (20 requests/day per model). Choose: a paid key, spreading runs over several days, or starting with 8 runs (1 per scenario).
-- [ ] Provide `E2E_GITHUB_TOKEN`: a fine-grained PAT for the sandbox repo with *Contents* and *Pull requests* read/write (used to reset `main`, read PR branches, and close PRs).
+- [x] OK to rewrite `main` on `zack10/agent-orchestration-test` before each scenario? (Alternative: one sandbox repo per scenario; slower to set up.) **Yes.**
+- [x] Model and budget: 24 runs (8 scenarios × 3) at roughly 3–8 LLM calls each is about 70–190 calls, far above the Gemini free tier (20 requests/day per model). Choose: a paid key, spreading runs over several days (`--scenario`), or starting with 8 runs (1 per scenario). **Decided 2026-10-24: free tier (`gemini-flash-lite-latest`), 1 run per scenario, about 2 scenarios a day. The 8 × 3 run waits for a paid key, and switching model then starts a new baseline row.**
+- [x] Provide `E2E_GITHUB_TOKEN`: a fine-grained PAT for the sandbox repo only, with *Contents* read/write (used to commit each scenario to `main`). *Pull requests* read/write is optional; it lets the execution e2e suite close its PRs. Check it with `npm run eval:coding -- --check`. **Done; `--check` passes.**
 
 ### Prompt management
 
@@ -100,35 +188,79 @@ The benchmark only means something if every result is tied to the exact prompts 
 
 ### Tasks
 
-- [ ] Move the 5 execution-graph prompts to versioned prompt files, unchanged in wording, with a small loader and fill-in variables
-- [ ] Split each into a system and a user part; providers already accept `system` (`LLMService.generateContent`)
-- [ ] Record prompt versions per attempt (execution event payload) and in each benchmark report
-- [ ] Unit test: the loader fills every variable and fails loudly on a missing one
-- [ ] Build the benchmark repo content and the 8 scenario branches
-- [ ] `tests/e2e/coding-scenarios/<id>/` with ticket text, expected files and hidden test for each scenario
-- [ ] Runner `npm run eval:coding` (reuses `tests/e2e/helpers.js`) that writes `docs/testing/coding-eval-<date>.md`
-- [ ] Run the baseline (single-shot agent) and record it in the results log
+- [x] Move the 5 execution-graph prompts to versioned prompt files, unchanged in wording, with a small loader and fill-in variables (`src/prompts/`; the task prompt is folded into `implement.v1`, and the FILE format is a shared fragment `file-format.v1`)
+- [x] Split each into a system and a user part; providers already accept `system` (`LLMService.generateContent`)
+- [x] Record prompt versions per attempt (execution event payload) and in each benchmark report (`promptVersions` on `GRAPH_CONTEXT_LOADED` and `GRAPH_ATTEMPT_STARTED`, `promptVersion` on each LLM step's event; the report header lists them)
+- [x] Unit test: the loader fills every variable and fails loudly on a missing one (`tests/prompts.test.js`, which also proves v1 keeps the old wording)
+- [x] Build the benchmark repo content and the 8 scenarios (as sources here instead of branches; see Design)
+- [x] `tests/e2e/coding-scenarios/<id>/` with ticket text, expected files and hidden test for each scenario, plus the fairness check in `npm test`
+- [x] Runner `npm run eval:coding` (reuses `tests/e2e/helpers.js` and the new `tests/e2e/pipeline.js`) that writes `docs/testing/coding-eval-<date>.md`; `--check` verifies the setup without LLM calls. The grader was checked against known-good and known-bad diffs; a full run is still pending
+- [x] Run the baseline (single-shot agent, 1 run per scenario on the free tier) and record it in the results log (2026-10-24/25; see the results log and the findings below)
+- [ ] After the baseline, first prompt experiment: `implement.v2` asking explicitly for `actions` as one string. On `gemini-flash-lite-latest`, attempt 1 of every baseline run so far was rejected because `actions` came back as an array, costing one attempt and one LLM call per scenario
 
 **Done when:** prompts live in versioned files, and a baseline report exists, tied to those prompt versions, with per-scenario outcomes and an overall pass rate and wrong-fix-shipped rate.
 
+### Baseline findings (2026-10-25)
+
+1 run per scenario on `gemini-flash-lite-latest`, so each number is one sample; re-run 8 × 3 when a paid key is available.
+
+| # | Outcome | What happened |
+| --- | --- | --- |
+| 1–5 | Correct fix | Small, focused fixes, each with added regression tests; no existing test changed |
+| 6 | **Wrong fix shipped** | Found the right file from a vague ticket and fixed the import, but the rewrite broke the exported `parseLine` (`"a,b,c"` → `["a"]`). First graded correct: nothing tested `parseLine`. The hidden test now checks it and the stored diff was re-graded |
+| 7 | No fix (blocked) | 2 of 3 attempts lost to the `actions` format; the one real attempt failed the repo's tests (large-file weak spot) |
+| 8 | Correctly blocked | The planner refused the right way, but the implement step cannot decline: it must return FILE blocks, so it was blocked only by exhausting all 3 attempts |
+
+What this says about the next phases:
+
+- **Attempt 1 failed on output format in all 8 runs** (`actions` sent as an array). That is ~1 LLM call and 1 of 3 attempts wasted per ticket, and it cost scenario 7 its fix. First experiment: `implement.v2` (task below). The Phase 3 tool loop removes the free-text file format entirely.
+- **There is no way to decline a ticket.** An impossible or unsafe ticket ends `BLOCKED` only after burning every attempt, with "no FILE blocks" as the recorded reason. Phase 3's `finish(summary)` needs an explicit "cannot do / needs clarification" outcome, and Phase 9's planner should be able to stop at plan time.
+- **Hidden tests must also protect the exported API of the files a fix is likely to touch**, not only the bug. Scenario 6 showed a rewrite can pass every bug test while breaking a neighbouring function. Apply this rule when adding scenarios.
+
 ---
 
-## Phase 1: Tool calling in the LLM layer
+## Phase 1: Provider registry + tool calling in the LLM layer
 
-*Teaches: function calling, tool schemas, provider differences.*
+*Teaches: function calling, tool schemas, provider differences, configuration-driven integrations.*
 
-Today providers only offer `generateContent(prompt) → text` (`src/services/llm/`).
+Today providers only offer `generateContent(prompt) → text` (`src/services/llm/`), and adding one means code in several places: a provider class, registration and the `ProviderKey` type in `LLMService.ts`, four `z.enum(["gemini", "openai", "anthropic"])` in `schemas/index.ts`, and the list in `routes/llmRoutes.ts`. `OpenAIProvider` can already reach an OpenAI-compatible API, but only one at a time (a single global `OPENAI_BASE_URL`), and its `listModels` hides any model not named `gpt-*`/`o1-*`.
+
+**Goal:** adding an LLM is configuration, not code. Most vendors (Mistral, Groq, DeepSeek, xAI, Together, Fireworks, OpenRouter, and local Ollama/vLLM/LM Studio) speak the OpenAI `/chat/completions` format, so one generic provider covers them. Native classes are written only for APIs that really differ (Gemini and Anthropic today; Bedrock, Vertex or Cohere only if needed). The registry is done **before** tool calling, so every compatible vendor gets tool calling from the single OpenAI mapping.
+
+### Design
+
+- **Provider profiles:** each OpenAI-compatible vendor is a configuration entry, e.g. `{ "key": "groq", "baseUrl": "https://api.groq.com/openai/v1", "apiKeyEnv": "GROQ_API_KEY", "supportsTools": true }`. Built-in profiles cover OpenAI; others come from config (`LLM_PROVIDERS`, parsed and validated in `src/config.ts`).
+- **One registry is the source of truth:** provider keys for Zod validation, `/api/llm`, `LLMService` routing and the default provider all come from it. No hard-coded provider lists elsewhere.
+- **Base URLs come only from server configuration**, never from API callers or an agent's `config`: otherwise anyone who can create an agent could make the server send its key to any host (same SSRF concern as the MCP connector). Agents choose a provider key and a model, nothing else.
+- **Capabilities per profile** (`supportsTools`, `supportsSystemPrompt`): compatible servers differ, and callers that need tools (Phase 3) get a clear error instead of a silent text-only reply.
+- **Same guarantees for every provider:** rate-limit retries (`retry.ts`), truncation/refusal/empty detection (`LLMOutputError`), `describeError` logging.
 
 ### Tasks
 
-- [ ] Add a provider-neutral message and tool format, plus `generateWithTools(messages, tools) → { text, toolCalls, stopReason, usage }` to `LLMProvider`
-- [ ] Gemini mapping: `functionDeclarations` / `functionCall` / `functionResponse`
-- [ ] OpenAI mapping: `tools` / `tool_calls` / `role: "tool"`
-- [ ] Anthropic mapping: `tools` / `tool_use` / `tool_result`
-- [ ] Keep the existing guarantees: rate-limit retries (`retry.ts`), truncation/refusal/empty detection (`LLMOutputError`), `describeError` logging
-- [ ] Unit tests with recorded provider responses showing the same tool call round-trips on all three
+**Provider registry**
 
-**Done when:** one tool definition works identically across all three providers in tests.
+- [x] Turn `OpenAIProvider` into a generic `OpenAICompatibleProvider(profile)` with its own base URL, key and capabilities; `listModels` returns every model the endpoint lists (no `gpt-*` filter) with known metadata where available
+- [x] `LLM_PROVIDERS` config: parse and validate profiles at boot (unique keys, `https` base URLs except an explicit local allowance such as `localhost` in non-production, key env var present), and keep `OPENAI_BASE_URL` working for existing setups
+- [x] Provider registry built at startup from the native providers plus the profiles; `LLMService` routes through it
+- [x] Replace the hard-coded provider lists: the four Zod enums, `/api/llm`, `ProviderKey`, and the `"gemini"` fallbacks in `executionGraph.ts` / `agentRunner.ts` (a configured default instead)
+- [x] Unit tests: two profiles side by side route to their own base URLs and keys; an unknown provider is rejected by validation; an invalid profile refuses to boot; agent input cannot set a base URL
+- [x] README: how to add an LLM by configuration, and when a native provider is still needed
+
+Registry done 2026-10-25 (`src/services/llm/registry.ts`, `providers/OpenAICompatibleProvider.ts`, `tests/llmRegistry.test.js`). Checked live 2026-10-26 with a config-only `LLM_PROVIDERS` profile for LM Studio (`google/gemma-4-e4b`, local).
+
+**Tool calling**
+
+- [x] Add a provider-neutral message and tool format, plus `generateWithTools(messages, tools) → { text, toolCalls, stopReason, usage }` to `LLMProvider`
+- [x] Gemini mapping: `functionDeclarations` / `functionCall` / `functionResponse`
+- [x] OpenAI-compatible mapping: `tools` / `tool_calls` / `role: "tool"` (shared by every profile with `supportsTools`)
+- [x] Anthropic mapping: `tools` / `tool_use` / `tool_result`
+- [x] A profile without `supportsTools` fails `generateWithTools` with a clear, non-retryable error
+- [x] Keep the existing guarantees: rate-limit retries (`retry.ts`), truncation/refusal/empty detection (`LLMOutputError`), `describeError` logging
+- [x] Unit tests with recorded provider responses showing the same tool call round-trips on Gemini, Anthropic and the OpenAI-compatible provider
+
+Tool calling done 2026-10-25 (`generateWithTools` in `LLMService` and each provider, `toolMessages.ts`, `tests/llmTools.test.js`). Assistant turns keep the provider's raw reply and replay it, because Anthropic thinking blocks and Gemini thought signatures must come back unchanged. A live two-turn tool call worked on `gemini-flash-lite-latest` and, through the OpenAI-compatible mapping, on a local LM Studio `google/gemma-4-e4b` (2026-10-26). Anthropic is covered by unit tests only until a key is available.
+
+**Done when:** a new OpenAI-compatible LLM can be added and used by an agent with configuration only (no code change), and one tool definition works identically across Gemini, Anthropic and the OpenAI-compatible provider in tests.
 
 ---
 
@@ -138,18 +270,29 @@ Today providers only offer `generateContent(prompt) → text` (`src/services/llm
 
 ### Tasks
 
-- [ ] Long-lived container per run (`docker run -d` + `docker exec`) instead of a new container per command, with the same CPU/memory/PID limits and no network
-- [ ] `list_files`
-- [ ] `read_file(path, startLine, endLine)`: range reads remove the 20 KB cut-off
-- [ ] `search_code(pattern)`: `git grep` inside the sandbox; content search instead of file-name matching
-- [ ] `edit_file(path, oldText, newText)`: targeted replacement instead of whole-file rewrites; fails if `oldText` is missing or not unique
-- [ ] `run_check(script)`: only scripts listed in `Repository.verificationConfig`
-- [ ] `finish(summary)`
-- [ ] Policy inside the tools: existing path checks (no `.git`, no symlinks, no escaping the root), protected paths **including existing test files**, output caps, per-tool timeouts. Denials are returned to the model as results, not thrown
-- [ ] Record every call in the existing, currently unused `ToolCall` table (`REQUESTED/RUNNING/COMPLETED/DENIED/FAILED`)
-- [ ] Unit tests for each tool's policy (path escape, protected test file, oversized output, unknown script)
+- [x] Long-lived container per run (`docker run -d` + `docker exec`) instead of a new container per command, with the same CPU/memory/PID limits and no network
+- [x] `list_files`
+- [x] `read_file(path, startLine, endLine)`: range reads remove the 20 KB cut-off
+- [x] `search_code(pattern)`: `git grep` inside the sandbox; content search instead of file-name matching
+- [x] `edit_file(path, oldText, newText)`: targeted replacement instead of whole-file rewrites; fails if `oldText` is missing or not unique
+- [x] `run_check(script)`: only scripts listed in `Repository.verificationConfig`
+- [x] `finish(summary)`
+- [x] Policy inside the tools: existing path checks (no `.git`, no symlinks, no escaping the root), protected paths **including existing test files**, output caps, per-tool timeouts. Denials are returned to the model as results, not thrown
+- [x] Record every call in the existing, currently unused `ToolCall` table (`REQUESTED/RUNNING/COMPLETED/DENIED/FAILED`)
+- [x] Unit tests for each tool's policy (path escape, protected test file, oversized output, unknown script)
 
 **Done when:** every tool works and is policy-tested against a local workspace, with calls visible in `ToolCall`.
+
+Done 2026-10-26 (`src/services/sandbox/`, `startSandbox`/`execInSandbox`/`stopSandbox` in `workspaceService.ts`, `tests/sandboxTools.test.js`). Decisions made while building it:
+
+- **File tools run on the host, over the bind-mounted workspace; only `run_check` runs in the container.** Reads are as dangerous as writes there, so every file tool applies the same rules (inside the root, no `.git`, no symlinks anywhere on the path: a committed link could point at a host file). The symlink test runs for real on Windows (junction).
+- **`search_code` is a plain-text, case-insensitive search instead of `git grep` with a pattern:** a model-supplied regex run on the host could hang it, and it needs no container.
+- **Existing test files cannot be edited; new test files can,** and the agent may keep editing a test it created. In the baseline the agent added regression tests to existing test files, which this now forbids; it has to put them in a new file.
+- **`finish(status, summary)` takes `done` or `blocked`,** so an impossible or unsafe ticket ends with a stated reason instead of exhausting attempts (baseline scenario 8).
+- `run_check`'s time limit is enforced inside the container (`timeout -s KILL`), so a runaway test is killed there, not just detached. Live check: pass/fail exit codes, no network, a 30 s sleep killed at 3 s, container removed on stop.
+- `ToolCall.policy` stores the policy in force (protected paths, allowed scripts) and, for a denial, why. Checked live against the local database.
+
+The tools are not used by the run graph yet; Phase 3 wires them into the agent loop.
 
 ---
 
@@ -159,19 +302,237 @@ Today providers only offer `generateContent(prompt) → text` (`src/services/llm
 
 ### Tasks
 
-- [ ] New `agent_loop` graph node that replaces `implement_change`: model → tool calls → results → repeat until `finish` or a budget runs out
-- [ ] Budgets: max steps, max tokens (enforce `Execution.budget.maxTokens`), wall-clock time; hitting one ends the attempt with a clear reason
-- [ ] Context management: trim or summarise old tool output so long runs fit the context window
-- [ ] Keep `verify_change → review_diff → analyze_failure` after the loop as an independent outer guard
-- [ ] Feature flag `EXECUTION_AGENT_MODE=single_shot|tool_loop` so both modes run through the benchmark
-- [ ] Execution events for each step, so a run can be replayed from `GET /api/executions/:id`
-- [ ] Update the README run-graph diagram
+- [x] New `agent_loop` graph node that replaces `implement_change`: model → tool calls → results → repeat until `finish` or a budget runs out
+- [x] Budgets: max steps, max tokens (enforce `Execution.budget.maxTokens`), wall-clock time; hitting one ends the attempt with a clear reason
+- [x] Context management: trim or summarise old tool output so long runs fit the context window
+- [x] Keep `verify_change → review_diff → analyze_failure` after the loop as an independent outer guard
+- [x] Feature flag `EXECUTION_AGENT_MODE=single_shot|tool_loop` so both modes run through the benchmark
+- [x] Execution events for each step, so a run can be replayed from `GET /api/executions/:id`
+- [x] Update the README run-graph diagram
+- [x] Run an execution end to end in `tool_loop` mode (scenario 01, 2026-10-26)
+- [x] Run the e2e execution suite in `tool_loop` mode (2026-10-26: 16 passed, 1 skipped (auth check, server had auth disabled); the execution test finished in 4 loop steps, 6.7k tokens, and opened draft PR zack10/agent-orchestration-test#5)
+- [x] Benchmark `tool_loop` and record it next to the baseline (2026-10-26, 8 runs, see the results log)
 
 **Done when:** `tool_loop` completes the e2e execution suite, and its benchmark results are recorded next to the baseline.
 
+#### Decisions (2026-10-26)
+
+- **The loop is pure.** `runAgentLoop` (`agentGraph/agentLoop.ts`) takes the model, the tool runner and an event callback as arguments and does no I/O, so it is unit-tested with a scripted model (`tests/agentLoop.test.js`). The `agent_loop` graph node wires in the provider, the recorded sandbox tools and `GRAPH_AGENT_STEP` events.
+- **Both modes stay in the graph.** `plan_change` and `analyze_failure` route to `implement_change` or `agent_loop` by mode. Each run records `agentMode` and only the prompts that mode uses, so benchmark rows can't mix them up.
+- **Budgets are checked before each model call**, so a started call always records its tool results. Steps are per attempt (`AGENT_MAX_STEPS`, default 30, or `budget.maxSteps`); tokens and time are per execution (`budget.maxTokens`, `budget.maxDurationSeconds`), counted across attempts.
+- **Stopping:** `finish done` with changes goes on to policy, verification and review. `finish done` with no changes, running out of steps, or replying twice without a tool call fails the attempt and retries. `finish blocked` (the agent declines) and an exhausted token or time budget block the execution without retrying. This answers the Phase 0 finding that the implement step could not decline a ticket.
+- **Context management:** tool results older than the 8 most recent are replaced with their first line and a note; no message is removed, because every provider needs each tool call paired with its result, and assistant turns keep their raw content for replay.
+- **Live check (2026-10-26),** without the DB or GitHub: `gemini-flash-lite-latest`, real tools and sandbox, scenario 01. It listed, read the code and test, ran the tests, edited, was denied editing the existing test, created a new test file, re-ran the tests and finished: 10 steps, about 27k tokens, 91 s. The hidden tests passed (graded in a network-less container).
+- **First pipeline run (2026-10-26),** scenario 01 through the server: correct fix in 7 loop steps, verified, reviewed and turned into a diff artifact; every tool call has a `ToolCall` row (the denied one with its reason) and the sandbox container was removed. It used 85k tokens because each step re-sends about 11k tokens of prompt, mostly the repository context that `inspect_repo` collects for single-shot mode. In tool-loop mode the agent can read files itself, so an `agent.v2` that sends a short file list instead would cut tokens per step sharply; to try with the benchmark.
+- **`agent.v2` (2026-10-26):** `inspect_repo` now also builds an `overview` (file tree, scripts and the names of the files that look relevant, no contents), and `agent.v2` sends that instead of the full context. On scenario 01 it used 23k tokens instead of 85k (8 steps instead of 7, still correct): each step re-sent about 1.3k–4.6k tokens instead of 11k–14k. Single-shot mode and the plan step still get the full context. One run per scenario so far; the benchmark will confirm it.
+- **Declining works (scenario 08):** the agent searched for the legacy service, found nothing and called `finish blocked` in 3 steps, without changing files.
+- **Benchmark (2026-10-26), against the Phase 0 baseline, 1 run per scenario on `gemini-flash-lite-latest`:**
+
+  | | single_shot (baseline) | tool_loop (`agent.v2`) |
+  | --- | --- | --- |
+  | Pass rate | 75% (6/8) | 100% (8/8) |
+  | Wrong fix shipped | 1 (#6) | 0 |
+  | No fix | 1 (#7) | 0 |
+  | Avg attempts | 2.25 | 1.4 |
+  | LLM calls | 33 | 106 |
+
+  Better results for about 3× the calls. Findings:
+  - **Every retry was a rule conflict, not a bad fix.** The plan step proposed editing the existing test file; the tools forbid that, so the agent added a new test file; the reviewer then rejected the diff for not matching the plan (#3 once, #4 twice, about 25 calls). Fix in prompts: a `plan.v2` that plans new test files, and/or a `review.v2` that accepts a new test file in place of a planned edit to an existing one. **Done 2026-10-26, not yet measured:** `plan.v2` tells the planner existing tests must not change and to list a new test file; `review.v2` treats the plan as guidance (no rejection only for touching other files than planned), expects a new test file and still rejects changes to existing tests. **Confirmed 2026-10-26:** rerun of #3 and #4 passed on the first attempt each, with about a third of the calls (19 instead of 47) and of the time (see the results log).
+  - **#7 (large file)** passed this time but used 99k tokens for 11 calls: reading the 1,000-line file costs tokens on every later step until it is compacted. Worth watching, not yet a problem.
+  - **The report's "Only expected files" column** says "no" for every run because the agent always adds a regression test file, which `expectedFiles` doesn't list. **Fixed 2026-10-26:** added test files are left out of that column (they have their own "Tests added" column); reports before then still show "no".
+  - One run per scenario: the 8 × 3 run on a stronger model still waits for a paid key.
+- **The plan call is now the biggest single call** (about 10k tokens each, from the ledger): it still gets the full repository context with file contents. In `tool_loop` mode the agent re-reads what it needs anyway, so the plan step could take the overview instead; to try with a `plan.v3`.
+- **Quota and budget:** that easy fix cost 10 model calls and ~27k tokens against ~4 calls in single-shot mode. A benchmark run of 8 scenarios is roughly 80–200 calls, beyond the Gemini free tier per day; the default `maxTokens` of 200k allows about 3–7 such attempts. Revisit the default after the benchmark.
+
+### Cost guardrails
+
+Budgets were per execution only, and only the agent loop's calls counted, so many executions could add up to an unbounded bill. Everything the agent spends now goes through one ledger.
+
+- [x] Every model call records its tokens in `LlmUsage` (provider, model, purpose such as `plan.v1` or `agent.v2`, execution or task), in `LLMService`, so no pipeline can bypass it. No foreign keys: deleting an execution must not lower today's total
+- [x] Daily limit across all executions and tasks: `LLM_DAILY_TOKEN_LIMIT` (default 2,000,000 per UTC day; `0` switches it off). Checked before each call; once reached, new calls fail with `TokenLimitError` (not retried) and the execution fails with the reason. `GET /api/llm/usage/today` shows usage, limit and reset time
+- [x] The execution budget covers every call of the execution (plan, review, failure analysis and the loop), read from the ledger
+- [x] Configurable budgets for new executions: `EXECUTION_MAX_TOKENS` (default 200,000), `EXECUTION_MAX_DURATION_SECONDS` (default 1800)
+- [ ] Pause instead of fail: when the daily limit is hit, keep the execution queued and resume it after the reset, instead of failing it (Phase 8, with the shared rate limiter)
+- [ ] Warn before the limit: a tracker comment or log alert at 80% of the daily limit
+- [ ] Limits in money: per-model prices in config, so limits and reports can be in dollars as well as tokens
+- [ ] Per-project or per-repository budgets, so one busy project cannot use the whole day's limit (Phase 8 fairness)
+
+Known limits of the design: budgets are checked before each call, so a started call always finishes and a limit can be passed by one call (at most one call's input plus `LLM_MAX_OUTPUT_TOKENS`); provider calls that fail (errors, rate limits) report no usage and are not counted.
+
 ---
 
-## Phase 4: Parallel executions (several tickets at once)
+## Phase 4: Any language, framework and platform
+
+*Teaches: toolchain detection, general command tools for agents, enforcing policy on outcomes instead of on tools, multi-language evaluation.*
+
+**Goal:** the agent fixes bugs in a repository whatever its language, framework or platform (Node, PHP, Java, Python, Go, Rust, .NET, ...), the way a real coding agent does, with the same safety and the same measured quality. Covers limitations 1, 2, 6, 7, 10, 12, 16, 17, 18, 19, 20 (static checks), 21 and 22.
+
+### Design
+
+- **No code per language (decided 2026-10-26).** Like established agents (GitHub Copilot coding agent, OpenAI Codex, Claude Code on the web, Cursor background agents, Devin, OpenHands), the orchestrator has no list of languages. Supporting a new language, framework or platform must never need a code change. Each repository has an **environment**: a sandbox image, a setup command (the only step with network) and named checks (`test`, `lint`, `build`) as commands. It comes from, in order:
+  1. **The repository's approved environment**, stored on the `Repository` (set by a person, or proposed by discovery and approved once).
+  2. **The project's own definition**: `.devcontainer/devcontainer.json` (its image, or its Dockerfile built as-is), used exactly as the project defines it.
+  3. **A stock universal image** with the common languages preinstalled (e.g. `mcr.microsoft.com/devcontainers/universal`, the GitHub Codespaces default), used unchanged.
+  We never write an environment for the user's project (a Dockerfile, a devcontainer) unless the ticket asks for it, and never commit one. Which source was used is recorded and shown in the plan and the PR.
+- **Discovery, approved once (revised 2026-10-27).** No configuration is needed to start, as with Copilot's coding agent. When a repository has no approved environment, the agent reads what the project already says (README, CI workflows, `Makefile`, `AGENTS.md` / `CLAUDE.md`, build files) and proposes an environment: a small image that fits the project (e.g. `maven:3.9-eclipse-temurin-21`, chosen by the model from the project's files, not by code per language), the setup command and the check commands. The proposal is proved by running it: setup and the baseline checks in the proposed image; a failure goes back to the agent to revise. That run uses it, and its PR says the checks were proposed by the agent and not yet approved. A person approves the proposal once; it is stored on the repository and every later run uses it as fixed checks. Discovery reads files and needs no network or universal image; the universal image is only the last resort.
+  - **Revised 2026-10-30: the model no longer chooses the image.** On the first reference project (gson) all three proposals named image tags that do not exist (`maven:3.6.3-jdk-9`, `openjdk:9-jdk-slim`, the first one twice), so setup never ran and the run had no checks. Copilot's coding agent runs on one fixed runner image and Codex on one universal image; the setup steps install what is missing. Discovery now does the same: the image is the devcontainer's or the configuration's, else the default universal image (Java 17/21, Maven, Gradle, Python, Node, Go, .NET, PHP, Ruby), and the model proposes only setup and checks (prompt `discover.v2`). A proposal that already failed is not proved again; the model is told and asked for a different one.
+  - **Revised 2026-10-31: discovery can propose `env`.** On the next gson run discovery installed JDK 11 itself, but the build still used the image's Java 21: `export JAVA_HOME` in setup is gone when a check runs, and nothing else could carry it. As Codex's environment variables and a devcontainer's `containerEnv` do, a proposal can now set the toolchain's `env` (validated like a configured one, added to the project's own), which setup and every check run with (prompt `discover.v3`).
+  - **2026-10-31: where discovery stops, a person writes the setup once.** On gson (Java 6 target, needs JDK 11 or older; the image has 21 and 25) every proposal installed JDK 11 only "if Java is missing", so it never was, three tries running. That is not a limitation of the agent: Copilot without `copilot-setup-steps.yml` installs dependencies by trial and error mid-task ("slow and unreliable", GitHub's docs) and Codex installs automatically only for npm, yarn, pnpm, pip, pipenv and poetry; for anything else both expect a person to write the setup once. Here that is the repository's `verificationConfig.toolchain` (one API call), which the reference project `java/gson-1555` carries. Discovery is the convenience on top. Possible improvement, to be measured on its own: a prompt rule to install and select the runtime version the project asks for.
+  - **2026-10-31: setup timeout per repository.** On the next gson run discovery's third proposal was right (the same setup builds by hand under the sandbox limits) but setup stopped mid-compile after about 15 minutes, the fixed setup limit, on a machine low on memory. The limit is now `executionPolicy.setupTimeoutSeconds` (60-7,200, default 900), and a recorded failed attempt keeps its first line (exit code or "killed by timeout") as well as the end of its output, which had cut the cause off.
+  - **2026-10-31: default image moved to `universal:6.1.12`.** The next gson run showed the cause: the pinned `universal:2` (Ubuntu 20.04) ships the yarn apt source with an expired key, so `apt-get update` exits 100 and no setup can install a system package; the model only sometimes worked around it. Copilot (`ubuntu-latest`) and Codex (`universal`) keep their default image current rather than patching an old one, so the pin moved to the current release (Ubuntu 24.04, Codespaces' default). Checked by hand under the sandbox limits: `apt-get update` works, gson's setup (JDK 11 from apt, `mvn install`) takes 115 s, and the offline tests run (1051, one failing before the change).
+  - **2026-10-31: agent steps and run time per repository.** With gson's environment written by a person (see the discovery note below), setup and the baseline worked and the agent found the right files and a half-working fix, but each Maven test run takes about a minute and both attempts ran out of their 30 steps (the full tool output is in `ToolCall`; events keep 500 characters). The limits are now `executionPolicy.maxAgentSteps` (5-200, default `AGENT_MAX_STEPS` 30) and `executionPolicy.maxRunSeconds` (300-14,400, default `EXECUTION_MAX_DURATION_SECONDS` 1800); gson's reference project uses 60 steps and 90 minutes. Result (gpt-5-mini, 11.4¢, 18 minutes, one attempt of 58 steps): **correct fix**, graded by the benchmark's own tests (FAIL_TO_PASS passes, all 94 PASS_TO_PASS classes still pass); verification passed with `test` already failing before, and the reviewer passed it. The grade had to be done by hand: the runner had uploaded gson with CRLF line endings (a Windows `git checkout`), so the diff did not apply in the benchmark's LF checkout; the runner now uploads the stored git blobs. [report](../testing/reference-2026-10-31.md) Run 9 with the LF upload: **correct fix**, graded automatically (17.2¢, 24 minutes, 2 attempts). Its first attempt used all 60 steps: six edits failed with "oldText not found" because the model copied the space after `read_file`'s `12: ` line numbers into `oldText`, and it had a working fix by about step 52 but did not call finish. `read_file` now puts a tab after the number, as `cat -n` and Claude Code's Read tool do. [report](../testing/reference-2026-10-31-2.md)
+  - **2026-10-31: second reference project, Go, with discovery unaided.** `go/go-zero-1969` (zeromicro/go-zero#1958: `options=` is not checked for JSON numbers) has no environment written by a person. Discovery's first proposal (download Go 1.20.5) failed without network; the next used the image's Go and proved `go test ./... -v`. The baseline fails on the unchanged code (tests that need a network interface or are timing-sensitive), so it ran as `failingBefore`. Result (gpt-5-mini, 18.1¢, 24 minutes, 103 calls, 2 attempts): **correct fix** in `processFieldPrimitiveWithJSONNumber`, graded by the benchmark's tests; the reviewer passed it. No "oldText not found" edits, so the `read_file` tab held. The first attempt used all 60 steps, mostly reading in small chunks (most of the time went to the full test run, several minutes each); the second finished in 34. The agent ran `gofmt -w .`, so the diff also reformats two files the fix does not touch (`core/rescue/recover.go`, a `goctl` template); the reviewer did not object. Runner changes to grade it: test results read from the log by a per-project `grader.resultPattern` (Go has no JUnit XML), a benchmark subtest name cut short falls back to its parent test, `grader.skip` for the two tests that need a network, and `.github/workflows/` left out of the sandbox push (it needs the token's Workflows permission and would run the project's CI). [report](../testing/reference-2026-10-31-3.md) Second run with `--publish` (the eval approves publishing and leaves the sandbox's main at the project): **correct fix** and draft PR [#7](https://github.com/zack10/agent-orchestration-test/pull/7) on the sandbox repo (20.7¢, 21 minutes, 115 calls, 2 attempts; 3 files, the fix in `unmarshaler.go` and `utils.go` and a new test, no unrelated files this time). Discovery was skipped: the environment saved by the first run was reused. Again the first attempt used all 60 steps without calling finish, as on every reference run so far (gson and go-zero); to be measured on its own before the step limit or the reading tools change. [report](../testing/reference-2026-11-01.md)
+  - **2026-11-02: five untuned reference projects.** Picked from Multi-SWE-bench by hash (`sha256(instance_id + ":2026-11-01")`, the first with at most 3 fix files, at least one FAIL_TO_PASS test and an issue body over 40 characters; fmt and nlohmann/json have no FAIL_TO_PASS tests), the real issue as the card, nothing tuned, every environment found by discovery on the universal image: Rust `fd-590`, TypeScript `darkreader-6747`, JavaScript `dayjs-589`, C `jq-2821`, C++ `catch2-2187`. Run 2 at a time (`--parallel 2`), gpt-5-mini, 72¢ ([report](../testing/reference-2026-11-02.md)). **dayjs correct; three wrong fixes shipped**, each passing its project's checks and the reviewer:
+    - fd (#587, error when no search path is valid): the logic was right, but it reworded the existing "Search path '…' is not a directory." message, wrote its own message where the test expects the project's wording, and returned an error when only some paths were invalid. It changed behaviour the ticket did not ask about.
+    - jq (#2815, fractional array indices): the issue does not say which behaviour is wanted; the agent made assignment ignore fractional indices, the maintainers made reads round down, slices and NaN included. The go/04 pattern: on an ambiguous ticket one reading, confidently.
+    - darkreader (#6739): the issue refers to #6738 without restating it; the agent fixed `dynamic-theme.ts` only, the real fix also changed the order in `parse.ts`.
+    - Catch2 could not be graded: its test patch also changes `src/catch2/catch_test_macros.hpp`, which the agent's fix had changed, so the patch did not apply. The pick rule now also requires a test patch that changes test files only; the project is replaced by `catch2-2723` (the only other C++ instance that qualifies).
+    Whether the three wrong fixes come from the model, the ticket or the agent is not known yet: next, original against clarified ticket × gpt-5-mini against gpt-5 on fd, jq and darkreader, at least 10 runs per cell for any conclusion.
+    Stage 1 (2026-11-05): fd with the clarified ticket gave 9 correct fixes of 10, so fd's wrong fix came from the ticket. Of the three original-ticket fd plans, two listed the right exit code among their questions and all three showed their exit code in the examples, so a person approving the plan could have caught it; none kept the existing message (limitation 30). darkreader is out (limitation 31).
+    Stage 2 (2026-11-06): jq with the clarified ticket x10 measured only 2 runs, both blocked after running out of the 60 steps on their third attempt (the change spans reads, writes, slices and NaN in C; each retry starts from the base commit); in two of three rejections the reviewer was wrong (an answer contradicting its own evidence, index taken for value). The other 8 were lost to the laptop going into standby overnight (AUDIT M15). Rerun 2026-11-07 with the machine kept awake: 6 more runs, all blocked the same way (every one of 18 attempts used all 60 steps, about 75% of them reading and searching, with repeated lookups and each retry exploring from scratch); the runner was then stopped by the host running out of memory. [report](../testing/reference-2026-11-07.md)
+    Stage 3 (2026-11-07), model or agent: Codex CLI 0.167 with `gpt-5.6-luna` on the same image, ticket, time limit and grader fixed jq 5 times in 10 (6 counting the source change alone; 4 wrong fixes), in 4-8 minutes each. Our agent with `gpt-5.6-luna`, once tool calls went through the Responses API (limitation 24), fixed it **9 times in 10** (1 wrong fix shipped) in 6.5-11 minutes and 1-2 attempts, for 64¢ in all. So jq's failures came from the model (and chat completions dropping its reasoning between steps), not the agent. The wrong fix broke an "unchanged" line of the ticket; its new test file was never run by `make check` (as in 9 of the 10 runs) and the reviewer cited it anyway, so verification now runs the command that showed the problem again and `reviewer.v6` counts only tests that verification ran. [report](../testing/reference-2026-11-07-2.md)
+    Time: setup took 29.5 min (dayjs), 23 (darkreader), 8.5 (jq), 7.5 (fd); fd's 18 agent minutes were 14 of `cargo test` compiles through the Windows mount (limitation 27). The production stack in WSL then ran dayjs in 10.7 min instead of 35 (setup 6.1 instead of 29.5), again a correct fix ([report](../testing/reference-2026-11-02-2.md)).
+    Found and fixed on the way: RabbitMQ closed a run's channel after its 30-minute consumer timeout and the server crashed (channel reopened, 6 h timeout); a git listing in fd's setup hit the 5-minute default (setup timeout used); labelling one card re-ran every labelled card (AUDIT M13); on a Linux host git refused the workspace as owned by another user. Open: limitations 29 and 30.
+- **Mixed repositories:** the environment can define checks per subproject (e.g. a PHP backend and a Node frontend); discovery proposes them and records what it found.
+- **A general command tool.** Besides the file tools, the agent gets `run_command`: any command inside the run's sandbox (no network, CPU/memory/process limits, per-command timeout, output capped), so it can run tests, builds, linters and language tools like a real coding agent. `run_check` stays for the configured checks.
+- **Policy on the outcome.** With a shell the agent can change files without `edit_file`, so the rules are also enforced on the final diff by `enforce_policy`: protected paths, and no existing test changed or deleted. Test files are recognised per toolchain (`*Test.java`, `test_*.py`, `*_test.go`, `*Test.php`, `*.test.ts`, ...).
+- **Verification stays trusted.** The graph runs the checks itself after the agent finishes; the agent never decides what "passing" means. A shell could fake a pass without the diff showing it, so: `.git` is read-only to the repository's commands (no hiding changes through the index or exclude files), and before the checks run every ignored or excluded file is deleted and what setup installed (node_modules, .venv, vendor) is restored from a pristine copy in the snapshot. The checks see exactly the base commit, the setup and the diff that is reviewed. The agent's sandbox has no network: dependencies come from setup, and manifests are protected (an allowlisted network, as Copilot has, was considered and is not needed for that).
+- **Language-neutral prompts.** New prompt versions (`plan`, `agent`, `implement`, `review`) say "a checked-out repository" and get the detected language, framework and check commands as variables.
+- **How quality changes are accepted (decided 2026-10-29).** Patching a prompt after each benchmark failure tunes the agent to the 14 scenarios and can break others, and small models ignore rules they are given. So: a failure mode that matters is enforced in code (tools, verification, an independent reviewer), not only in a prompt; prompts keep general working principles, never scenario-specific patches, and a rule that removing does not hurt is removed. A change is measured with at least 3-5 runs per affected scenario plus a full-suite pass, and "wrong fix shipped" is a hard gate: a change that raises it is rejected. Before more prompt changes, the scenarios get a held-out set (the reference projects and a slice of a public multi-language benchmark) that is scored but not studied run by run. When the agent cannot verify a change, it blocks with its reason instead of shipping.
+- **Security unchanged:** only setup (and discovery) has network, and neither ever gets the source host token; hooks stay disabled; the agent's sandbox and the checks run without network. After setup the container is snapshotted (`docker commit`, as Devin snapshots its machine), so whatever setup installed is kept wherever the tool put it, with nothing per language; files setup or checks create in the repository never show up in diffs.
+
+### Tasks
+
+- [x] Environment model (`src/services/toolchain/`): image, setup command, checks, env, test-file patterns, protected files; stored per repository in `verificationConfig.toolchain`, validated by the API. Existing `{ scripts: [...] }` configurations keep working: the names select checks
+- [x] Workspace: sandbox image, setup step and verification taken from the environment instead of `node:20-bookworm`, `npm ci` and `npm run`. Setup is a separate step after clone, with network but without the GitHub token (it can run repository code); each check then runs once on the unmodified code (still with network, so tools fetch what they only fetch when really running; the results are recorded as the baseline), the container is snapshotted and every later command runs from the snapshot; files setup or a check creates are excluded from diffs. The chosen environment is recorded as a `GRAPH_TOOLCHAIN_RESOLVED` event
+- [x] Remove the per-language presets written first (a list of languages in code); replace them with the order above: approved environment, then the project's devcontainer, then the stock universal image (`EXECUTION_DEFAULT_IMAGE`), with no per-tool cache settings. `PATCH /api/repositories/:id` sets a repository's environment
+- [x] Use `.devcontainer/devcontainer.json` / `.devcontainer.json`: its `image`, `containerEnv`/`remoteEnv`, and `onCreateCommand`/`updateContentCommand`/`postCreateCommand` as setup; what can't be applied is reported
+- [x] Reuse the environment snapshot across executions of the same repository: preparing it took 80–160 s per execution in the live check in the universal image (setup, baseline checks and `docker commit` on Docker Desktop). Knowing which files are "dependency files" would need a list per ecosystem, so instead (as Codex caches containers) the snapshot is cached per repository and environment (image, setup, env, checks) for `EXECUTION_SNAPSHOT_MAX_AGE_HOURS` (24); later runs start from it and run setup again with network, so changed dependencies are installed and nothing already there is downloaded again. Only a snapshot built from the plain image becomes the cache, so layers don't pile up; replaced caches are removed. Measured on a phase basis first: in a small image `docker commit` is ~2 s and the time goes to downloads and the checks themselves. Live check (Maven with Spring Boot web): 26.5 s first run, 15.0 s reused, 17.7 s reused with a new dependency in `pom.xml`, which was installed and passed the offline check. The rest is fixed per run (setup on the cache, the baseline, the commit)
+- [ ] Devcontainers that build a Dockerfile (built as-is in the setup step, network, no token), use Docker Compose (also the way to declare service containers), or add features
+- [x] Environment discovery as described above: the agent proposes image, setup and checks from the project's files; setup and baseline in the proposed image prove it (revise on failure); the run uses it and the PR says it is unapproved; one-time approval stores it on the repository. Done in `src/services/toolchain/discovery.ts` with prompt `discover.v1`: it runs when a repository has no configured checks, keeps what the devcontainer or configuration fixes, reads tracked files only (instruction and CI files first, then root and subproject files), and tries up to `EXECUTION_DISCOVERY_MAX_ATTEMPTS` (3) proposals. A check that runs but fails on the project's own tests is judged by the model and still proves the environment. A proved proposal is stored in `Repository.environmentProposal` and reused (proved again, no model call) until `POST /api/repositories/:id/environment/approve` with its hash makes it the configured environment. Live checks with a real model and Docker: Python (`python:3.12-slim`, `pip install -e '.[test]'`, `pytest -q`; 24 s) and Maven with an existing failing test (`maven:3.9.6-eclipse-temurin-21`, `mvn test`, judged as the project's failure; 46 s), each right first time; the benchmark repository (`node:20-alpine`, no setup, `npm test`), reused on the next run
+- [x] `run_command` sandbox tool with the same limits and recording (`ToolCall`) as the other tools; `.git` read-only to repository commands; ignored files cleaned and setup output restored before verification (live check: a tampered test runner in `.venv` no longer fakes a pass)
+- [x] `enforce_policy` checks the diff for changed or deleted existing tests and protected files, per toolchain; "existing" means tracked at the base commit, so a test the agent created with a command is new
+- [x] Repository context and default protected paths from the toolchain instead of `package.json`; context picks source files of any language
+- [x] Language-neutral prompt versions: `plan.v3`, `implement.v2`, `agent.v3` (with `run_command`), given the environment (image, each check and its command) as a variable; a test checks the prompts in use name no language or package manager
+- [ ] Benchmark: scenarios in at least two more languages (e.g. Python and PHP or Java), each with hidden tests and a fairness check in `tests/codingScenarios.test.js`; the Node scenarios must not regress. Scenarios done (2026-10-28): one suite per language under `tests/e2e/coding-scenarios/<suite>/` (`suite.json` holds the environment, the grader image and commands, and the test-file pattern; adding a language needs no code), with Python (`unittest`) and Go (`go test`) suites of 3 scenarios each (single-file, two-file, vague ticket), standard library only so grading stays offline; the fairness check runs each suite in its grader image. First run: 10/14 correct, 1 wrong fix shipped (node/06), 2 no fix (python/02, go/03); see the results log. Fixes from that run (2026-10-28): `agent.v4` (follow values through every file, keep public names, check a new test's expected values, don't re-read unchanged files), `review.v3` (reject removed or renamed public API), an identical repeated tool result replaced by a short note (and a warning after 3), each attempt but the last limited to a share of what is left (`budget.attemptShare`, 0.5), a share stop keeping its changes for the next attempt, and the failure analysis (`analyze.v2`) seeing the attempt's steps, where the next attempt starts and the test rule. node/06, python/02 and go/03 then all passed; the full run had 10 correct, nothing wrong shipped, and node/07 lost to the share (see the results log). Then the share became a soft limit: past it an attempt with no changes stops, and one with changes is told to wrap up and gets 3 more steps in the same conversation, within the execution's budget, so a nearly done change is not restarted with a fresh context (node/07). node/07 then passed twice in one attempt each. Python and Go suites completed on 2026-10-29 with `gpt-5-mini` (10/12, see the results log and the wrong-fix tasks below). Still to do: PHP or Java with dependencies
+- **Wrong fixes shipped (started 2026-10-29).** The first OpenAI run (Python and Go, `gpt-5-mini`) shipped 2 wrong fixes in 12: go/03 added an unused function beside the unchanged faulty one, python/02 fixed one caller and left the shared `to_cents` broken. Both passed the repository's checks and the review. The work so far, and what is next:
+  - [x] Postgres `jsonb` rejected a NUL character in tool arguments and failed the attempt; `ToolCall` input and output now replace it (`toolRunner.ts`)
+  - [x] `agent.v5` (show the problem with a failing test before changing code, using the ticket's example) and `review.v4` (reject unused new code; work the ticket's example through). python/02 improved; go/03 did not: the model ignored the new step and the reviewer (same model) ignored the new rule
+  - [x] Reproduction gate in the sandbox tools: `edit_file` refuses non-test files until a new test file has failed in `run_check`/`run_command`, or the agent called `skip_reproduction` with a reason; `review.v5` is told how the problem was shown (including code changed by commands without a failing test). go/03 3/3; python/02 fell to 1/3 (test-first narrowed the goal to the symptom)
+  - [x] go/03's hidden test lost an assertion the ticket does not specify (a restart exactly at a scheduled time); all go/03 diffs of the day re-graded
+  - [x] `agent.v6`/`review.v6`: fix a shared function instead of working around it in one caller; the gate's message says the same. go/03 + python/02 x5: 9/10 (one python/02 workaround remains)
+  - [x] Full-suite regression pass for `agent.v6` + `review.v6` + the gate (all 14 scenarios); keep them only if nothing that passed before fails. Go 3/3, Node 01–07 7/7, python/01 correct; node/08 regressed and was fixed by triage (below)
+  - [x] **Triage before planning (node/08 regression).** With the gate, the agent wrote a test for the impossible SOAP ticket that started a server and never closed it; every run hit its timeout, the gate never opened, and the execution ran out of time instead of being declined. Now: a `triage_ticket` node (`triage.v1`) asks once, apart from how, whether the ticket should be done in this repository at all; an explicit decline ends `BLOCKED` with the reason before any plan or code. The gate reports a timed-out run as a hanging test to fix, and its refusal says to call `finish` with status `blocked` if the ticket should not be done. node/08 3/3 declined at triage; Python 3/3 correct
+  - [x] **Code-reading reviewer** (built 2026-10-29; `reviewer.v1`, then `reviewer.v2` below; tool-loop mode only, single-shot keeps `review.v6`; `GRAPH_REVIEW_STEP` events record what it read; the loop's reminders name `verdict` instead of `finish`). `review_diff` becomes a short read-only tool loop (`read_file`, `search_code`, `list_files`, enforced in code) that ends with a `verdict` tool (approved, issues, summary) and fails closed when it runs out of steps. It works through a fixed checklist: where the wrong value is produced and whether the diff changes that place; who calls each changed or new function; whether the new tests call the existing code; whether the ticket's example comes out right. Rejections go to the next attempt as today
+  - [x] Optional separate reviewer model in the agent configuration (`reviewer: { provider, model, apiKey? }`, default the implementer's), so review can use a stronger or different model than implementation. Validated in the agent schemas, key encrypted and redacted like the agent's own, recorded in `GRAPH_CONTEXT_LOADED`
+  - [x] Live check of `reviewer.v1` on go/03 and python/02 x3: 4 correct, 1 wrong, 1 infra. go/03 run 3 shipped the unused `NextRunOnce` again: the reviewer wrote "NextRunOnce is only referenced by the new tests; NextRun is unchanged" and approved. python/02 run 1 was a correct fix (it also fixed `to_cents`) rejected because the reviewer read every file, re-read them once older results were shortened, ran out of 15 steps without a verdict (fail closed), and the retry exhausted the execution's 200k tokens (the reviewer alone used 69k)
+  - [ ] `reviewer.v2`: the code decides, not the reviewer's `approved` flag. `verdict` takes an answer and evidence per checklist item (`sourceChanged`, `newCodeCalled` / "none added", `testsCallExistingCode` / "no tests", `exampleWorks` / "no example") plus issues; any "no" or issue rejects, and each goes to the next attempt. The last step (or past 80% of the tokens) offers only `verdict`; the reviewer has its own 40k-token cap and keeps every result in full; the prompt starts it from the changed files and their callers. go/03 3/3 correct (v1: 2/3, one wrong fix shipped). python/02: 1 correct, then good fixes were rejected over test comments, an unused import and float inputs nothing passes ("Minor" by the reviewer's own label); one run ran out of the 200k budget. With `EXECUTION_MAX_TOKENS=5000000`: 3/3 correct, but one run took 14.5 minutes (two restarts, see "Retries and resume")
+  - [x] `reviewer.v3`: `verdict` gets `suggestions` (style, naming, comments, unused imports, inputs neither the ticket nor existing callers use), recorded in the review events and the diff artifact for the approver, never rejecting; `issues` is limited to what makes the change wrong (does not address the ticket, unrelated or unsafe changes, removed or renamed names, changed tests, broken existing behaviour). The checklist answers still decide on their own. go/03 and python/02 x3: 4 correct, 0 wrong fixes, 0 good fixes rejected over remarks (go/03 run 2 passed on its first review with its edge-case remarks as suggestions, 53k tokens against 94k to 156k with v2). The other two: triage declined go/03 once, guessing the bug was in a service outside the repository (it passed triage in the 6 earlier go/03 runs); and OpenAI's safety filter flagged an agent request after it read a harmless file (`invalid_prompt`, 400). The filter is not deterministic, so a flagged request is now retried once before failing with the reason
+  - [ ] Triage false declines: watch the rate on the full suite; if it repeats, a decline must name what is missing that neither the ticket nor the repository provides, checked like the reviewer's answers
+  - [x] Reviewer eval (2026-10-30, `npm run eval:reviewer`, [report](../testing/reviewer-eval-2026-10-30.md)): the 138 stored approved diffs replayed through `reviewer.v3` alone on `gpt-5-mini` (~3M tokens, about $2). First graded 10 wrong; checking one by hand showed the grading was at fault: node/06's hidden test required the internal `parseLine` to survive and parse quotes, and python/02's tested the internal `to_cents` directly, neither of which the tickets ask for. Like SWE-bench Verified, hidden tests now check only what the ticket describes plus existing behaviour (python/02 tests invoice totals such as a single 0.29 line; node/06 drops the `parseLine` test). Re-graded: 4 wrong, 134 correct. The reviewer caught 3/4 wrong (all go/03 unused new functions; missed one python/02 fix that still sends lines through the broken `to_cents`) and rejected 6/134 correct: 4 go/03 over the exact-time boundary the ticket leaves open, 2 node/07 that ran out of the reviewer's 40k tokens. A partial `gpt-5` run (46 diffs, ~$4.60) missed the same cases, so a stronger model is not the fix; a `reviewer.v4` with a removed-name list did not help either and was dropped. Lesson: inspect one failing case before any batch run
+  - [x] Reviewer is advisory, a person decides (as in Copilot coding agent, Codex, Devin): objections still go to the next attempt, but once attempts run out the verified change goes to publish approval with `reviewObjections` in the diff artifact metadata (`GRAPH_DIFF_REVIEW_FAILED` has `handedToApprover: true`) instead of being blocked. Deterministic checks (`diffReview.ts`, verification, policy) still block. The coding eval notes "reviewer objected" on such runs
+  - [ ] Expected behaviour as examples (2026-11-01): `plan.v4` writes `expectedBehaviour` ("given ..., the result is ..."), naming the readings where a ticket allows more than one and picking the one its exact words support; `reviewer.v5` checks a plan example against the ticket wording before working it through the code, so a misread plan is not rubber-stamped. go/03 also gets a worked example in its ticket (it gave none, and both models read "run once" as an immediate catch-up). To confirm on go/03; the ticket change and the prompts are measured together. Result: go/03 with the example 1/1; go/04 (same ticket without it) 0/3, so the prompts alone do not fix a misread ticket. Next: ask instead of guessing.
+  - [ ] Superseded by the real plan and the ticket conversation (Phase 9, pulled forward the same day): the separate stop below is removed and an unsure reading becomes a question in the plan the person approves. Ask instead of guessing (2026-11-01): `triage.v2` can also return `ask` with a question, only when the ticket's words allow two readings with different results for the same situation and neither the ticket nor the repository settles it (it writes each reading's result for one concrete case first; a ticket vague about where or why is not a reason). The run stops before any code is written, lastError starts with `NEEDS_ANSWER`, and the question is posted on the ticket with "answer by editing this ticket's description" (an edit changes the revision hash, so it starts a new execution). Blocked runs now post their reason instead of always "blocked after verification failures". Benchmark: `"expect": "ask"` passes on a question or a correct fix; go/04 is the first. To measure: go/04 asks, and the fix scenarios do not (asking there counts as no fix).
+  - [x] All 14 scenarios audited against their tickets (2026-10-30, by reading, no model calls): besides node/06 and python/02, node/02 required half a cent to round up without the ticket saying so (the ticket now says it) and python/03 required the reorder list in a fixed order (now compared sorted). The rest test only what their tickets describe or existing behaviour. Rule: a hidden test checks only the ticket and existing behaviour; check a scenario this way before any paid run uses it
+  - [x] node/07: the reviewer ran out of its 40k-token cap without a verdict. Cause: the verdict-only step came at 80% of the tokens, and one large-file step jumped from below 80% to over the cap. The loop now also makes a step the last one when it and the next would not both fit (the next costs at least as much: the conversation only grows); tested in `agentLoop`. go/03's ticket now says a run due at the very moment the service comes back counts as missed, as the reference `NextRun` does (the 4 "wrong" rejections matched the reference fix). Confirmed on `gpt-5-mini`: both node/07 diffs it had rejected out of tokens are now approved, with the verdict on step 6 (about 41k tokens each)
+  - [x] Full-suite pass end to end with the corrected scenarios (2026-10-30): 13 correct, node/08 correctly blocked, 0 wrong fixes. 12 on `gemini-flash-lite-latest` ([report](../testing/coding-eval-2026-10-30-2.md)); python/02 and python/03 hit the Gemini daily quota there and were rerun on `gpt-5-mini`, both correct ([report](../testing/coding-eval-2026-10-30-3.md)). The reviewer objected in no run, so the hand-over to the approver is covered only by its unit test. go/03 took two attempts and 465k tokens on flash-lite (see Token cost)
+  - [ ] Stronger implementer model on go/03 and python/02 x5 (part of "Model coverage" below), to separate model capability from missing structure
+  - [ ] Later, per repository: several candidate fixes per ticket, tests from a separate test-writing step, pick the fix that passes them and the review; block when candidates disagree
+- [x] **Retries and resume (2026-10-29).** One failed model call (a dropped connection, then an OpenAI 400) failed the whole run step, and the queue's redelivery started the execution again from the clone: python/02 took 14.5 minutes and two full restarts for a 2-minute fix. Now, as established agents do:
+  - Call level (`llm/retry.ts`): rate limits, overload, 408/409/5xx and connection failures are retried in place (rate limits as the provider asks, others 1s, 2s, 4s… with jitter, capped); a rejected request (400/401/403/404/422) fails at once as `NonRetryableError` with the provider's own reason (key-like strings masked), so it is neither retried nor redelivered
+  - Execution level: the graph is compiled with a durable checkpointer (`agentGraph/checkpointer.ts`: LangGraph's `MemorySaver` persisted after every step to `GraphCheckpoint`, one encrypted row per execution since the state holds the agent's API key, latest two checkpoints kept). The workspace is kept between deliveries; a redelivered or recovered run continues from the step that did not finish (`GRAPH_RESUMED`), and starts over only without a checkpoint or workspace (another machine). An interrupted attempt is re-run from a clean tree and its record closed as `CANCELED`; `markExecutionFailed` removes the checkpoint and workspace once no retry is left
+  - Confirmed live: the server was killed during python/02's first attempt; after the dead worker's 5-minute lease expired, recovery resumed at `agent_loop` without cloning, setting up, triaging or planning again
+  - [ ] Shared-server follow-up: a resumed run needs its workspace on the same machine (a shared volume or object storage once workers run on several machines); without it the run starts over, as before
+- [x] **Token cost (planned 2026-10-29, after the reviewer eval; closed 2026-10-30).** Measured on the day's 57 `gpt-5-mini` executions: about 39k input and 6.6k output tokens each (~$0.02); the agent loop is 82% of input (639 calls, ~3.2k each), and output, which includes reasoning and costs 8x input, is a third from the small JSON calls (plan averages 1,280 output tokens for a short JSON). The benchmark repositories are tiny; on real projects the loop's resent history dominates. Each step is checked on the benchmark for tokens per execution and correct fixes, so savings do not cost quality:
+  - [x] Measure first: record cached input tokens and reasoning tokens in `LlmUsage` from every provider, and report tokens and cost per execution in the eval report
+  - [x] Cache-friendly history: `compactMessages` shortens old tool results one at a time as the conversation moves, which changes an early message at almost every step and defeats prefix caching. Compact in occasional batches instead, so the history stays unchanged between them; add Anthropic `cache_control` breakpoints (OpenAI and Gemini cache automatically)
+  - [ ] Reasoning effort per call: low for triage, plan, analyze and the JSON review; the agent loop and the code-reading reviewer keep the default; configurable per agent. Setting done (agent `config.reasoningEffort`, keyed by prompt name, e.g. `{"triage":"low"}`; `E2E_REASONING_EFFORT` in the eval); unset keeps each model's default until the benchmark shows low costs no correct fixes. Sent to OpenAI-compatible APIs as `reasoning_effort`; Gemini ignores it for now (`thinkingConfig` not mapped) and Anthropic thinking is off already. On the 3-run cache check, triage, plan and analyze were 4.1 of 14.3 cents, mostly reasoning. Checked 2026-10-30 on `gpt-5-mini` with `{"triage":"low","plan":"low","analyze":"low"}` (reports [-5](../testing/coding-eval-2026-10-30-5.md), [-6](../testing/coding-eval-2026-10-30-6.md)): node/08 still correctly blocked, node/07 and python/02 correct, go/03 the same wrong fix with reviewer objections as at default effort; those three call kinds fell from 4.1 to 1.7 cents (plan 1.8 to 0.8, analyze 1.9 to 0.5), the agent loop and reviewer unchanged. One run per ticket, so not yet the default
+  - [ ] A model per call type in the agent configuration (generalising `config.reviewer`), so small calls can use a cheaper model. Setting done: agent `config.models`, keyed by prompt name like `reasoningEffort` (e.g. `{"triage":{"provider":"openai","model":"gpt-5-nano"}}`); `config.reviewer` still works as `models.review` and `models.reviewer`; a model of the agent's provider without its own key uses the agent's; `E2E_CALL_MODELS` in the eval, and `E2E_PRICE_PER_MTOK` takes a price per model. Checked 2026-10-30 with `gpt-5-nano` (low effort) for triage, plan and analyze and `gpt-5-mini` for the rest (reports [-7](../testing/coding-eval-2026-10-30-7.md), [-8](../testing/coding-eval-2026-10-30-8.md)): node/08 correctly blocked, go/03, node/07 and python/02 correct; plan fell from 0.8 to 0.2 cents and triage from 0.45 to 0.13 (analyze did not run). One run per ticket, so not yet the default; the agent loop and reviewer are now about 95% of the cost
+  - [x] Smaller tool output defaults (output cap, `read_file` lines), configurable per repository with today's values as limits. Measured first (2026-10-30, about 2,800 tool calls): results are already small on the benchmark (`read_file` averages 806 characters, `run_check` 1,035; 18 reads and 3 commands reached a cap), and the agent's cost is about 75% output, so this saves little here; it guards real projects with long build and test logs. Command and check output now capped at 10,000 characters with the start and end kept, as Codex CLI does (was 20,000, end only); `read_file` stays at 400 lines, since established agents differ (Claude Code 2,000, SWE-agent 100). Repository `executionPolicy.maxToolOutputChars` (1,000-20,000) and `maxReadLines` (50-400) set them per repository. No benchmark run: it would show no difference
+  - [ ] In tool-loop mode, one call for triage and the internal plan. Not done (2026-10-30): triage costs about 0.1 cent on `gpt-5-nano`, so merging it saves too little to be worth changing a step that decides whether a ticket is done at all
+  - Where it stands (2026-10-30): a ticket costs about 2-3 cents on `gpt-5-mini` (more when a vague ticket needs several attempts), about 80% of input is read from the provider's cache, and the agent loop and the code-reading reviewer are about 95% of the cost, three quarters of it their output (mostly reasoning). Lowering their effort or model could cost correct fixes, so it is measured on the reference projects with several runs per ticket before it is tried, not tuned on the benchmark
+- [x] OpenAI Responses API for tool calls (limitation 24, done 2026-11-07; live: `gpt-5.6-luna` fixed jq 9 times in 10): `toolsApi: "responses"` on the built-in OpenAI profile (`OPENAI_TOOLS_API`, default `responses`; other profiles default `chat`), reasoning items replayed encrypted with `store: false`. Tests written; lets `gpt-6-luna` and `gpt-5.6-luna` run the tool loop
+- [x] E2E: one execution end to end on a non-Node repository (2026-11-01: `go/go-zero-1969` with `npm run eval:reference`'s `--publish` opened draft PR [#7](https://github.com/zack10/agent-orchestration-test/pull/7) on the sandbox repo, a correct fix; see the go-zero note above)
+- [ ] Service containers (limitation 2): a repository declares the services its tests need (e.g. `postgres:16`, `redis:7`, with env vars); each run starts them on a private Docker network shared only with its sandbox (still no internet), and removes them afterwards. Done 2026-11-01, not yet confirmed on a project: `verificationConfig.toolchain.services` (name, image, env, optional `ready` command and `readyTimeoutSeconds`, up to 5); one `--internal` network per run joined by setup (which keeps the bridge for registries), the checks and the sandbox; started when one of those starts, so a resumed run gets them back; removed with their volumes with the workspace; the agent and discovery are told their hostnames. A Docker test proves setup, checks and sandbox reach a service by name and the internet stays unreachable. Benchmark suite `python-db` (2026-11-01): a small Python project on PostgreSQL through psycopg, 3 scenarios whose bugs are in SQL (an inclusive end date, cancelled orders and `ROUND` in a revenue sum across two files, a vague ticket caused by an inner join); its environment declares a `postgres:16-alpine` service, and the grader starts the same service with the product's own `startServices` (`grader.services`) after installing the driver into its cache with network (`grader.setup`). The fairness check passes on a real PostgreSQL. Multi-SWE-bench has no project whose tests need a database (its Django instances run on SQLite), so a database reference project has to come from elsewhere. First run 2026-11-01: 2 of 3 correct (see the results log), which meets Phase 4's done-when "a scenario whose tests need a database passes". Still to do: a reference project with a database; discovery proposing services (today a person declares them); services from a devcontainer's Docker Compose file (item above); a service `command` for images that need arguments
+- [ ] Private dependencies (limitation 6): per-repository registry credentials, stored encrypted like integration credentials and given to the install step only (never to the agent's sandbox); fetch git submodules and Git LFS files during clone with the same token handling
+- [ ] Checks from the toolchain (limitation 7): only checks that exist for the repository run; a configured check that is missing is reported as "not available", not as a failure (done), and a repository with no checks is marked **Unverified** in the draft PR (done); flagging it in the plan for the human approver is still to do
+- [ ] Setup heartbeat (limitation 26): while discovery, setup or a check runs, record a progress event every minute or so (step, command, elapsed time, the last lines of output, capped and with secrets redacted), so the API (and later a frontend) shows that a run is alive and what it is doing; a step with no new output for a configurable time is reported as possibly hung
+- [ ] Sweep environment images (limitation 29): remove snapshots whose execution has ended and repository caches past `EXECUTION_SNAPSHOT_MAX_AGE_HOURS`, on start and periodically, and stop new runs before the disk is full
+- [ ] Keep existing behaviour (limitation 30): a rule in the agent and reviewer prompts to keep messages, outputs and edge cases the ticket does not mention; a prompt change, so measured x3 first, and only once the fd/jq/darkreader diagnosis shows the agent (not the model or the ticket) is the cause
+- [ ] Configurable limits (limitation 10): sandbox CPU, memory, process count, check timeout, changed-file and file-size limits per repository, with the current values as defaults
+- [ ] Subprojects (limitation 12): detect several toolchains in one repository (monorepo packages, `frontend/` + `backend/`), and run the checks of the subprojects the change touches, in their directories
+- [ ] Make `tool_loop` the default mode (limitation 16) once the multi-language benchmark confirms it; keep `single_shot` selectable
+- [ ] Test secrets and environment (limitation 17): per-repository environment variables and files for checks, stored encrypted; only test-grade values, because the agent can read anything inside its sandbox
+- [ ] Flaky and slow suites (limitation 18): run the checks once on the unmodified code first (done: recorded as `GRAPH_BASELINE_CHECKED` during setup) and use the failures that already exist, so the change is judged only on what it broke or fixed; re-run a failing test once to tell flaky from broken; run the tests related to the change first, then the full suite
+- [ ] Few or no tests (limitation 19): report how much the checks actually cover in the plan and the PR, so the human knows when "verified" means little; Phase 6 adds writing the missing tests as a task
+- [ ] Infrastructure repositories (limitation 20): discovery proposes static checks that need no cloud access (`terraform validate`, `tflint`, `helm lint`, `kubeconform`, `ansible-lint`); a reference project confirms it
+- [ ] Large repositories (limitation 21): partial clone (`--filter=blob:none`, shallow where possible) from a cached mirror per repository, `search_code` backed by `git grep` or ripgrep in the sandbox, a paged file tree, and focusing on the touched subproject
+- [ ] Model coverage (limitation 22): run the benchmark and the reference projects on at least one stronger model, and allow the model to be chosen per repository or task type
+- [ ] Reference projects: build the matrix in [Reference projects](#reference-projects), with hidden tests and a setup check like `npm run eval:coding -- --check`; run it to finish this phase
+- [ ] README: where the environment comes from, discovery and approval, how to set it per repository
+
+**Done when:** the benchmark passes in at least three languages with no drop on the Node scenarios, a scenario whose tests need a database passes, an e2e execution opens a draft PR on a non-Node repository, and the reference projects have been run with every failure recorded as a limitation.
+
+---
+
+## Phase 5: Any source host and issue tracker
+
+*Teaches: adapter design across vendors, ticket context beyond text, branch strategy.*
+
+**Goal:** tickets can come from the tracker a team uses and changes can go to the source host it uses, with everything the ticket contains. Covers limitations 4, 5, 11, 13 and 23 (for ticket content).
+
+### Tasks
+
+- [ ] `SourceControlAdapter` interface (clone, base SHA, push, open draft PR, comment, read PR state), with the GitHub App implementation moved behind it, like `IssueTrackerAdapter` for trackers
+- [ ] GitLab adapter, then Bitbucket and Azure DevOps; credentials encrypted and redacted like the existing ones
+- [ ] Tracker adapters for Jira, Linear and GitHub Issues, each keeping a stable `revisionHash`
+- [ ] Ticket context: attachments (images, logs, files) and comments fetched by each adapter, size-capped, stored with the work item and given to the agent (images to models that accept them, text otherwise); attachment content is untrusted input, never instructions
+- [ ] Target branch: per repository (default branch, or a configured one) and per ticket (e.g. a label or field naming a release branch); PRs open against that branch
+- [ ] Prompt injection (limitation 23): ticket text, attachments, comments and repository files are marked as untrusted data in prompts, the tools' policy (not the prompt) decides what is allowed, and a benchmark scenario plants instructions in a ticket and an attachment to prove they are ignored
+- [ ] E2E: one execution from a non-Trello tracker to a non-GitHub host
+
+**Done when:** an execution runs end to end with at least one other tracker and one other source host, and a ticket whose key evidence is in an attachment is fixed using it.
+
+---
+
+## Phase 6: Any kind of task
+
+*Teaches: task typing, decomposition, multi-repository changes, evaluating more than bug fixes.*
+
+**Goal:** the agent handles the work teams actually ticket, not only bug fixes. Covers limitations 8, 9 and 19 (writing missing tests).
+
+### Tasks
+
+- [ ] Task types: bug fix, feature, refactor, dependency upgrade, migration, test/documentation work; detected from the ticket or set by a label, recorded on the execution
+- [ ] When the touched code has few or no tests (limitation 19), the agent writes characterising tests before changing it, and the plan says so
+- [ ] Prompt versions per task type (what "done" means differs: a refactor must keep behaviour, a feature needs new tests, an upgrade must keep the build green)
+- [ ] Plans with several tasks and dependencies (the `PlanTask` model already has dependencies), executed in order within one execution; the plan the human approves lists them
+- [ ] Changes across several repositories in one execution (one workspace and one PR per repository, linked to each other and to the ticket), with all of them verified before any is published
+- [ ] Benchmark scenarios for each task type, in more than one language, with hidden tests (a feature scenario, a refactor scenario that must keep behaviour, an upgrade scenario)
+
+**Done when:** the benchmark covers every task type and a two-repository ticket produces two linked draft PRs that both pass their checks.
+
+---
+
+## Phase 7: Feedback loop after the PR
+
+*Teaches: event-driven follow-up work, acting on human and CI feedback, bounded iteration.*
+
+**Goal:** like a human developer, the agent responds to review comments and failing CI on its own PR. Covers limitation 14 and 23 (for PR comments).
+
+### Tasks
+
+- [ ] Receive PR review comments and CI results (webhooks or polling, through the source-control adapter)
+- [ ] A follow-up attempt on the same branch with the comments or CI failure as feedback; it goes through the same policy, verification, review and publish approval as the first change
+- [ ] Bounds: a maximum number of follow-up rounds per PR, within the execution's token and time budget; then hand back to the human with a comment
+- [ ] Only comments from allowed reviewers trigger work; comment text is untrusted input (limitation 23), with a scenario that plants instructions in a review comment
+- [ ] E2E: a review comment on the agent's PR leads to a second commit that addresses it
+
+**Done when:** the agent addresses a review comment and a failing CI run on its own PR end to end.
+
+---
+
+## Phase 8: Parallel executions (several tickets at once)
 
 *Teaches: concurrency in agent systems, isolation, shared rate limits, scaling workers.*
 
@@ -181,11 +542,12 @@ What already makes this safe: each execution has its own workspace folder, Docke
 
 ### Tasks
 
-- [ ] Per-queue concurrency option in `rabbitMQService.subscribe` (prefetch per consumer), driven by `EXECUTION_RUN_CONCURRENCY`, `EXECUTION_PLAN_CONCURRENCY`, `EXECUTION_PUBLISH_CONCURRENCY`; defaults stay at 1
+- [ ] Per-queue concurrency option in `rabbitMQService.subscribe` (prefetch per consumer), driven by `EXECUTION_RUN_CONCURRENCY`, `EXECUTION_PLAN_CONCURRENCY`, `EXECUTION_PUBLISH_CONCURRENCY`; defaults stay at 1. Done for runs (2026-11-01): `subscribe` takes `prefetch`, and `EXECUTION_RUN_CONCURRENCY` sets it for `execution_run`; 4 at once ran the coding benchmark in 11 minutes instead of 47, with the same results (`eval:coding --parallel 4`, one sandbox repository per slot). Plan and publish still take one at a time
 - [ ] Resource cap: a maximum number of concurrent Docker runs per process, sized to the host (each run is limited to 2 CPUs / 2 GB today)
 - [ ] Shared LLM rate limiter keyed by provider + API key (per-minute requests and tokens), so parallel runs queue for capacity instead of all hitting `429`; in-process first, then Postgres- or Redis-backed for multiple processes
 - [ ] Process roles: `PROCESS_ROLE=api|worker|all` (default `all`), so workers can scale separately from the API
-- [ ] Fairness: one project's backlog cannot starve another's (e.g. a per-project concurrency cap)
+- [ ] Fairness: one project's backlog cannot starve another's (e.g. a per-project concurrency cap), including a per-project share of `LLM_DAILY_TOKEN_LIMIT`
+- [ ] When the daily token limit is reached, pause queued and running executions and resume them after the reset (see Phase 3 "Cost guardrails")
 - [ ] Visibility: running and queued executions per project via the API (and queue depth in `/health` or a status endpoint)
 - [ ] Isolation audit: confirm nothing is shared between runs (workspace and artifact paths, branch names, temp files, Trello comments, `TaskAttempt` numbering)
 - [ ] Unit tests: concurrency limits respected, rate limiter waits rather than fails, per-project cap
@@ -197,9 +559,44 @@ What already makes this safe: each execution has its own workspace folder, Docke
 
 ---
 
-## Phase 5: Agent roles and a real planner
+## Phase 9: Agent roles and a real planner
 
 *Teaches: assigning agents to jobs, separating planning from doing, making human review meaningful.*
+
+### Pulled forward (2026-11-01): the real plan, decided in a conversation on the ticket
+
+**Why.** go/04 x10 (the go/03 ticket without its worked example) gave 6 correct, 2 wrong fixes shipped, 1 flagged and 1 question that offered only wrong readings. Prompt changes (`plan.v4` examples, `reviewer.v5` checking them, `triage.v2` asking when unsure) did not stop gpt-5-mini from confidently picking a wrong reading of an ambiguous ticket: a model cannot ask about a doubt it does not have. Meanwhile every run already stops for plan approval, but the plan a person approves is a fixed template written before any model has read the ticket or the code, and the agent's real reading appears only inside the run, after the approval. Copilot coding agent, Devin and Linear's agents put the agent's understanding in front of a person where the work is discussed (the issue, the PR, a chat thread).
+
+**What changes.**
+
+1. **The plan step plans for real.** The `execution.plan` consumer pins the base commit on the execution, clones it, resolves the toolchain from the repository's files (no setup or Docker yet), collects the repository context, runs triage and the plan prompt, and submits that plan for approval; the clone is removed afterwards. Triage's decline blocks the execution there, before any approval is asked. The run step clones the same pinned commit, so the approved plan describes the code that is changed, and takes its plan from the approved `Plan` instead of planning again (the `triage_ticket` and `plan_change` nodes leave the run graph).
+2. **The plan says what the agent understood.** `plan.v5`: summary, `expectedBehaviour` (concrete "given ..., the result is ..." examples, stored as the plan's acceptance criteria), `questions` (the readings it is unsure between, each with the result it gives for one concrete case), files to change, risk and test strategy. A revision gets the earlier plans and the person's feedback. This replaces `triage.v2`'s separate "ask" stop: an unsure reading is a question inside the plan, and a sure but wrong one is still in front of the person. Triage returns to `triage.v1` (proceed or decline).
+3. **One decision model, two channels.** A plan approval is decided as `approve`, `revise` (with feedback: the plan step runs again and submits version n+1) or `reject` (the execution ends); a publish approval as `approve` or `reject`. The API (`POST /executions/:id/approvals/plan|publish`, `revise: true` with a comment for feedback) and replies on the ticket call the same functions in `executionService`, so a frontend later is only another client of the API. A plan is revised at most 5 times, then the execution is blocked with that reason.
+4. **The conversation happens on the ticket.** The agent posts the plan as a comment (its reading, its questions, files, checks, and how to answer) and later the publish summary. The person replies on the ticket: `/approve`, `/reject <reason>`, or any other text as feedback, which revises the plan. On a publish approval only the two commands count, and other text gets a short hint. The tracker adapter gets `fetchComments` next to `comment`; Trello implements it, other trackers implement the same interface (Phase 5).
+
+**Safety.**
+
+- **Only approvers decide.** A tracker connection lists its approvers (`approvers`, the tracker's user names or ids). Without that list, replies on the ticket are ignored and only the API decides (fails closed). A reply from anyone else gets one answer saying it was not acted on.
+- **Decisions are explicit.** Only `/approve` approves. Free text never approves anything, it only becomes feedback for a revised plan, so a misread reply can at worst cost a plan revision.
+- **The decision binds to what was shown.** A reply applies to the pending approval it follows (only comments after the approval was requested count, and the system passes that approval's `snapshotHash`); a decision on a superseded plan is ignored.
+- **The agent never answers itself.** Every comment the agent posts ends with a marker line, and comments with the marker are never read as replies (in local use the agent posts with the same Trello token as the person). Each reply is processed once (`InboxReceipt`).
+- **Ticket and reply text are untrusted** (limitation 23): feedback goes into the plan prompt as the person's feedback, never as instructions to the tools.
+
+**Limits for now.** Replies are found by the tracker polling (up to `INTEGRATION_POLL_INTERVAL_MS` late); webhooks come with Phase 5. The agent posts as the configured token's account; its own account comes with the Trello OAuth work (deferred to Phase 5). No free chat: plan, decision or feedback, revised plan. Questions such as "why this file?" are a later step. The benchmark still approves plans through the API, so it measures the agent, not the conversation.
+
+**Tasks.**
+
+- [x] Shared model-call helpers (`agentGraph/agentCalls.ts`: resolving the agent's models and keys, `askAgent`, events), used by the plan step and the run graph
+- [x] Plan step: pinned base commit, clone, toolchain, repository context, triage (`triage.v1`), `plan.v5`, `submitPlan` with the real plan; decline blocks before approval; the run graph uses the approved plan and the pinned commit
+- [x] Decisions: `requestPlanRevision` beside `decideApproval`, the 5-revision cap, `revise` on the plan approval API
+- [x] Ticket conversation: `fetchComments` on `IssueTrackerAdapter` (Trello), agent marker on every comment, plan and publish comments with the commands, reply parsing, approvers on the tracker connection, replies handled after each tracker poll, one-time processing
+- [x] Remove the separate "ask" stop (`NEEDS_ANSWER`, `expect: "ask"`); go/04 expects a fix again
+- [x] Coding benchmark, reference eval and e2e pipeline wait for the slower plan step and handle a decline before plan approval
+- [x] Unit tests (reply parsing and authorisation, plan comment, Trello comment mapping, plan from the model's reply), README and CLAUDE.md
+- [x] Live check: one ticket planned, revised from a reply on the card, approved with `/approve`, published with `/approve`; and the full benchmark in parallel shows no drop. Done 2026-11-01 on go/04 (see the results log): plan v1 took the wrong reading and listed the right one among its doubts, a feedback reply gave v2 with the right reading, `/approve` started the run, the fix passed the hidden tests, `/approve` opened draft PR test-4#1. The full benchmark with the plan step: 17 correct, 1 correctly declined, no wrong fixes ([report](../testing/coding-eval-2026-11-01-11.md))
+- [x] Found in the live check: a mistyped command (`/aprove`) cost a revised plan; a reply that looks like an unknown command now gets a hint instead, and the plan comment lists its checks one per line
+- [ ] Later: a plan example sometimes argues with itself ("returns ...? No, ..."); fix in a `plan.v6` only together with other plan changes, measured with the rule above
+
 
 ### Tasks
 
@@ -216,11 +613,11 @@ What already makes this safe: each execution has its own workspace folder, Docke
 
 ---
 
-## Phase 6: Agent skills
+## Phase 10: Agent skills
 
 *Teaches: packaging reusable know-how for agents, progressive disclosure, context budgets, prompt-injection risk.*
 
-Comes after the agent loop (Phase 3) and roles (Phase 5), because skills are loaded through a tool and assigned per role.
+Comes after the agent loop (Phase 3) and roles (Phase 9), because skills are loaded through a tool and assigned per role.
 
 ### Design
 
@@ -244,7 +641,7 @@ Comes after the agent loop (Phase 3) and roles (Phase 5), because skills are loa
 
 ---
 
-## Phase 7: Real MCP
+## Phase 11: Real MCP
 
 *Teaches: Model Context Protocol, standard tool discovery, connecting servers.*
 
@@ -253,14 +650,14 @@ Comes after the agent loop (Phase 3) and roles (Phase 5), because skills are loa
 - [ ] Expose the Phase 2 sandbox tools as an MCP server using the official SDK
 - [ ] Make the agent loop an MCP client that discovers tools instead of hard-coding them
 - [ ] Allow attaching allowlisted external MCP servers (e.g. documentation), reusing the connector registry and `MCP_HTTP_ALLOWED_HOSTS` rules
-- [ ] Make assigned MCP resources available to the agent (an existing gap; skills are handled in Phase 6)
+- [ ] Make assigned MCP resources available to the agent (an existing gap; skills are handled in Phase 10)
 - [ ] Update the README "Known limits" section
 
 **Done when:** the agent loop runs entirely through MCP tool discovery, and an external server can be attached safely.
 
 ---
 
-## Phase 8: Retrieval
+## Phase 12: Retrieval
 
 *Teaches: embeddings, chunking, search quality.*
 
@@ -268,17 +665,18 @@ Comes after the agent loop (Phase 3) and roles (Phase 5), because skills are loa
 
 - [ ] Chunk the cloned repository and store embeddings in Postgres with pgvector (migration + index)
 - [ ] `semantic_search(query)` tool
+- [ ] Large repositories (limitation 21): index incrementally per commit and per subproject, so a big repository is not re-embedded for every execution
 - [ ] Benchmark scenario 6 (vague ticket) with and without it
 
 **Done when:** scenario 6 results are recorded with and without retrieval.
 
 ---
 
-## Phase 9: Collaborating agents and memory
+## Phase 13: Collaborating agents and memory
 
 *Teaches: dividing work between agents, explicit hand-offs, long-term memory.*
 
-Phase 4 runs many agents side by side on **different** tickets. This phase has several agents cooperate on the **same** ticket.
+Phase 8 runs many agents side by side on **different** tickets. This phase has several agents cooperate on the **same** ticket.
 
 ### Design rules: limit error sources
 
@@ -294,7 +692,7 @@ Free-form agent conversation is deliberately **out of scope**. Agents chatting u
 
 ### Tasks
 
-- [ ] Independent reviewer agent (the `REVIEWER` role from Phase 5) replacing the single review call, following rules 1, 4 and 5
+- [ ] Independent reviewer agent (the `REVIEWER` role from Phase 9) replacing the single review call, following rules 1, 4 and 5
 - [ ] Zod schema for the reviewer's output; invalid output fails the review instead of being guessed at
 - [ ] Review loop as graph edges: `request_changes` sends the structured issues back to the implementer, capped at 2 rounds, then `BLOCKED`
 - [ ] Every hand-off recorded as an execution event (sender role, schema version, payload), so each decision can be traced
@@ -305,10 +703,77 @@ Free-form agent conversation is deliberately **out of scope**. Agents chatting u
 
 ---
 
+## Phase 14: Other platforms and running the app
+
+*Teaches: heterogeneous execution environments, runtime verification, observing a running system.*
+
+**Goal:** work that can't be built or tested in a Linux container, and bugs that only show when the app runs, are in reach too. Covers limitations 3, 15, 27, 28 and 20 (checks against real environments, e.g. `terraform plan` with scoped credentials). Listed last because it needs infrastructure beyond Docker (macOS and Windows machines, emulators), not because it matters less; parts can be pulled forward (headless browsers run in Linux containers).
+
+### Tasks
+
+Pulled forward (2026-11-02), because runs from a Windows checkout were too slow (limitation 27):
+
+- [x] Production image and stack: `Dockerfile`, `docker-compose.prod.yml` (own PostgreSQL and RabbitMQ on an internal network, migrations before the app starts, API on `127.0.0.1` only), `.env.prod.example`, [guide](../guides/PRODUCTION_RUN.md). Evals and live checks run against it, from WSL2 on Windows; workspaces sit on the Linux filesystem, mounted at the same path in the app and in execution containers
+- [x] Git in execution containers trusts `/workspace` (`TRUST_WORKSPACE` in `workspaceService.ts`): on a Linux host the clone belongs to the host user, and git refused it ("dubious ownership"), which Windows mounts had hidden
+- [ ] Named-volume workspaces, so the stack runs fast on Windows without WSL (limitation 27)
+- [ ] Executions isolated from the host's Docker for a shared server (limitation 28)
+
+- [ ] Platform runners: the toolchain names the platform (Linux container, macOS, Windows, Android emulator, GPU), and runs go to a runner that provides it (self-hosted machines or a cloud CI provider), with the same isolation, limits and recording
+- [ ] Headless browser in the sandbox for browser tests (Playwright, Cypress) and for checking web UIs
+- [ ] Run-the-app tools: start the app in the sandbox (with its services), send HTTP requests, take browser screenshots, read logs, so the agent can reproduce a bug before fixing it and confirm the fix after
+- [ ] Benchmark scenarios that need the running app (a UI bug, an HTTP API bug) and at least one non-Linux platform
+
+**Done when:** a UI bug is reproduced and fixed with a screenshot as evidence, and one scenario runs on a non-Linux platform.
+
+---
+
 ## Results log
 
 One row per benchmark run, newest last.
 
 | Date | Phase / change | Mode | Model | Prompt versions | Skills | Runs | Correct fix | Wrong fix shipped | Correctly blocked | Infra failures | Avg attempts | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| | | | | | | | | | | | | |
+| 2026-10-25 | 0. Baseline | single_shot | gemini-flash-lite-latest | plan.v1, review.v1, analyze.v1, implement.v1, file-format.v1 | none | 8 (1 per scenario) | 5 | 1 | 1 | 0 | 2.25 | Pass rate 75% (6/8), wrong-fix-shipped 13% (1/8), 33 LLM calls, code `0356a2a`+grader fixes. 1 no fix (#7). Reports: [10-24](../testing/coding-eval-2026-10-24.md), [10-24-2](../testing/coding-eval-2026-10-24-2.md), [10-25](../testing/coding-eval-2026-10-25.md), [10-25-2](../testing/coding-eval-2026-10-25-2.md) |
+| 2026-10-26 | 3. Agent loop (partial) | tool_loop | gemini-flash-lite-latest | plan.v1, agent.v1, review.v1, analyze.v1 | none | 1 (scenario 01 only) | 1 | 0 | 0 | 0 | 1.0 | Pipeline check, not a benchmark: 7 loop steps + plan + review, 85k loop tokens, code `51238e9`. [report](../testing/coding-eval-2026-10-26.md) |
+| 2026-10-26 | 3. Agent loop (partial) | tool_loop | gemini-flash-lite-latest | plan.v1, agent.v1, review.v1, analyze.v1 | none | 1 (scenario 08 only) | 0 | 0 | 1 | 0 | 1.0 | The agent declined: 2 searches, then `finish blocked`; 3 steps, 10k tokens, no files changed (baseline needed retries to block). [report](../testing/coding-eval-2026-10-26-2.md) |
+| 2026-10-26 | 3. `agent.v2` (partial) | tool_loop | gemini-flash-lite-latest | plan.v1, agent.v2, review.v1, analyze.v1 | none | 1 (scenario 01 only) | 1 | 0 | 0 | 0 | 1.0 | File list instead of file contents in the agent prompt: 8 steps, 23k loop tokens vs 85k with `agent.v1` (-73%). [report](../testing/coding-eval-2026-10-26-3.md) |
+| 2026-10-26 | 3. Agent loop | tool_loop | gemini-flash-lite-latest | plan.v1, agent.v2, review.v1, analyze.v1 | none | 8 (1 per scenario) | 7 | 0 | 1 | 0 | 1.4 | Pass rate 100% (8/8), wrong-fix-shipped 0%, 106 LLM calls (baseline 33), 304k loop tokens, 51 min, code `8cdd74e`. Fixed #6 (baseline: wrong fix shipped) and #7 (baseline: no fix). All 4 retries came from the reviewer rejecting a new test file the plan had not listed (#3, #4). [report](../testing/coding-eval-2026-10-26-4.md) |
+| 2026-10-26 | 3. `plan.v2` + `review.v2` (partial) | tool_loop | gemini-flash-lite-latest | plan.v2, agent.v2, review.v2, analyze.v1 | none | 2 (scenarios 03, 04) | 2 | 0 | 0 | 0 | 1.0 | The two scenarios that needed retries now pass first time: #3 10 calls, 22k loop tokens, 86 s (was 2 attempts, 20 calls, 38k, 623 s); #4 9 calls, 16k, 82 s (was 3 attempts, 27 calls, 52k, 710 s). Ledger total for both: 60k tokens, of which the 2 plan calls were 20k. [report](../testing/coding-eval-2026-10-26-5.md) |
+| 2026-10-26 | 4. Part A: repository environment | tool_loop | gemini-flash-lite-latest | plan.v2, agent.v2, review.v2, analyze.v1 | none | 8 (1 per scenario) | 7 | 0 | 1 | 0 | 1.0 | No regression after removing npm-specific code: the benchmark repository runs from its configured environment (`node:20-bookworm`, `npm ci --ignore-scripts`, `npm test`), with setup, a passing baseline check and a snapshot before each run. Every scenario passed first time: 83 LLM calls, 272k loop tokens, 8 min, code `abd0853`. [report](../testing/coding-eval-2026-10-26-6.md) |
+| 2026-10-27 | 4. Part B1: `run_command`, diff policy, checks that cannot be faked | tool_loop | gemini-flash-lite-latest | plan.v3, agent.v3, review.v2, analyze.v1 | none | 8 (1 per scenario) | 6 | 0 | 1 | 0 | 1.0 | 6 correct and #08 correctly declined; nothing wrong shipped. #07 ran out of tokens (193k of 190k) after its fix and its own check had passed, one step before `finish`: the agent wrote a wrong expected value in its new test and spent 12 steps (the same search three times) finding the right one. `run_command` was not used. Code `f25fdf5`. [report](../testing/coding-eval-2026-10-27.md) |
+| 2026-10-27 | 4. Part B1 + budget warning | tool_loop | gemini-flash-lite-latest | plan.v3, agent.v3, review.v2, analyze.v1 | none | 2 (#07 only) | 2 | 0 | 0 | 0 | 1.0 | The agent loop now tells the agent once it has used 80% of its steps or tokens, so a finished change is not lost to a budget stop. #07 correct twice (134k and 115k tokens); neither run reached the warning, so it is covered by a unit test only so far. [report](../testing/coding-eval-2026-10-27-2.md) |
+| 2026-10-27 | 4. Part B2: environment discovery | tool_loop | gemini-flash-lite-latest | plan.v3, agent.v3, review.v2, analyze.v1, discover.v1 | none | 2 (#01, #05) | 2 | 0 | 0 | 0 | 1.0 | Benchmark repository with no configured checks (`E2E_ENVIRONMENT` with protected paths only). The first run discovered `node:20-alpine`, no setup, `npm test`, proved it first time and stored it; the second reused it without a model call. The universal image was never pulled. Approving it through the API then made it the configured environment. [report](../testing/coding-eval-2026-10-27-3.md) |
+| 2026-10-28 | 4. Multi-language benchmark (Node, Python, Go) | tool_loop | gemini-flash-lite-latest | plan.v3, agent.v3, review.v2, analyze.v1, discover.v1 | none | 14 (1 per scenario) | 10 | 1 | 1 | 0 | 1.1 | First run with Python and Go suites, snapshot reuse on. Go 2/3, Python 2/3, Node 6 correct + #08 declined. Wrong fix shipped: node/06, where the CSV fix was right but the exported `parseLine` was deleted; the project's tests didn't cover it and review did not flag removed public API. No fix: python/02 (fixed `invoice.py`, missed the float bug in `money.py`; its own new test caught it but it couldn't find the cause) and go/03 (fixed early, then 30 steps of repeated reads and searches and a failing self-written test; the 80% warning was ignored). Both re-read unchanged files many times. Code `fa6e320` plus the suites. [report](../testing/coding-eval-2026-10-28.md) |
+| 2026-10-28 | 4. `agent.v4`, `review.v3`, repeated-call notes, attempt share (partial) | tool_loop | gemini-flash-lite-latest | plan.v3, agent.v4, review.v3, analyze.v1, discover.v1 | none | 3 (node/06, python/02, go/03) | 1 | 0 | 0 | 0 | 2.3 | node/06 fixed (no public API removed). go/03 and python/02 ran out of budget: each attempt but the last now gets half of what is left, and the workspace was reset after an attempt stopped by its share, so its right edits were lost; `analyze.v1` did not know that and told go/03's next attempt the work was done (it finished with no changes), and told python/02's to edit an existing test. [report](../testing/coding-eval-2026-10-28-2.md) |
+| 2026-10-28 | 4. + kept changes after a share stop, `analyze.v2` (partial) | tool_loop | gemini-flash-lite-latest | plan.v3, agent.v4, review.v3, analyze.v2, discover.v1 | none | 3 (node/06, python/02, go/03) | 3 | 0 | 0 | 0 | 2.0 | An attempt stopped by its share keeps its changes and the next one continues from them in a fresh conversation; `analyze.v2` is told where the next attempt starts and that existing tests may not change. go/03: attempt 1 stopped at 91k with the edits made, attempt 2 checked and finished in 9 steps (32k). [report](../testing/coding-eval-2026-10-28-3.md) |
+| 2026-10-28 | 4. Same, full run | tool_loop | gemini-flash-lite-latest | plan.v3, agent.v4, review.v3, analyze.v2, discover.v1 | none | 14 (1 per scenario) | 10 | 0 | 1 | 2 | 1.2 | Go 3/3, Node 6 correct + #08 declined, Python 1/1 before the daily token limit (`LLM_DAILY_TOKEN_LIMIT`, 2M, used by the three runs of the day) stopped python/02 and python/03 (infra). No wrong fix shipped. No fix: node/07 (large file, ~10k tokens a step): attempt 1 made the right fix and stopped at its 95k share; attempts 2 and 3 got 40k and 31k, re-read the large file and ran out before `finish`. With the whole budget in one attempt it passed twice before, so a fixed share is too small for later attempts when steps are expensive. 18 min, code `03a128a` plus the changes. [report](../testing/coding-eval-2026-10-28-4.md) |
+| 2026-10-28 | 4. Soft share with wrap-up steps (partial) | tool_loop | gemini-flash-lite-latest | plan.v3, agent.v4, review.v3, analyze.v2, discover.v1 | none | 4 (node/07 x2, python/01 x2) | 3 | 0 | 0 | 1 | 1.0 | node/07 correct twice, each in one attempt (run 1: 10 steps, 117k tokens, past its ~94k share; the wrap-up let it finish in the same conversation). python/01 correct once; its second run and the rest of the Python suite were stopped by Gemini's own daily quota (429, retry in ~15.5 h) after 549 calls and 2.29M tokens that day (5 runs recorded as infra failures). [report](../testing/coding-eval-2026-10-28-5.md) |
+| 2026-10-29 | 4. First OpenAI run; Python and Go suites | tool_loop | gpt-5-mini | plan.v3, agent.v4, review.v3, analyze.v2, discover.v1 | none | 12 (python, go x2) | 10 | 2 | 0 | 0 | 1.1 | Switched from Gemini (daily quota, then 25 s latency) to OpenAI. `gpt-6-luna` could not be used: no function tools with reasoning on `/chat/completions` (limitation #24). A NUL character in tool arguments broke the ToolCall insert (Postgres jsonb); fixed in `toolRunner.ts`. Wrong fixes: go/03 run 1 added an unused `NextFromLast` beside the unchanged `NextRun`, with a test of the new function only; python/02 run 1 fixed `invoice.py` but not `to_cents`, so the ticket's own example still gave 55.20. Neither checked the ticket's behaviour; addressed by `agent.v5`/`review.v4`. ~19 min. [report](../testing/coding-eval-2026-10-29-3.md) |
+| 2026-10-29 | 4. `agent.v5` (show the problem with a failing test first) and `review.v4` (reject unused new code; work the ticket's example through) | tool_loop | gpt-5-mini | plan.v3, agent.v5, review.v4, analyze.v2, discover.v1 | none | 6 (go/03, python/02 x3) | 5 | 1 | 0 | 0 | 1.2 | Re-graded after go/03's hidden test lost its unspecified boundary assertion (see the next row); first graded 4 correct, 2 wrong. python/02 3/3 (was 1/2). go/03 2/3 (was 1/2): in run 1 the agent ignored the new step, edited `schedule.go` first to add a new `ShouldTriggerNext` beside the unchanged `NextRun`, and tested only that; the reviewer (same model) approved despite the new rule. Prompt wording alone does not enforce the order, so it moves into the tools (reproduction gate). [report](../testing/coding-eval-2026-10-29-4.md) |
+| 2026-10-29 | 4. Reproduction gate: code edits refused until a new test has failed (or `skip_reproduction` with a reason); `review.v5` sees how the problem was shown | tool_loop | gpt-5-mini | plan.v3, agent.v5, review.v5, analyze.v2, discover.v1 | none | 6 (go/03, python/02 x3) | 4 | 2 | 0 | 0 | 1.0 | go/03's hidden test lost an assertion the ticket does not specify (a restart exactly at a scheduled time must skip that run); all 8 go/03 diffs of the day were re-graded (first graded 3 correct, 3 wrong). go/03 3/3: every run wrote a failing test of `NextRun` before editing and changed `NextRun` itself (run 1's first failure was a build error, which also opens the gate). python/02 1/3 (3/3 without the gate): runs 1 and 3 tested the ticket's example through `invoice_total_cents`, then made it pass with `Decimal` inside `invoice.py`, leaving the shared `to_cents` broken. Test-first narrowed the goal to the symptom; a root-cause rule is next. [report](../testing/coding-eval-2026-10-29-5.md) |
+| 2026-10-29 | 4. `agent.v6`/`review.v6` (fix a shared function, not one caller) with the gate | tool_loop | gpt-5-mini | plan.v3, agent.v6, review.v6, analyze.v2, discover.v1 | none | 10 (go/03, python/02 x5) | 9 | 1 | 0 | 0 | 1.0 | go/03 5/5, python/02 4/5 (one run still made `invoice_total_cents` right with `Decimal` and left `to_cents` broken). The full-suite pass that followed: Go 3/3, Node 01–07 7/7, python/01 correct; node/08 (impossible SOAP ticket, declined before the gate) regressed: the agent wrote a test that started a server and never closed it, every run timed out, the gate never opened, and the execution ran out of time. [report](../testing/coding-eval-2026-10-29-6.md) |
+| 2026-10-29 | 4. Triage before planning (`triage.v1`: proceed or decline, with a reason); the gate reports a timed-out run as a hanging test and its refusal mentions `finish` blocked | tool_loop | gpt-5-mini | plan.v3, agent.v6, review.v6, triage.v1, analyze.v2, discover.v1 | none | 6 (node/08 x3, python x1) | 3 | 0 | 3 | 0 | 1.0 | node/08 3/3 declined at triage in ~25 s each, naming the missing endpoint, credentials and SOAP contract (before: every run timed out). Python 3/3 correct, including the vague python/03: triage let workable tickets through. Completes the regression pass for v6 + gate + triage. [report 1](../testing/coding-eval-2026-10-29-7.md), [report 2](../testing/coding-eval-2026-10-29-8.md) |
+| 2026-11-01 | 4. Service containers: suite `python-db` (tests on PostgreSQL) | tool_loop | gpt-5-mini | plan.v3, agent.v6, triage.v1, analyze.v2, discover.v3, reviewer.v3 | none | 3 | 2 | 0 | 0 | 0 | 1.0 | 6¢. 01 and 02 correct against a real PostgreSQL. 03 blocked: triage found the inner join in `shop/customers.py`, but the plan went for `revenue_by_customer` ("customer report" fit `reports.py` too), which leaves out customers without revenue on purpose, so the agent called the ticket ambiguous. The ticket now says "customer order counts" (a fairness fix to the scenario, not to the agent). [report](../testing/coding-eval-2026-11-01.md) |
+| 2026-11-01 | 4. `python-db/03` rerun with the reworded ticket ("customer order counts") | tool_loop | gpt-5-mini | plan.v3, agent.v6, triage.v1, analyze.v2, discover.v3, reviewer.v3 | none | 1 | 1 | 0 | 0 | 0 | 1.0 | 1.2¢. Correct fix in `shop/customers.py` (LEFT JOIN counting `o.id`, so a customer without orders counts 0). All three `python-db` scenarios have now been fixed once. [report](../testing/coding-eval-2026-11-01-2.md) |
+| 2026-11-01 | 4. Full benchmark after service containers, the `python-db` suite and the `read_file` tab | tool_loop | gpt-5-mini | plan.v3, agent.v6, triage.v1, analyze.v2, discover.v3, reviewer.v3 | none | 17 | 15 | 1 | 1 | 0 | 1.0 | 27¢. node 8/8 (node/08 correctly blocked), python 3/3, python-db 3/3, go 2/3. go/03 shipped a wrong fix: `NextRun` returns `now` (one catch-up run at once on recovery) where the ticket asks for one run at the first scheduled time after it; the agent's own new test asserted that reading, and the reviewer approved. [report](../testing/coding-eval-2026-11-01-3.md) |
+| 2026-11-01 | 4. go/03 measured x3 after the full run's wrong fix | tool_loop | gpt-5-mini | plan.v3, agent.v6, triage.v1, analyze.v2, discover.v3, reviewer.v3 | none | 3 | 1 | 2 | 0 | 0 | 1.7 | 10¢. With the full run, 1 correct of 4 today. Every wrong fix makes `NextRun` return `now` (one immediate catch-up run) where the ticket asks for one run "at the first scheduled time after it comes back"; each wrote a test asserting its own reading, and the reviewer approved each. A pattern in reading the ticket, not the earlier unused-function failure. [report](../testing/coding-eval-2026-11-01-4.md) |
+| 2026-11-01 | 4. Reviewer alone on gpt-5 (`eval:reviewer --model gpt-5`), the day's 22 approved diffs | reviewer only | gpt-5 | reviewer.v3 | none | 22 | – | – | – | 0 | – | Caught 3/3 wrong fixes (all go/03, which gpt-5-mini approved) and rejected 0/19 correct ones, including go/03's one correct fix. 626k tokens, about 28k per review (roughly $1-2; the report has no input/output split). Small sample, one scenario's wrong fixes. Per-step models are already configuration (`agent.config.models.reviewer`). [report](../testing/reviewer-eval-2026-11-01.md) |
+| 2026-11-01 | 4. go/03 x3 with a `gpt-5` reviewer (`E2E_CALL_MODELS`), agent on `gpt-5-mini` | tool_loop | gpt-5-mini (reviewer gpt-5) | plan.v3, agent.v6, triage.v1, analyze.v2, discover.v3, reviewer.v3 | none | 3 | 1 | 1 | 1 | 0 | 2.0 | 54¢. Run 1: three attempts adding unused `FirstMissed`/`MissedRuns` helpers, each rejected, offered with the objections. Run 2 correct. Run 3 shipped `NextRun` returning `now`: the gpt-5 reviewer approved it as "only one catch-up should run". The ticket can be read that way and gives no example, so both models misread it; the stronger reviewer is not enough on its own. Next: an example in the ticket, `plan.v4` (expected behaviour as examples) and `reviewer.v5` (checks them against the ticket). [report](../testing/coding-eval-2026-11-01-5.md) |
+| 2026-11-01 | 4. go/03 with a worked example in its ticket, `plan.v4` and `reviewer.v5` | tool_loop | gpt-5-mini | plan.v4, agent.v6, triage.v1, analyze.v2, discover.v3, reviewer.v5 | none | 1 | 1 | 0 | 0 | 0 | 1.0 | About 2¢. The plan copied the ticket example (down Friday 02:00 to Monday 09:00, next run Tuesday 02:00) as its first expectedBehaviour; the reviewer worked it through the changed `NextRun` and passed on the first review. One run, and the ticket and prompt changes are measured together. [report](../testing/coding-eval-2026-11-01-6.md) |
+| 2026-11-01 | 4. go/04 (go/03 without the example) x3, to separate the prompts from the ticket | tool_loop | gpt-5-mini | plan.v4, agent.v6, triage.v1, analyze.v2, discover.v3, reviewer.v5 | none | 3 | 0 | 1 | 2 | 0 | 2.3 | About 17¢. Every plan wrote a wrong reading as its expectedBehaviour (first missed night, or one run at once). `reviewer.v5` checked a plan example against the ticket wording once (run 2, quoting "at the first scheduled time after it comes back"); otherwise it took the plan examples as the ticket's, and run 3 shipped `NextRun` returning `now`. The example in the ticket fixed go/03, not the prompts: on an ambiguous ticket the agent should ask, not guess. [report](../testing/coding-eval-2026-11-01-7.md) |
+| 2026-11-01 | 4. Full benchmark plus go/04 after `triage.v2` (ask instead of guessing), `plan.v4`, `reviewer.v5` | tool_loop | gpt-5-mini | plan.v4, agent.v6, triage.v2, analyze.v2, discover.v3, reviewer.v5 | none | 18 | 17 | 0 | 1 | 0 | 1.0 | 35¢, 47 min. 17 correct, node/08 correctly declined, no wrong fixes. No question asked on any ticket, so no sign of over-asking; go/04 was fixed rather than asked (triage read it as one run at the first scheduled time after recovery), so the ask path has not run in a live run yet. [report](../testing/coding-eval-2026-11-01-8.md) |
+| 2026-11-01 | 4. Full benchmark plus go/04, 4 runs at once (`--parallel 4`, `EXECUTION_RUN_CONCURRENCY=4`) | tool_loop | gpt-5-mini | plan.v4, agent.v6, triage.v2, analyze.v2, discover.v3, reviewer.v5 | none | 18 | 17 | 0 | 1 | 0 | 1.0 | 32¢, **11 min** against 47 one at a time, same results: 17 correct, node/08 correctly declined, no wrong fixes, no flaky checks from 4 sandboxes at once. A first attempt ran against a server that had not restarted (the old ts-node-dev child kept port 3001, so runs went one at a time); it was stopped and its 4 executions cancelled. [report](../testing/coding-eval-2026-11-01-10.md) |
+| 2026-11-01 | 4. go/03 and go/04 x10 each, to settle them | tool_loop | gpt-5-mini | plan.v4, agent.v6, triage.v2, analyze.v2, discover.v3, reviewer.v5 | none | 20 | 16 | 2 | 1 | 0 | 1.1 | 57¢, 22 min. go/03 (with the worked example) 10/10. go/04 (without it) 6/10: 2 wrong fixes shipped, 1 flagged (an unused `MissedOrDue`), and 1 question counted as correctly blocked although both readings it offered were wrong (run once at recovery, in the scheduler or in the runner). With a clear ticket the agent is reliable; on an ambiguous one it confidently picks a wrong reading about 4 times in 10, and the ask rule rarely fires. Next: the real plan, decided on the ticket (Phase 9, pulled forward). [report](../testing/coding-eval-2026-11-01-9.md) |
+| 2026-11-01 | 9. Full benchmark with the real plan step (plan approved through the API, as the benchmark does), 4 at once | tool_loop, single_shot | gpt-5-mini | plan.v5, agent.v6, triage.v1, analyze.v2, discover.v3, reviewer.v5 | none | 18 | 17 | 0 | 1 | 0 | 1.1 | 40¢, 13 min. Nothing got worse: 17 correct, node/08 correctly declined at the plan step, no wrong fixes. go/04 correct here, a single run, so it settles nothing on its own: in real use the person sees the reading in the plan. A live check on a Trello card (go/04) went from plan v1 with the wrong reading and the right one among its doubts, to feedback on the card, plan v2 with the right reading, `/approve`, a fix passing the hidden tests, `/approve`, and draft PR test-4#1, all by replies on the card. [report](../testing/coding-eval-2026-11-01-11.md) |
+| 2026-11-02 | 4. Five untuned reference projects (fd, darkreader, dayjs, jq, Catch2), 2 at once, dev server on Windows | tool_loop | gpt-5-mini | plan.v5, agent.v6, triage.v1, analyze.v2, discover.v3, reviewer.v5 | none | 5 | 1 | 3 | 0 | 1 | 1.6 | 72¢, about 2 h. dayjs correct; fd, jq and darkreader wrong fixes that passed their projects' checks and the reviewer (a reworded message and new behaviour, one reading of an ambiguous issue, half of a fix described in another issue); Catch2 not gradeable (its test patch changes a source file the fix had changed; replaced by `catch2-2723`). Setup up to 29.5 min and compiles through the Windows mount took most of the time. See the Phase 4 note of 2026-11-02. [report](../testing/reference-2026-11-02.md) |
+| 2026-11-02 | 14. dayjs on the production stack in WSL (workspaces on the Linux filesystem) | tool_loop | gpt-5-mini | plan.v5, agent.v6, triage.v1, analyze.v2, discover.v3, reviewer.v5 | none | 1 | 1 | 0 | 0 | 0 | 1.0 | 7¢, **10.7 min against 35** on Windows, setup 6.1 min against 29.5; correct again. Graded afterwards with the eval's own `gradeDiff`: the runner on Windows could not read the diff at the server's WSL path (fixed: `E2E_ARTIFACT_DIR`). A first attempt measured nothing: 10 old labelled cards were re-run with it (AUDIT M13, 9¢). [report](../testing/reference-2026-11-02-2.md) |
+| 2026-11-05 | 4. Diagnosis stage 1: fd with the clarified ticket (`--ticket clarified`) x10, 2 at once, production stack in WSL | tool_loop | gpt-5-mini | plan.v5, agent.v6, triage.v1, analyze.v2, discover.v3, reviewer.v5 | none | 10 | 9 | 1 | 0 | 0 | 1.3 | About 90¢ (from tokens), 68 min. Both plans read the ticket right; the wrong fix printed "No valid search paths given." twice and its own test only checked the start of the output. jq skipped (fd at least 9/10). An earlier attempt lost 3 of 4 environment snapshots to a concurrent `docker image prune` (AUDIT M14, fixed). [report](../testing/reference-2026-11-05.md) |
+| 2026-11-07 | 4. Diagnosis stage 2 rerun: jq with the clarified ticket x10, machine kept awake | tool_loop | gpt-5-mini | plan.v5, agent.v6, triage.v1, analyze.v2, discover.v3, reviewer.v5 | none | 6 | 0 | 0 | 0 | 0 | 3.0 | All 6 blocked: every attempt used its 60 steps without calling finish. The runner was killed for low host memory before runs 7-10 (counted as 4 infrastructure failures in the report, not here). [report](../testing/reference-2026-11-07.md) |
+| 2026-11-07 | 4. Diagnosis stage 3: jq on `gpt-5.6-luna`, tool calls through the Responses API (limitation 24); Codex CLI with the same model as the comparison | tool_loop | gpt-5.6-luna | plan.v5, agent.v6, triage.v1, analyze.v2, discover.v3, reviewer.v5 | none | 10 | 9 | 1 | 0 | 0 | 1.3 | 64¢, about 45 min, 2 at once. Codex CLI + `gpt-5.6-luna` on the same task: 5 of 10 (4 wrong fixes). The wrong fix broke the ticket's "unchanged" string-slice error; its test file never ran. [report](../testing/reference-2026-11-07-2.md) |
+| 2026-11-07 | 4. Regression pass x3 for the Responses API, verification running the agent's own test again, and `reviewer.v6` | tool_loop | gpt-5-mini | plan.v5, agent.v6, triage.v1, analyze.v2, discover.v3, reviewer.v6 | none | 54 | 49 | 1 | 3 | 0 | 1.0 | $1.06, 32 min, 4 at once. 16 scenarios 3/3, node/08 declined 3/3; go/04 (vague ticket) 1 correct, 1 wrong shipped, 1 flagged by the reviewer. [report](../testing/coding-eval-2026-11-07.md) |
+| 2026-11-07 | 4. go/04 x10 with the same changes, against 2026-11-01's 6/10 | tool_loop | gpt-5-mini | plan.v5, agent.v6, triage.v1, analyze.v2, discover.v3, reviewer.v6 | none | 10 | 7 | 2 | 0 | 0 | 1.3 | 33¢. 7 correct, 2 wrong shipped, 1 flagged: no worse than before (6 correct, 2 wrong shipped), so no regression. [report](../testing/coding-eval-2026-11-07-2.md) |
+| 2026-11-07 | 4. Full benchmark x3 on `gpt-5.6-luna`: the new baseline for the default model | tool_loop | gpt-5.6-luna | plan.v5, agent.v6, triage.v1, analyze.v2, discover.v3, reviewer.v6 | none | 54 | 50 | 0 | 3 | 0 | 1.1 | 42¢, 24 min, 4 at once. 17 scenarios 3/3 correct or correctly declined (node/08), including go/04 (vague ticket, 1/3 on `gpt-5-mini` the same day); the one miss, node/07 run 3, was a wrong fix the reviewer flagged (5 kg not inclusive), so none shipped. Same code as the `gpt-5-mini` pass: 49 correct, 1 wrong shipped, 1 flagged, $1.06. [report](../testing/coding-eval-2026-11-07-3.md) |
+| 2026-11-07 | 4. Full benchmark x3 on `gpt-6-luna` (after one `node/01` run by hand: correct, 0.4¢) | tool_loop | gpt-6-luna | plan.v5, agent.v6, triage.v1, analyze.v2, discover.v3, reviewer.v6 | none | 54 | 51 | 0 | 3 | 0 | 1.0 | 15¢, 24 min, 4 at once. Every scenario 3/3 correct or correctly declined (node/08), 0 wrong fixes shipped or flagged. Half the price of `gpt-5.6-luna` per token ($0.10 / $0.01 / $0.50 per million). [report](../testing/coding-eval-2026-11-07-5.md) |
+| 2026-11-07 | 4. jq (clarified ticket) x10 on `gpt-6-luna`, in two batches of 5 (the first batch's last 5 hit `LLM_DAILY_TOKEN_LIMIT`, raised from 40M to 60M) | tool_loop | gpt-6-luna | plan.v5, agent.v6, triage.v1, analyze.v2, discover.v3, reviewer.v6 | none | 10 | 8 | 2 | 0 | 0 | 1.3 | About 50¢. Below `gpt-5.6-luna`'s 9/10. Both wrong fixes break the ticket's "unchanged" line (`"foobar" | .[1.5:3.5] = "xyz"` must still fail with `Cannot update string slices`): one run's tests left it out, the other wrote it only as a comment. Not made the default. [report](../testing/reference-2026-11-07-3.md), [report](../testing/reference-2026-11-07-4.md) |
+| 2026-11-07 | 4. Benchmark x3 with `agent.v7` and the `finish` example check (every plan example, including unchanged behaviour, must be in the agent's new tests; reverted, see the jq row below) | tool_loop | gpt-5.6-luna | plan.v5, agent.v7, triage.v1, analyze.v2, discover.v3, reviewer.v6 | none | 54 | 50 | 1 | 3 | 0 | 1.0 | 36¢, 25 min, 4 at once. Same correct count as the baseline. The wrong fix, node/07 run 2, comes from the plan reading the ticket backwards ("1 kg → 1100, the 1-5 kg rate"), as in the baseline's run 3, and the check did not fire on it (no quoted values): limitation 32. [report](../testing/coding-eval-2026-11-07-6.md) |
+| 2026-11-07 | 4. jq (clarified ticket) x10 on `gpt-5.6-luna` with `agent.v7` and the `finish` example check, 8 runs 2 at once plus 2 one at a time (2 runner failures: the runner's temp copy of jq's git data was gone mid-read) | tool_loop | gpt-5.6-luna | plan.v5, agent.v7, triage.v1, analyze.v2, discover.v3, reviewer.v6 | none | 10 | 9 | 1 | 0 | 2 | 1.2 | 59¢. No change from 9/10 without it, so `agent.v7` and the check were reverted. The wrong fix again wrote the unchanged case as a `# Runtime error` comment, and the plan quoted no values, so the check had nothing to match: limitation 33. Regraded, Codex CLI's earlier jq runs (same model) give 6 correct and 4 wrong, 3 of them on the same line. [report](../testing/reference-2026-11-07-5.md), [report](../testing/reference-2026-11-08.md) |

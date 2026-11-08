@@ -1,0 +1,15 @@
+{
+  "extraKnownMarketplaces": {
+    "ponytail": {
+      "source": {
+        "source": "github",
+        "repo": "DietrichGebert/ponytail"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "ponytail@ponytail": true,
+    "context7@anthropic-plugin-directory": true,
+    "code-review-anthropics@anthropic-plugin-directory": true
+  }
+}

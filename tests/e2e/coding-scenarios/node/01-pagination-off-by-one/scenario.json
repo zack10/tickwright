@@ -1,0 +1,9 @@
+{
+  "title": "paginate() skips the first page of results",
+  "description": "paginate in src/pagination.js is off by one: paginate(items, 1, 10) returns items 11-20 instead of items 1-10, and hasNext is wrong on the last page. Pages are numbered from 1.",
+  "expect": "fix",
+  "expectedFiles": [
+    "src/pagination.js"
+  ],
+  "measures": "Basic single-file fix"
+}

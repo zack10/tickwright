@@ -13,6 +13,7 @@ const {
   collectRepoContext,
 } = require("../dist/services/agentGraph/repoContext");
 const {
+  checkExistingTests,
   checkRepositoryPolicy,
 } = require("../dist/services/agentGraph/repoPolicy");
 const {
@@ -45,10 +46,11 @@ test("repo context selects likely relevant files", async () => {
     "export const syncTrello = () => undefined;\n",
   );
 
-  const context = await collectRepoContext(root, "Fix Trello sync bug");
+  const context = await collectRepoContext(root, "Fix Trello sync bug", { language: "JavaScript/TypeScript (Node)", checks: { test: ["npm", "run", "test"] } });
 
   assert.ok(context.fileTree.includes("src/trelloAdapter.ts"));
-  assert.ok(context.packageScripts.includes("test"));
+  assert.deepEqual(context.checks, ["test"]);
+  assert.match(context.summary, /Language: JavaScript/);
   assert.ok(context.selectedFiles.includes("src/trelloAdapter.ts"));
   assert.match(context.summary, /src\/trelloAdapter\.ts/);
 });
@@ -63,7 +65,7 @@ test("M5: repo context skips dotfiles and excluded dirs but keeps .env.example",
   await fs.writeFile(path.join(root, "dist", "index.js"), "built\n");
   await fs.writeFile(path.join(root, "index.js"), "source\n");
 
-  const context = await collectRepoContext(root, "Fix env handling");
+  const context = await collectRepoContext(root, "Fix env handling", { language: "unknown", checks: {} });
 
   assert.deepEqual(context.fileTree, [".env.example", "index.js"]);
   assert.doesNotMatch(context.summary, /do-not-send/);
@@ -127,4 +129,46 @@ test("M2: workspace reset drops edits and new files but keeps node_modules", asy
   await assert.rejects(fs.access(path.join(root, "lib")));
   await fs.access(path.join(root, "node_modules", "dep", "index.js"));
   assert.equal(await git("status", "--porcelain"), "");
+});
+
+test("implement replies without usable FILE blocks are rejected with a specific reason", () => {
+  const { fileActionsError } = require("../dist/services/agentGraph/outputFormat");
+  const { parseAgentOutput } = require("../dist/utils/llmUtils");
+  const check = (raw) => fileActionsError(raw, parseAgentOutput(raw).actions);
+
+  // The shape Gemini returned in the first benchmark run.
+  const arrayReply = '```json\n{\n  "actions": [\n    { "file": "src/pagination.js", "content": "x" }\n  ]\n}\n```';
+  assert.match(check(arrayReply), /must be one string of FILE blocks, not an array/);
+  assert.match(check('{"actions": {"file": "a.js"}}'), /not object/);
+  assert.match(check('{"actions": ""}'), /no FILE blocks/);
+  assert.match(check("I could not find the bug."), /no FILE blocks/);
+  assert.match(check(JSON.stringify({ actions: "FILE: a.js\nno fence" })), /missing an opening fence/);
+
+  const good = JSON.stringify({ actions: "FILE: src/a.js\n```js\nmodule.exports = 1;\n```" });
+  assert.equal(check(good), undefined);
+});
+
+test("existing tests may not be modified or deleted by any means; new tests may be added", () => {
+  const isTest = (file) => file.startsWith("tests/");
+  assert.equal(
+    checkExistingTests(
+      [
+        { status: "M", file: "src/a.py" },
+        { status: "A", file: "tests/test_new.py" },
+        { status: "D", file: "src/old.py" },
+      ],
+      isTest,
+    ),
+    undefined,
+  );
+  const violation = checkExistingTests(
+    [
+      { status: "M", file: "tests/test_a.py" },
+      { status: "D", file: "tests/test_b.py" },
+      { status: "T", file: "tests/test_c.py" },
+    ],
+    isTest,
+  );
+  assert.match(violation, /tests\/test_a\.py \(modified\), tests\/test_b\.py \(deleted\), tests\/test_c\.py \(modified\)/);
+  assert.match(violation, /add new test files instead/);
 });

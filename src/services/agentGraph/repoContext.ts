@@ -4,15 +4,25 @@ import path from "node:path";
 
 export interface RepoContext {
   fileTree: string[];
-  packageScripts: string[];
+  /** Check names from the repository's toolchain (e.g. test, lint, build). */
+  checks: string[];
+  /** The configured language label, if any; otherwise the agent reads the files. */
+  language?: string;
   selectedFiles: string[];
   selectedFileContents: Array<{ path: string; content: string }>;
   summary: string;
+  /** The summary without file contents, for agents that read files with tools. */
+  overview: string;
 }
 
 const EXCLUDED_DIRS = new Set([
   ".git",
   "node_modules",
+  "vendor",
+  ".venv",
+  "__pycache__",
+  "target",
+  ".gradle",
   "dist",
   "build",
   "coverage",
@@ -60,16 +70,6 @@ const listFiles = async (root: string) => {
   return files.sort((a, b) => a.localeCompare(b));
 };
 
-const parsePackageScripts = async (root: string) => {
-  try {
-    const raw = await fs.readFile(path.join(root, "package.json"), "utf8");
-    const value = JSON.parse(raw) as { scripts?: Record<string, unknown> };
-    return Object.keys(value.scripts ?? {}).sort((a, b) => a.localeCompare(b));
-  } catch {
-    return [];
-  }
-};
-
 const tokenize = (value: string) =>
   new Set(
     value
@@ -79,13 +79,20 @@ const tokenize = (value: string) =>
       .filter((token) => token.length >= 3),
   );
 
+// Manifests of the common toolchains: they say what the project is.
+const MANIFEST =
+  /^(package\.json|composer\.json|pom\.xml|build\.gradle(\.kts)?|pyproject\.toml|requirements\.txt|go\.mod|cargo\.toml|gemfile|[^/]+\.(csproj|sln))$/;
+// Any language's source is a candidate; only binaries and lockfiles are not.
+const NOT_SOURCE =
+  /\.(png|jpe?g|gif|ico|svg|webp|bmp|pdf|zip|gz|tgz|jar|war|class|so|dylib|dll|exe|bin|woff2?|ttf|eot|mp[34]|mov|lock)$|(^|\/)(package-lock\.json|composer\.lock|go\.sum)$/;
+
 const scoreFile = (file: string, ticketTokens: Set<string>) => {
   const lower = file.toLowerCase();
   let score = 0;
   if (lower === "readme.md") score += 12;
-  if (lower === "package.json") score += 10;
+  if (MANIFEST.test(lower)) score += 10;
   if (lower.includes("test") || lower.includes("spec")) score += 4;
-  if (lower.startsWith("src/")) score += 3;
+  if (/^(src|app|lib|pkg|internal)\//.test(lower)) score += 3;
   for (const token of ticketTokens) {
     if (lower.includes(token)) score += 8;
   }
@@ -95,7 +102,7 @@ const scoreFile = (file: string, ticketTokens: Set<string>) => {
 const selectRelevantFiles = (files: string[], ticket: string) => {
   const ticketTokens = tokenize(ticket);
   const ranked = files
-    .filter((file) => /\.(ts|tsx|js|jsx|json|md|yml|yaml|css|scss)$/.test(file))
+    .filter((file) => !NOT_SOURCE.test(file.toLowerCase()))
     .map((file) => ({ file, score: scoreFile(file, ticketTokens) }))
     .sort((a, b) => b.score - a.score || a.file.localeCompare(b.file));
   const selected = ranked
@@ -104,7 +111,7 @@ const selectRelevantFiles = (files: string[], ticket: string) => {
     .map((entry) => entry.file);
   if (selected.length > 0) return selected;
   return files
-    .filter((file) => file === "README.md" || file === "package.json")
+    .filter((file) => file === "README.md" || MANIFEST.test(file.toLowerCase()))
     .slice(0, MAX_SELECTED_FILES);
 };
 
@@ -123,7 +130,17 @@ const readSelectedFiles = async (root: string, files: string[]) => {
   return contents;
 };
 
-const formatSummary = (context: Omit<RepoContext, "summary">) => {
+type CollectedContext = Omit<RepoContext, "summary" | "overview">;
+
+const formatOverview = (context: CollectedContext) =>
+  [
+    `Repository file tree sample:\n${context.fileTree.join("\n")}`,
+    ...(context.language ? [`Language: ${context.language}`] : []),
+    `Checks: ${context.checks.join(", ") || "none available"}`,
+    `Files that look relevant to the ticket: ${context.selectedFiles.join(", ") || "none found"}`,
+  ].join("\n\n");
+
+const formatSummary = (context: CollectedContext) => {
   const selected = context.selectedFileContents
     .map(
       // Not the "FILE:" output syntax, so models don't echo it back unfenced.
@@ -133,23 +150,33 @@ const formatSummary = (context: Omit<RepoContext, "summary">) => {
     .join("\n\n");
   return [
     `Repository file tree sample:\n${context.fileTree.join("\n")}`,
-    `Package scripts: ${context.packageScripts.join(", ") || "none detected"}`,
+    ...(context.language ? [`Language: ${context.language}`] : []),
+    `Checks: ${context.checks.join(", ") || "none available"}`,
     `Selected files:\n${selected || "No selected files could be read."}`,
   ]
     .join("\n\n")
     .slice(0, MAX_CONTEXT_CHARS);
 };
 
-export const collectRepoContext = async (root: string, ticket: string) => {
+export const collectRepoContext = async (
+  root: string,
+  ticket: string,
+  toolchain: { language?: string; checks: Record<string, unknown> },
+) => {
   const fileTree = await listFiles(root);
-  const packageScripts = await parsePackageScripts(root);
+  const checks = Object.keys(toolchain.checks);
   const selectedFiles = selectRelevantFiles(fileTree, ticket);
   const selectedFileContents = await readSelectedFiles(root, selectedFiles);
   const partial = {
     fileTree,
-    packageScripts,
+    checks,
+    language: toolchain.language,
     selectedFiles,
     selectedFileContents,
   };
-  return { ...partial, summary: formatSummary(partial) };
+  return {
+    ...partial,
+    summary: formatSummary(partial),
+    overview: formatOverview(partial),
+  };
 };

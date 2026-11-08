@@ -1,0 +1,45 @@
+{
+  "language": "Python (PostgreSQL)",
+  "environment": {
+    "toolchain": {
+      "image": "python:3.12-slim",
+      "setup": ["pip", "install", "-q", "-r", "requirements.txt"],
+      "checks": { "test": ["python", "-m", "unittest"] },
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "DATABASE_URL": "postgresql://postgres:test@db:5432/postgres"
+      },
+      "services": [
+        {
+          "name": "db",
+          "image": "postgres:16-alpine",
+          "env": { "POSTGRES_PASSWORD": "test" },
+          "ready": ["pg_isready", "-U", "postgres", "-h", "127.0.0.1"]
+        }
+      ],
+      "protectedPaths": ["pyproject.toml", "requirements.txt", ".github"]
+    }
+  },
+  "grader": {
+    "image": "python:3.12-slim",
+    "env": {
+      "PYTHONDONTWRITEBYTECODE": "1",
+      "PYTHONPATH": "/deps",
+      "DATABASE_URL": "postgresql://postgres:test@db:5432/postgres"
+    },
+    "cache": "/deps",
+    "setup": ["sh", "-c", "python -c 'import psycopg' 2>/dev/null || pip install -q --target /deps -r requirements.txt"],
+    "services": [
+      {
+        "name": "db",
+        "image": "postgres:16-alpine",
+        "env": { "POSTGRES_PASSWORD": "test" },
+        "ready": ["pg_isready", "-U", "postgres", "-h", "127.0.0.1"]
+      }
+    ],
+    "test": ["python", "-m", "unittest"],
+    "hiddenTest": ["python", "-m", "unittest", "{files}"],
+    "assertionFailure": "^FAIL: "
+  },
+  "testFiles": "^tests/"
+}

@@ -1,0 +1,7 @@
+{
+  "title": "Orders from the last day of a range are missing",
+  "description": "orders_between in shop/orders.py leaves out orders placed during the last day of the range. Example: for March 1 to March 5, an order placed on March 5 at 15:00 is missing. Both days are included, all of each day.",
+  "expect": "fix",
+  "expectedFiles": ["shop/orders.py"],
+  "measures": "Single-file fix in a SQL query, checked against a real PostgreSQL"
+}

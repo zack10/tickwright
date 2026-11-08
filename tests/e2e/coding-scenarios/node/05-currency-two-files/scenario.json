@@ -1,0 +1,10 @@
+{
+  "title": "EUR and GBP invoices are shown in dollars",
+  "description": "renderInvoice always prints amounts with a $ sign, whatever the invoice's currency. EUR invoices should use € and GBP invoices £ (USD stays $), on every line and on the total. formatMoney should take the currency as a second argument, defaulting to USD.",
+  "expect": "fix",
+  "expectedFiles": [
+    "src/invoice.js",
+    "src/money.js"
+  ],
+  "measures": "Multi-file change (helper + caller)"
+}

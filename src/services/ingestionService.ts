@@ -7,6 +7,7 @@ import {
 } from "../integrations/trackerRegistry";
 import { createExecution } from "./executionService";
 import { openIntegrationConfig } from "./integrationConfigService";
+import { handleTicketReplies, signed } from "./ticketConversation";
 
 /**
  * Pulls eligible tickets from a tracker connection, upserts them as work
@@ -22,9 +23,8 @@ export const syncIntegrationConnection = async (connectionId: string) => {
       `Integration type ${connection.type} is not an issue tracker and cannot be synced`,
     );
 
-  const { repositoryId, items } = await adapter.fetchEligibleItems(
-    openIntegrationConfig(connection.encryptedConfig),
-  );
+  const trackerConfig = openIntegrationConfig(connection.encryptedConfig);
+  const { repositoryId, items } = await adapter.fetchEligibleItems(trackerConfig);
   let ingested = 0;
   for (const item of items) {
     const fields = {
@@ -59,6 +59,8 @@ export const syncIntegrationConnection = async (connectionId: string) => {
     });
     ingested++;
   }
+  // Decisions approvers replied on tickets since the last poll.
+  await handleTicketReplies(adapter, trackerConfig);
   await prisma.integrationConnection.update({
     where: { id: connectionId },
     data: { lastSyncedAt: new Date(), lastError: null },
@@ -84,6 +86,6 @@ export const commentOnWorkItem = async (
   await adapter.comment(
     openIntegrationConfig(connection.encryptedConfig),
     workItem.externalId,
-    text,
+    signed(text),
   );
 };

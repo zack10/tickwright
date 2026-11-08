@@ -1,0 +1,1 @@
+Each changed file is one block: a line "FILE: relative/path", then an opening fence line such as ```md, then the COMPLETE new file content, then a line containing only ```. Put all blocks in the JSON "actions" string.

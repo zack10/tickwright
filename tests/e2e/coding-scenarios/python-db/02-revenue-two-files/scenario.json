@@ -1,0 +1,7 @@
+{
+  "title": "Revenue report shows the wrong amounts",
+  "description": "The revenue report is wrong. Ana paid two orders, 10.50 and 4.25, and cancelled one of 99.00; revenue_by_customer shows 114 for her instead of 14.75. A cancelled order is not revenue, and amounts are exact to the cent.",
+  "expect": "fix",
+  "expectedFiles": ["shop/statuses.py", "shop/reports.py"],
+  "measures": "Fix that needs changes in two files, one of them SQL"
+}

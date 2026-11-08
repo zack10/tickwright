@@ -12,6 +12,36 @@ const parsePositiveInt = (
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 };
 
+const AGENT_MODES = ["single_shot", "tool_loop"] as const;
+export type ExecutionAgentMode = (typeof AGENT_MODES)[number];
+
+/** A typo must not silently fall back to the other mode. */
+const parseAgentMode = (value: string | undefined): ExecutionAgentMode => {
+  if (!value) return "single_shot";
+  if ((AGENT_MODES as readonly string[]).includes(value))
+    return value as ExecutionAgentMode;
+  throw new Error(
+    `EXECUTION_AGENT_MODE must be one of ${AGENT_MODES.join(", ")} (got "${value}")`,
+  );
+};
+
+// GitHub Codespaces' default image (built from github.com/devcontainers/images).
+// Pinned to the version tested on 2026-10-31 (6.1.12, Ubuntu 24.04); update
+// deliberately. 2.x (Ubuntu 20.04) shipped an apt source with an expired key,
+// so no setup could install a system package.
+const DEFAULT_EXECUTION_IMAGE =
+  "mcr.microsoft.com/devcontainers/universal:6.1.12@sha256:7d644a3e845e78e2175c9c265a383436c93ab740e77947bbcaff9592e39f7205";
+
+/** Like parsePositiveInt, but 0 is allowed (it switches a limit off). */
+const parseNonNegativeInt = (
+  value: string | undefined,
+  fallback: number,
+): number => {
+  if (value === undefined || value.trim() === "") return fallback;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
+};
+
 export const config = {
   nodeEnv: process.env.NODE_ENV ?? "development",
   port: parsePositiveInt(process.env.PORT, 3001),
@@ -34,6 +64,12 @@ export const config = {
   taskRetryDelayMs: parsePositiveInt(process.env.TASK_RETRY_DELAY_MS, 5000),
   taskLeaseMs: parsePositiveInt(process.env.TASK_LEASE_MS, 300_000),
   executionLeaseMs: parsePositiveInt(process.env.EXECUTION_LEASE_MS, 300_000),
+  // Run steps (agent loop, checks, review) one server works on at once.
+  executionRunConcurrency: parsePositiveInt(process.env.EXECUTION_RUN_CONCURRENCY, 1),
+  // Plan steps (clone, triage, plan) one server works on at once.
+  executionPlanConcurrency: parsePositiveInt(process.env.EXECUTION_PLAN_CONCURRENCY, 1),
+  // Plans a person can ask to revise before the execution is blocked.
+  planMaxVersions: parsePositiveInt(process.env.PLAN_MAX_VERSIONS, 5),
   consumerMaxAttempts: parsePositiveInt(process.env.CONSUMER_MAX_ATTEMPTS, 3),
   consumerRetryDelayMs: parsePositiveInt(
     process.env.CONSUMER_RETRY_DELAY_MS,
@@ -47,6 +83,11 @@ export const config = {
     process.env.LLM_MAX_OUTPUT_TOKENS,
     16_000,
   ),
+  // JSON array of OpenAI-compatible provider profiles (services/llm/registry.ts).
+  llmProviders: process.env.LLM_PROVIDERS ?? "",
+  // Used when an agent has no provider/model set.
+  llmDefaultProvider: process.env.LLM_DEFAULT_PROVIDER || "gemini",
+  llmDefaultModel: process.env.LLM_DEFAULT_MODEL || "gemini-flash-latest",
   llmRateLimitRetries: parsePositiveInt(
     process.env.LLM_RATE_LIMIT_RETRIES,
     3,
@@ -72,6 +113,33 @@ export const config = {
     process.env.GENERATED_CODE_MAX_FILE_BYTES,
     500_000,
   ),
+  // single_shot: one implement call per attempt; tool_loop: the agent loop.
+  executionAgentMode: parseAgentMode(process.env.EXECUTION_AGENT_MODE),
+  // Model calls per attempt in tool_loop mode (an execution's budget.maxSteps wins).
+  agentMaxSteps: parsePositiveInt(process.env.AGENT_MAX_STEPS, 30),
+  // Tokens all model calls together may use per UTC day; 0 switches it off.
+  llmDailyTokenLimit: parseNonNegativeInt(
+    process.env.LLM_DAILY_TOKEN_LIMIT,
+    2_000_000,
+  ),
+  // Budget given to each new execution (stored on it, so changing these
+  // affects only executions created afterwards).
+  executionMaxTokens: parsePositiveInt(process.env.EXECUTION_MAX_TOKENS, 200_000),
+  executionMaxDurationSeconds: parsePositiveInt(
+    process.env.EXECUTION_MAX_DURATION_SECONDS,
+    1800,
+  ),
+  // Image for repositories that configure none and have no devcontainer:
+  // a stock image with the common languages, pinned so it never changes
+  // without notice. Mirror it to your own registry for production.
+  executionDefaultImage:
+    process.env.EXECUTION_DEFAULT_IMAGE || DEFAULT_EXECUTION_IMAGE,
+  // Environments discovery may try (setup + baseline each) before a run
+  // falls back to the default image. 0 turns discovery off.
+  // A repository's environment snapshot is reused for this long, then rebuilt
+  // from its image. 0 turns reuse off.
+  executionSnapshotMaxAgeHours: parseNonNegativeInt(process.env.EXECUTION_SNAPSHOT_MAX_AGE_HOURS, 24),
+  executionDiscoveryMaxAttempts: parseNonNegativeInt(process.env.EXECUTION_DISCOVERY_MAX_ATTEMPTS, 3),
   storeRawLlmOutput: process.env.STORE_RAW_LLM_OUTPUT === "true",
 };
 

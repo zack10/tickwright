@@ -44,7 +44,7 @@ Check it is up:
 
 ```powershell
 curl.exe http://localhost:3001/health
-# {"status":"healthy","checks":{"database":"ok","rabbitmq":"ok"}}
+# {"status":"healthy","version":"0.1.0","checks":{"database":"ok","rabbitmq":"ok"}}
 ```
 
 If your database was created earlier with `prisma db push`, `prisma migrate dev` will offer to reset it, which deletes all data. Don't accept. If the schema already matches the init migration, baseline it instead:
@@ -681,6 +681,7 @@ artifacts/              approved diffs, one per execution
 
 ## Project docs
 
+- `CHANGELOG.md`: what changed in each version; every pull request adds a line under Unreleased.
 - `AUDIT.md`: audit findings and fix-progress tracker.
 - `docs/plans/`: roadmaps and project plans.
 - `docs/specs/`: technical specifications (orchestration engine, LangGraph, provider infrastructure).

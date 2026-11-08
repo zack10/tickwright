@@ -1,6 +1,6 @@
 {
   "name": "tickwright",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "Backend for the Agent Orchestration Application",
   "main": "dist/index.js",
   "scripts": {

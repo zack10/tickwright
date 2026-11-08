@@ -1,5 +1,6 @@
 import axios from "axios";
 import { config } from "../../../config";
+import { AppError } from "../../../errors/AppError";
 import { LLMOutputError } from "../errors";
 import { groupMessages, replayable } from "../toolMessages";
 import { LLMProvider, Model, TextResult, TokenUsage, ToolRequest, ToolTurn, UsageStats } from "../types";
@@ -63,7 +64,7 @@ export class GeminiProvider implements LLMProvider {
           max_tokens: m.outputTokenLimit || 8192,
         }));
     } catch {
-      throw new Error(
+      throw AppError.badGateway(
         "Gemini model discovery failed; verify the API key and provider availability",
       );
     }

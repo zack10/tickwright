@@ -1,5 +1,6 @@
 import axios from "axios";
 import { config } from "../../../config";
+import { AppError } from "../../../errors/AppError";
 import { LLMOutputError } from "../errors";
 import { groupMessages, replayable } from "../toolMessages";
 import { LLMProvider, Model, TextResult, TokenUsage, ToolRequest, ToolTurn, UsageStats } from "../types";
@@ -47,7 +48,7 @@ export class AnthropicProvider implements LLMProvider {
         max_tokens: 4096,
       }));
     } catch {
-      throw new Error(
+      throw AppError.badGateway(
         "Anthropic model discovery failed; verify the API key and provider availability",
       );
     }

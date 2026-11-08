@@ -28,6 +28,10 @@ export class AppError extends Error {
     return new AppError(403, "FORBIDDEN", message);
   }
 
+  static badGateway(message: string) {
+    return new AppError(502, "BAD_GATEWAY", message);
+  }
+
   static serviceUnavailable(message: string) {
     return new AppError(503, "SERVICE_UNAVAILABLE", message);
   }

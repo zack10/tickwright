@@ -60,44 +60,111 @@ Use migrations (not `db push`) from then on.
 
 One Node process serves the HTTP API and runs the background workers. Work is handed between them through RabbitMQ, and every state change is stored in PostgreSQL first.
 
+Each box links to its source file. (Diagram drafted with [GitDiagram](https://gitdiagram.com/zack10/tickwright).)
+
 ```mermaid
-flowchart LR
-    client(["API client / UI"])
-    trello[("Trello")]
-    github[("GitHub")]
-    llm[("LLM providers<br/>Gemini · Anthropic · OpenAI-compatible")]
+flowchart TD
 
-    subgraph app["Node process (src/index.ts)"]
-        direction TB
-        api["HTTP API<br/>security headers → CORS → auth → rate limit<br/>routes → controllers → services"]
-        poller["Integration poller<br/>(every 30s)"]
-        outbox["Outbox flusher<br/>(every 2s)"]
-        workers["Execution workers<br/>plan · run · publish"]
-        taskworker["Task worker"]
-        rungraph["LangGraph run graph"]
-    end
+subgraph group_api["API and Projects"]
+  node_api["HTTP API<br/>security headers → CORS → auth → rate limit<br/>[index.ts]"]
+  node_execution_routes["Execution routes<br/>[executionRoutes.ts]"]
+  node_execution_controller["Execution controller"]
+  node_project_controller["Project management"]
+end
 
-    pg[("PostgreSQL")]
-    mq[["RabbitMQ<br/>agent_exchange"]]
-    docker["Docker workspace<br/>repository image"]
+subgraph group_execution["Ticket Execution"]
+  node_poller["Integration poller<br/>every 30 s"]
+  node_ingestion["Ticket ingestion"]
+  node_tracker["Tracker adapters<br/>[trackerRegistry.ts]"]
+  node_execution_service["Execution state"]
+  node_worker["Execution workers<br/>plan · run · publish<br/>[executionWorker.ts]"]
+  node_workspace["Docker workspace<br/>repository image"]
+  node_ticket_conversation["Ticket approvals"]
+end
 
-    client -->|HTTPS + Bearer token| api
-    api --> pg
-    poller -->|fetch eligible cards| trello
-    poller --> pg
-    pg -->|outbox rows| outbox
-    outbox -->|publish with confirms| mq
-    mq --> workers
-    mq --> taskworker
-    api -->|publish task id| mq
-    workers --> rungraph
-    rungraph --> llm
-    rungraph -->|clone, verify, diff| docker
-    workers -->|draft PR| github
-    workers -->|status comments| trello
-    taskworker --> llm
-    workers --> pg
-    taskworker --> pg
+subgraph group_llm["LLM and Agents"]
+  node_planning["Plan generation<br/>[planning.ts]"]
+  node_run_graph["Execution run graph<br/>[executionGraph.ts]"]
+  node_sandbox["Agent tools<br/>[tools.ts]"]
+  node_llm_service["LLM service<br/>[LLMService.ts]"]
+  node_provider_registry["Provider registry<br/>[registry.ts]"]
+  node_agent_runner["Task agent<br/>[agentRunner.ts]"]
+end
+
+subgraph group_messaging["Queues and State"]
+  node_database[("PostgreSQL<br/>[db.ts]")]
+  node_outbox["Outbox flusher<br/>every 2 s<br/>[outboxService.ts]"]
+  node_task_queue["Task queue"]
+end
+
+node_client(("API client / UI"))
+node_trello["Trello tracker"]
+node_rabbit["RabbitMQ<br/>agent_exchange"]
+node_providers["LLM providers<br/>Gemini · Anthropic · OpenAI-compatible"]
+node_github["GitHub"]
+
+node_client -->|"HTTPS + Bearer token"| node_api
+node_api -->|"routes requests"| node_execution_routes
+node_execution_routes -->|"dispatches"| node_execution_controller
+node_execution_controller -->|"creates and approves"| node_execution_service
+node_execution_controller -->|"syncs tracker"| node_ingestion
+node_project_controller -->|"reads and writes"| node_database
+node_poller -->|"syncs trackers"| node_ingestion
+node_ingestion -->|"selects adapter"| node_tracker
+node_tracker -->|"fetches tickets"| node_trello
+node_ingestion -->|"upserts work items"| node_database
+node_ingestion -->|"creates executions"| node_execution_service
+node_execution_service -->|"stores state"| node_database
+node_execution_service -->|"records events"| node_outbox
+node_outbox -->|"publishes with confirms"| node_rabbit
+node_rabbit -->|"dispatches jobs"| node_worker
+node_worker -->|"runs planning"| node_planning
+node_worker -->|"runs execution"| node_run_graph
+node_run_graph -->|"clones and verifies"| node_workspace
+node_run_graph -->|"uses tools"| node_sandbox
+node_run_graph -.->|"requests model calls"| node_llm_service
+node_llm_service -->|"selects provider"| node_provider_registry
+node_provider_registry -->|"routes calls"| node_providers
+node_worker -->|"handles replies"| node_ticket_conversation
+node_ticket_conversation -->|"reads and comments"| node_trello
+node_worker -->|"opens draft PR"| node_github
+node_worker -->|"stores execution data"| node_database
+node_api -->|"queues tasks"| node_task_queue
+node_task_queue -->|"runs task agent"| node_agent_runner
+node_agent_runner -.->|"requests completions"| node_llm_service
+node_task_queue -->|"publishes task"| node_rabbit
+
+click node_api "https://github.com/zack10/tickwright/blob/main/src/index.ts"
+click node_execution_routes "https://github.com/zack10/tickwright/blob/main/src/routes/executionRoutes.ts"
+click node_execution_controller "https://github.com/zack10/tickwright/blob/main/src/controllers/executionController.ts"
+click node_project_controller "https://github.com/zack10/tickwright/blob/main/src/controllers/projectController.ts"
+click node_database "https://github.com/zack10/tickwright/blob/main/src/db.ts"
+click node_poller "https://github.com/zack10/tickwright/blob/main/src/services/integrationPollingService.ts"
+click node_ingestion "https://github.com/zack10/tickwright/blob/main/src/services/ingestionService.ts"
+click node_tracker "https://github.com/zack10/tickwright/blob/main/src/integrations/trackerRegistry.ts"
+click node_execution_service "https://github.com/zack10/tickwright/blob/main/src/services/executionService.ts"
+click node_outbox "https://github.com/zack10/tickwright/blob/main/src/services/outboxService.ts"
+click node_worker "https://github.com/zack10/tickwright/blob/main/src/services/executionWorker.ts"
+click node_planning "https://github.com/zack10/tickwright/blob/main/src/services/agentGraph/planning.ts"
+click node_run_graph "https://github.com/zack10/tickwright/blob/main/src/services/agentGraph/executionGraph.ts"
+click node_workspace "https://github.com/zack10/tickwright/blob/main/src/services/workspaceService.ts"
+click node_sandbox "https://github.com/zack10/tickwright/blob/main/src/services/sandbox/tools.ts"
+click node_llm_service "https://github.com/zack10/tickwright/blob/main/src/services/llm/LLMService.ts"
+click node_provider_registry "https://github.com/zack10/tickwright/blob/main/src/services/llm/registry.ts"
+click node_ticket_conversation "https://github.com/zack10/tickwright/blob/main/src/services/ticketConversation.ts"
+click node_task_queue "https://github.com/zack10/tickwright/blob/main/src/services/taskQueueService.ts"
+click node_agent_runner "https://github.com/zack10/tickwright/blob/main/src/services/agentRunner.ts"
+
+classDef toneBlue fill:#dbeafe,stroke:#2563eb,stroke-width:1.5px,color:#172554
+classDef toneAmber fill:#fef3c7,stroke:#d97706,stroke-width:1.5px,color:#78350f
+classDef toneMint fill:#dcfce7,stroke:#16a34a,stroke-width:1.5px,color:#14532d
+classDef toneRose fill:#ffe4e6,stroke:#e11d48,stroke-width:1.5px,color:#881337
+classDef toneIndigo fill:#e0e7ff,stroke:#4f46e5,stroke-width:1.5px,color:#312e81
+class node_api,node_execution_routes,node_execution_controller,node_project_controller,node_client toneBlue
+class node_poller,node_ingestion,node_tracker,node_execution_service,node_worker,node_workspace,node_ticket_conversation toneAmber
+class node_planning,node_run_graph,node_sandbox,node_llm_service,node_provider_registry,node_agent_runner toneMint
+class node_database,node_outbox,node_task_queue toneRose
+class node_trello,node_rabbit,node_providers,node_github toneIndigo
 ```
 
 | Component | Where | Role |

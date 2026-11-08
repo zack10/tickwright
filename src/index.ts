@@ -1,6 +1,8 @@
 import cors from "cors";
 import dotenv from "dotenv";
 import express, { Request, Response } from "express";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { config, validateProductionConfig } from "./config";
 import prisma from "./db";
 import { AppError } from "./errors/AppError";
@@ -28,6 +30,9 @@ import {
 import { getProviderRegistry } from "./services/llm/registry";
 
 dotenv.config();
+
+// package.json sits one level above both src/ and dist/ (also in the Docker image).
+const { version } = JSON.parse(readFileSync(path.join(__dirname, "..", "package.json"), "utf8")) as { version: string };
 
 const app = express();
 validateProductionConfig();
@@ -66,7 +71,7 @@ app.get("/health", async (_req: Request, res: Response) => {
   const healthy = Object.values(checks).every((v) => v === "ok");
   res
     .status(healthy ? 200 : 503)
-    .json({ status: healthy ? "healthy" : "degraded", checks });
+    .json({ status: healthy ? "healthy" : "degraded", version, checks });
 });
 
 app.use("/api", authenticate);

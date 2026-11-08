@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+    # labeled/unlabeled rerun the changelog check when skip-changelog is added or removed.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 permissions:
   contents: read
@@ -25,3 +27,24 @@ jobs:
       - run: npm ci
       # Lint, build, then unit tests. The scenario-validity tests use the runner's Docker.
       - run: npm run verify
+
+  changelog:
+    # Every PR adds a line under "Unreleased" in CHANGELOG.md, unless it only touches docs
+    # or carries the skip-changelog label.
+    if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'skip-changelog')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: CHANGELOG.md is updated
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          changed=$(git diff --name-only "$BASE...$HEAD")
+          if echo "$changed" | grep -qx 'CHANGELOG.md'; then exit 0; fi
+          if ! echo "$changed" | grep -qvE '^docs/|\.md$'; then echo "Docs only; no changelog line needed."; exit 0; fi
+          echo "::error file=CHANGELOG.md::Add a line under [Unreleased] in CHANGELOG.md, or add the skip-changelog label."
+          exit 1

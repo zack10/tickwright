@@ -19,7 +19,7 @@ describe("smoke", () => {
 
   test("health reports database and rabbitmq ok", async () => {
     const { data } = await api("GET", "/health", { expectStatus: 200 });
-    assert.deepEqual(data, { status: "healthy", checks: { database: "ok", rabbitmq: "ok" } });
+    assert.deepEqual(data, { status: "healthy", version: require("../../package.json").version, checks: { database: "ok", rabbitmq: "ok" } });
   });
 
   test(

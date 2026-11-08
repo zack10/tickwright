@@ -2,6 +2,10 @@
 
 Express/TypeScript backend that turns tickets into reviewed code changes. An AI agent picks up a bug card from Trello, plans the fix, edits the code in an isolated Docker workspace, proves it with the repository's own checks, and opens a **draft** GitHub pull request. A human approves both the plan and the exact diff before anything is pushed.
 
+**Quick introduction (76 s):**
+
+https://github.com/user-attachments/assets/ccbb99cc-d576-46e6-b595-151e400c1743
+
 It also runs a simpler general-purpose pipeline: queue a task for an LLM agent and get structured output back.
 
 Built on PostgreSQL + Prisma, RabbitMQ, LangGraph, and pluggable LLM providers (Gemini, Anthropic, and any OpenAI-compatible API by configuration).

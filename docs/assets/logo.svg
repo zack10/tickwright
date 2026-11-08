@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-labelledby="t">
+  <title id="t">Tickwright</title>
+  <defs>
+    <mask id="ticks" maskUnits="userSpaceOnUse" x="0" y="0" width="64" height="64">
+      <rect width="64" height="64" fill="#fff"/>
+      <path d="M30.24 35.03 L33.35 38.14 M33.42 31.85 L35.26 33.69 M36.61 28.67 L39.72 31.78 M39.79 25.48 L41.63 27.32 M42.97 22.3 L46.08 25.41 M46.15 19.12 L47.99 20.96" stroke="#000" stroke-width="1.5" stroke-linecap="round"/>
+    </mask>
+  </defs>
+  <g transform="translate(-1.07 -1.26)">
+    <path fill="#1b2a41" mask="url(#ticks)" d="M26 52 L57.11 20.89 L50.75 14.52 L19.64 45.64 Z"/>
+    <path fill="#c8921a" d="M26 52 L9.03 35.03 L16.81 27.25 L33.78 44.22 Z"/>
+  </g>
+</svg>

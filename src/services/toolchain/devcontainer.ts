@@ -5,6 +5,9 @@
  * taken; everything else is reported, never guessed.
  */
 
+import path from "node:path";
+import type { DockerBuild } from "./types";
+
 export const DEVCONTAINER_FILES = [".devcontainer/devcontainer.json", ".devcontainer.json"];
 
 /**
@@ -62,9 +65,39 @@ const LIFECYCLE = ["onCreateCommand", "updateContentCommand", "postCreateCommand
 // Values like ${containerEnv:PATH} need a running dev container to resolve.
 const hasVariable = (value: string) => value.includes("${");
 
+/** A path from devcontainer.json (relative to its folder) as a repository path, or undefined if it leaves the repository. */
+const repoPath = (file: string, relative: string) => {
+  const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(file), relative.replaceAll("\\", "/")));
+  return path.posix.isAbsolute(relative) || resolved === ".." || resolved.startsWith("../") ? undefined : resolved;
+};
+
+/** `build` (or the older top-level `dockerFile`/`context`): built as-is, before setup. */
+const readBuild = (file: string, spec: Record<string, unknown>, notes: string[]): DockerBuild | undefined => {
+  const build = (spec.build && typeof spec.build === "object" ? spec.build : spec) as Record<string, unknown>;
+  const dockerfileField = build === spec ? spec.dockerFile : build.dockerfile;
+  if (typeof dockerfileField !== "string") {
+    if (spec.build) notes.push(`${file} build names no dockerfile`);
+    return undefined;
+  }
+  const dockerfile = repoPath(file, dockerfileField);
+  const context = repoPath(file, typeof build.context === "string" ? build.context : ".");
+  if (!dockerfile || !context) {
+    notes.push(`${file} build points outside the repository, so it was not built`);
+    return undefined;
+  }
+  const args: Record<string, string> = {};
+  for (const [name, value] of Object.entries((build.args as Record<string, unknown>) ?? {})) {
+    if (typeof value !== "string" || hasVariable(value)) notes.push(`build.args.${name} was not applied`);
+    else args[name] = value;
+  }
+  for (const key of ["options", "cacheFrom"]) if (build[key]) notes.push(`build.${key} was not applied`);
+  return { dockerfile, context, args, ...(typeof build.target === "string" ? { target: build.target } : {}) };
+};
+
 export interface DevcontainerEnvironment {
   file: string;
   image?: string;
+  build?: DockerBuild;
   setup: string[] | null;
   env: Record<string, string>;
   notes: string[];
@@ -83,7 +116,7 @@ export const readDevcontainer = (read: (file: string) => string | undefined): De
   }
 
   const image = typeof spec.image === "string" ? spec.image : undefined;
-  if (!image && (spec.build || spec.dockerFile)) notes.push(`${file} builds a Dockerfile, which is not supported yet`);
+  const build = image ? undefined : readBuild(file, spec, notes);
   if (spec.dockerComposeFile) notes.push(`${file} uses Docker Compose, which is not supported yet`);
   if (spec.features && Object.keys(spec.features as object).length)
     notes.push(`${file} features were not applied: ${Object.keys(spec.features as object).join(", ")}`);
@@ -99,6 +132,7 @@ export const readDevcontainer = (read: (file: string) => string | undefined): De
   return {
     file,
     image,
+    ...(build ? { build } : {}),
     setup: commands.length ? ["sh", "-c", commands.join(" && ")] : null,
     env,
     notes,

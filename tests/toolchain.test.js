@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const {
+  describeEnvironment,
   describeToolchain,
   isTestFile,
   parseVerificationConfig,
@@ -86,10 +87,32 @@ test("configuration wins over the devcontainer field by field", () => {
   assert.equal(image.toolchain.image, "python:3.13");
 });
 
+test("a devcontainer's Dockerfile is built, with paths relative to devcontainer.json", () => {
+  const { toolchain, source, reason, notes } = resolve({
+    ".devcontainer/devcontainer.json":
+      '{ "build": { "dockerfile": "Dockerfile", "context": "..", "args": { "V": "1", "P": "${localEnv:P}" }, "target": "dev" }, "postCreateCommand": "make deps" }',
+  });
+  assert.equal(source, "devcontainer");
+  assert.match(reason, /built from the project's \.devcontainer\/Dockerfile/);
+  assert.deepEqual(toolchain.build, { dockerfile: ".devcontainer/Dockerfile", context: ".", args: { V: "1" }, target: "dev" });
+  assert.match(toolchain.image, /^agent-build:[0-9a-f]{16}$/);
+  assert.deepEqual(toolchain.setup, ["sh", "-c", "make deps"]);
+  assert.ok(notes.some((note) => /build\.args\.P was not applied/.test(note)));
+  assert.match(describeEnvironment(toolchain, [], false), /Image: built from the project's \.devcontainer\/Dockerfile/);
+
+  const legacy = resolve({ ".devcontainer/devcontainer.json": '{ "dockerFile": "Dockerfile" }' }).toolchain.build;
+  assert.deepEqual(legacy, { dockerfile: ".devcontainer/Dockerfile", context: ".devcontainer", args: {} }, "context defaults to its folder");
+
+  const configured = resolve({ ".devcontainer.json": '{ "build": { "dockerfile": "Dockerfile" } }' }, { toolchain: { image: "python:3.13" } });
+  assert.equal(configured.toolchain.image, "python:3.13", "a configured image wins and nothing is built");
+  assert.equal(configured.toolchain.build, undefined);
+});
+
 test("a devcontainer that can't be used falls back to the default image and says why", () => {
-  const dockerfile = resolve({ ".devcontainer/devcontainer.json": '{ "build": { "dockerfile": "Dockerfile" } }' });
-  assert.equal(dockerfile.source, "default");
-  assert.ok(dockerfile.notes.some((note) => /builds a Dockerfile, which is not supported yet/.test(note)));
+  const outside = resolve({ ".devcontainer/devcontainer.json": '{ "build": { "dockerfile": "Dockerfile", "context": "../.." } }' });
+  assert.equal(outside.source, "default");
+  assert.equal(outside.toolchain.build, undefined);
+  assert.ok(outside.notes.some((note) => /points outside the repository/.test(note)));
 
   const broken = resolve({ ".devcontainer.json": "{ not json" });
   assert.equal(broken.source, "default");
@@ -306,6 +329,34 @@ test("a new environment cache replaces the repository's old one", { skip: requir
   assert.equal(await run(`${scope}-b`, "echo b > /b"), "built");
   assert.equal(images(`agent-cache-${scope}`, "-q").length, 1, "only the new cache is kept");
   assert.deepEqual(images("-q", "--filter", "dangling=true", "--filter", `label=agent.environment-cache=agent-cache-${scope}`), []);
+});
+
+test("the project's Dockerfile is built as it is, and a failed build reports its output", { skip: require("node:child_process").spawnSync("docker", ["version"]).status === 0 ? false : "Docker is not available" }, async (t) => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const { execFileSync } = require("node:child_process");
+  const { buildEnvironmentImage, SetupFailedError, workspacePath } = require("../dist/services/workspaceService");
+  const id = `build-test-${process.pid}`;
+  const tag = `agent-build:test-${process.pid}`;
+  const dir = workspacePath(id);
+  fs.mkdirSync(path.join(dir, ".devcontainer"), { recursive: true });
+  t.after(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+    require("node:child_process").spawnSync("docker", ["rmi", "-f", tag]);
+  });
+  fs.writeFileSync(path.join(dir, "hello.txt"), "from the context\n");
+  fs.writeFileSync(path.join(dir, ".devcontainer", "Dockerfile"), "FROM alpine:3.20 AS dev\nARG V\nCOPY hello.txt /hello.txt\nRUN echo \"v=$V\" >> /hello.txt\n");
+
+  const image = await buildEnvironmentImage(id, tag, { dockerfile: ".devcontainer/Dockerfile", context: ".", args: { V: "7" }, target: "dev" });
+  assert.match(image, /^sha256:[0-9a-f]{64}$/);
+  assert.equal(execFileSync("docker", ["run", "--rm", image, "cat", "/hello.txt"], { encoding: "utf8" }), "from the context\nv=7\n");
+  assert.equal(fs.existsSync(`${dir}.iid`), false, "the ID file is removed");
+
+  fs.writeFileSync(path.join(dir, ".devcontainer", "Dockerfile"), "FROM alpine:3.20\nRUN echo broken-step-output && exit 3\n");
+  await assert.rejects(
+    buildEnvironmentImage(id, tag, { dockerfile: ".devcontainer/Dockerfile", context: ".", args: {} }),
+    (error) => error instanceof SetupFailedError && /broken-step-output/.test(error.message),
+  );
 });
 
 test("environment snapshots are cached per repository and per environment", () => {

@@ -5,7 +5,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { config } from "../config";
-import { SANDBOX_ROOT, ServiceContainer, Toolchain, commandText } from "./toolchain";
+import { findSymlink } from "../utils/safePath";
+import { DockerBuild, SANDBOX_ROOT, ServiceContainer, Toolchain, commandText } from "./toolchain";
 
 const exec = promisify(execFile);
 const safeId = (id: string) => {
@@ -247,6 +248,39 @@ export const removeEnvironmentSnapshot = async (id: string) => {
 export class SetupFailedError extends Error {
   name = "SetupFailedError";
 }
+
+/**
+ * Builds the project's Dockerfile as it is, like a dev container does, and
+ * returns the built image's ID. Network for base images and packages, never
+ * the token (nothing passes it to the build). Docker's layer cache makes an
+ * unchanged build quick. shortcut: BuildKit takes no --cpus/--memory, so the
+ * build is limited only by its timeout; limit the builder once servers run it.
+ */
+export const buildEnvironmentImage = async (id: string, tag: string, build: DockerBuild, timeoutMs = SETUP_TIMEOUT_MS) => {
+  const root = workspacePath(id);
+  // A link could make docker read a host file as the Dockerfile or context.
+  for (const file of [build.dockerfile, build.context])
+    if (file !== "." && findSymlink(root, file)) throw new SetupFailedError(`${file} is a symlink, so it was not built`);
+  const idFile = `${root}.iid`;
+  try {
+    await execDocker(
+      [
+        "build", "--progress", "plain", "-t", tag, "--iidfile", idFile,
+        "-f", path.join(root, build.dockerfile),
+        ...Object.entries(build.args).flatMap(([name, value]) => ["--build-arg", `${name}=${value}`]),
+        ...(build.target ? ["--target", build.target] : []),
+        path.join(root, build.context),
+      ],
+      undefined,
+      timeoutMs,
+    );
+    return (await fs.readFile(idFile, "utf8")).trim();
+  } catch (error) {
+    throw new SetupFailedError(`building ${build.dockerfile} failed: ${(error as Error).message}`);
+  } finally {
+    await fs.rm(idFile, { force: true });
+  }
+};
 
 /**
  * The toolchain's service containers (a database, a cache) for one run, on

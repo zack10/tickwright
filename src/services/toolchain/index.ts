@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -5,6 +6,7 @@ import { config } from "../../config";
 import { NonRetryableError } from "../../utils/safeError";
 import { readDevcontainer } from "./devcontainer";
 import {
+  DockerBuild,
   Toolchain,
   ToolchainResolution,
   ToolchainSource,
@@ -98,6 +100,10 @@ export const parseVerificationConfig = (raw: unknown): VerificationConfig => {
   return parsed.data;
 };
 
+// Names the image a build produces; runs use the built image's ID, so a changed Dockerfile or context is never mistaken for the old one.
+const buildTag = (build: DockerBuild) =>
+  `agent-build:${crypto.createHash("sha256").update(JSON.stringify(build)).digest("hex").slice(0, 16)}`;
+
 /**
  * The repository's environment, from (in order) its configuration, the
  * project's devcontainer, then the stock default image. Configured fields
@@ -116,6 +122,9 @@ export const resolveToolchain = (read: ReadRepoFile, rawConfig: unknown): Toolch
   } else if (devcontainer?.image && IMAGE_PATTERN.test(devcontainer.image)) {
     source = "devcontainer";
     reason = `image from the project's ${devcontainer.file}`;
+  } else if (devcontainer?.build) {
+    source = "devcontainer";
+    reason = `image built from the project's ${devcontainer.build.dockerfile} (${devcontainer.file})`;
   } else {
     if (devcontainer?.image) notes.push(`${devcontainer.file} image "${devcontainer.image}" is not a valid image reference`);
     source = "default";
@@ -125,9 +134,13 @@ export const resolveToolchain = (read: ReadRepoFile, rawConfig: unknown): Toolch
   }
 
   const fromProject = source !== "configured" && devcontainer;
+  const build = source === "devcontainer" && !devcontainer!.image ? devcontainer!.build : undefined;
   const toolchain: Toolchain = {
     ...(configured.language ? { language: configured.language } : {}),
-    image: configured.image ?? (source === "devcontainer" ? devcontainer!.image! : config.executionDefaultImage),
+    image:
+      configured.image ??
+      (build ? buildTag(build) : source === "devcontainer" ? devcontainer!.image! : config.executionDefaultImage),
+    ...(build ? { build } : {}),
     setup: configured.setup !== undefined ? configured.setup : fromProject ? devcontainer.setup : null,
     checks: configured.checks ?? {},
     env: { ...(devcontainer?.env ?? {}), ...(configured.env ?? {}) },
@@ -172,7 +185,7 @@ export const describeEnvironment = (
 ) =>
   [
     ...(toolchain.language ? [`Language: ${toolchain.language}`] : []),
-    `Image: ${toolchain.image}`,
+    `Image: ${toolchain.build ? `built from the project's ${toolchain.build.dockerfile}` : toolchain.image}`,
     ...(toolchain.services?.length
       ? [
           `Services, reachable by name from setup, checks and commands: ${toolchain.services.map((s) => `${s.name} (${s.image})`).join(", ")}`,

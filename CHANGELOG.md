@@ -13,6 +13,10 @@ Prompt files keep their own versions (`src/prompts/execution/*.vN.md`).
 
 ## [Unreleased]
 
+### Added
+
+- **Devcontainer Dockerfiles.** A project whose devcontainer builds a Dockerfile now runs in the image it builds (built as-is before setup, with network and without credentials), instead of falling back to the default image.
+
 ## [0.1.0] - 2026-11-08
 
 First tagged version. It covers roadmap Phases 0–3 and the Phase 4 work done so far.

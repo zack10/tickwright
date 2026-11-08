@@ -22,6 +22,16 @@ export interface Toolchain {
   protectedPaths: string[];
   /** Containers the checks need (a database, a cache), started beside each run's sandbox. */
   services?: ServiceContainer[];
+  /** The project's Dockerfile, built before setup; `image` is then the built image. */
+  build?: DockerBuild;
+}
+
+/** A Dockerfile build from the project's devcontainer; paths are repository-relative. */
+export interface DockerBuild {
+  dockerfile: string;
+  context: string;
+  args: Record<string, string>;
+  target?: string;
 }
 
 /**

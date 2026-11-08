@@ -124,34 +124,6 @@ export const updateProjectSchema = z.object({
   }),
 });
 
-// Message schemas
-export const messageTypeSchema = z.enum([
-  "AGENT_MESSAGE",
-  "TASK_UPDATE",
-  "RESOURCE_REQUEST",
-  "WORKITEM_STATUS",
-  "CONTRACT_PROPOSAL",
-  "CONTRACT_ACCEPTED",
-  "CONTRACT_REJECTED",
-]);
-
-export const messageMetadataSchema = z.object({
-  timestamp: z.string().datetime().or(z.string()), // Flexible ISO string
-  conversationId: uuid.optional(),
-  correlationId: uuid.optional(),
-});
-
-export const agentMessageSchema = z.object({
-  body: z.object({
-    id: uuid,
-    type: messageTypeSchema,
-    senderId: uuid,
-    receiverId: uuid.nullable(),
-    payload: z.record(z.unknown()),
-    metadata: messageMetadataSchema,
-  }),
-});
-
 // Shared param schemas
 export const idParamSchema = z.object({
   params: z.object({ id: uuid }),

@@ -18,10 +18,6 @@ import {
   startExecutionWorkers,
   stopExecutionWorkers,
 } from "./services/executionWorker";
-import {
-  startMessageRecovery,
-  stopMessageRecovery,
-} from "./services/messagingService";
 import { startOutbox, stopOutbox } from "./services/outboxService";
 import rabbitMQService from "./services/rabbitMQService";
 import taskQueueService from "./services/taskQueueService";
@@ -92,7 +88,6 @@ async function start() {
   try {
     await rabbitMQService.connect();
     await taskQueueService.start();
-    await startMessageRecovery();
     await startExecutionWorkers();
     await startOutbox();
     await startIntegrationPolling();
@@ -110,7 +105,6 @@ async function start() {
   const shutdown = async () => {
     console.log("Shutting down gracefully...");
     taskQueueService.stop();
-    stopMessageRecovery();
     stopOutbox();
     stopIntegrationPolling();
     stopExecutionWorkers();

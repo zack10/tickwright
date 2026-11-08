@@ -1,4 +1,5 @@
 import prisma from "../db";
+import { NonRetryableError } from "../utils/safeError";
 import { HttpConnector } from "./connectors/httpConnector";
 import { McpConnector, McpResponse } from "./connectors/types";
 
@@ -30,14 +31,7 @@ class McpService {
     const connector = this.connectors.get(resource.type);
 
     if (!connector) {
-      console.warn(
-        `No connector found for resource type: ${resource.type}. Falling back to simulation.`,
-      );
-      return {
-        status: "success",
-        message: `Simulated ${action} on ${resource.type} resource: ${resource.name}`,
-        data: params,
-      };
+      throw new NonRetryableError(`No connector for MCP resource type "${resource.type}"`);
     }
 
     const connectorConfig = resource.config as Record<string, unknown>;

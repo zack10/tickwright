@@ -321,7 +321,7 @@ Fixed before Phase 0 of `docs/plans/AGENTIC_ROADMAP.md`, because each would skew
 
 ## Cleanup, docs & tests
 
-- [ ] **X1. Remove or wire up dead code:** `sendMessage`, `executeMcpAction`, `claimWorkItemLock`, `releaseWorkItemLock`, `transitionWorkItemStatus`, `constants/routing.ts`, `hashFile`; message recovery has no producer/consumer; unused models `ToolCall`, `ApiContract`, `WorkItem.status`/`lock*`.
+- [ ] **X1. Remove or wire up dead code:** removed on 2026-11-08: messaging (`sendMessage`, message recovery, `constants/routing.ts`, `Message` model), `workItemService.ts` (`claimWorkItemLock`, `releaseWorkItemLock`, `transitionWorkItemStatus`), `hashFile`, and unused packages. Left: `executeMcpAction` (kept for Phase 11, now throws for unknown resource types instead of simulating); unused models `ToolCall`, `ApiContract`, `WorkItem.status`/`lock*`.
 - [ ] **X2. Decide the future of the legacy Task pipeline** vs the Execution pipeline.
 - [x] **X3. Docs.** DONE: `.env.example` RabbitMQ port fixed (15673) and new vars documented. README corrected (skills/MCP resources are *not* in prompts) and now documents fail-closed auth/CORS, `AUTH_DISABLED`, the approval `snapshotHash` body, `.retry`/`.dead` queues and the `FAILED` lifecycle, sandbox/publish guarantees, `LLM_MAX_OUTPUT_TOKENS`, single-test runs, the `db push` → migrations baseline, and the `docs/` layout. CLAUDE.md updated with the same rules.
 - [ ] **X4. Integration tests** against docker-compose Postgres + RabbitMQ: execution happy path, approval races (H7), handler failures → `FAILED` (C2), retry cap/DLQ against a live broker (C3), lease recovery, outbox/inbox dedup, HTTP routes incl. auth/validation.

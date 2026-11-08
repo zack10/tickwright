@@ -73,7 +73,6 @@ There are two independent async pipelines:
 - Integration credentials are encrypted at rest (`integrationConfigService`, `utils/crypto`, needs 64-hex `ENCRYPTION_KEY`) and redacted in API responses; same for agent `config.apiKey`.
 
 ### Other
-- `messagingService` + `constants/routing.ts`: inter-agent `Message` routing over role-based queues (`role.<ROLE>.work`).
 - `mcpService` + `services/connectors/`: connector registry; only an allowlisted HTTP connector exists (`MCP_HTTP_ALLOWED_HOSTS`, private IPs blocked unless `MCP_HTTP_ALLOW_PRIVATE_IPS=true`, redirects rejected). Not a full MCP transport.
 - Rate limiter is in-process only.
 

@@ -41,7 +41,6 @@ src/
 │   │   └── providers/
 │   ├── connectors/  # MCP external integrations
 │   ├── agentRunner.ts
-│   ├── messagingService.ts
 │   ├── mcpService.ts
 │   └── rabbitMQService.ts
 ├── schemas/        # Zod validation
@@ -73,5 +72,4 @@ Configured in `opencode.json` provider settings. Uses `@ai-sdk/openai-compatible
 - Prisma client is imported from `src/db.ts`
 - WorkItem model tracks external system tasks (Trello, Jira)
 - Agent model supports skills and MCP resources per agent
-- Message model handles inter-agent communication
 - Use `npm run dev:local` for most development - cloud requires Prisma Accelerate setup

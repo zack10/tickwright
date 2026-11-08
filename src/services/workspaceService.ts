@@ -787,9 +787,3 @@ export const execInSandbox = async (
     };
   }
 };
-
-export const hashFile = async (filePath: string) =>
-  crypto
-    .createHash("sha256")
-    .update(await fs.readFile(filePath))
-    .digest("hex");

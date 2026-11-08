@@ -130,8 +130,6 @@ model Agent {
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 
-  sentMessages     Message[] @relation("SentMessages")
-  receivedMessages Message[] @relation("ReceivedMessages")
 
   proposedContracts ApiContract[] @relation("ProposedContracts")
 
@@ -192,21 +190,6 @@ model Task {
   updatedAt DateTime @updatedAt
 
   @@index([status, queuedAt])
-}
-
-model Message {
-  id              String    @id @default(uuid())
-  content         Json
-  sender          Agent     @relation("SentMessages", fields: [senderId], references: [id])
-  senderId        String
-  receiver        Agent     @relation("ReceivedMessages", fields: [receiverId], references: [id])
-  receiverId      String
-  createdAt       DateTime  @default(now())
-  publishedAt     DateTime?
-  publishAttempts Int       @default(0)
-  lastError       String?
-
-  @@index([publishedAt, publishAttempts])
 }
 
 model MCPResource {

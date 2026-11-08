@@ -1,5 +1,6 @@
 import axios from "axios";
 import { config } from "../../../config";
+import { AppError } from "../../../errors/AppError";
 import { LLMOutputError } from "../errors";
 import { replayable } from "../toolMessages";
 import { LLMProvider, Model, ReasoningEffort, TextPrompt, TextResult, TokenUsage, ToolRequest, ToolTurn, UsageStats } from "../types";
@@ -125,7 +126,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
           };
         });
     } catch {
-      throw new Error(
+      throw AppError.badGateway(
         `${label} model discovery failed; verify the API key, base URL, and provider availability`,
       );
     }

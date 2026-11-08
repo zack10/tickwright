@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import prisma from "../db";
 import { AppError } from "../errors/AppError";
 import { asyncHandler } from "../middleware/asyncHandler";
+import { redactAgent } from "../utils/agentConfig";
 
 export const createSkill = asyncHandler(async (req: Request, res: Response) => {
   const { name, description, logic } = req.body;
@@ -53,6 +54,6 @@ export const assignSkillToAgent = asyncHandler(
       },
       include: { skills: true },
     });
-    res.status(200).json(agent);
+    res.status(200).json(redactAgent(agent));
   },
 );

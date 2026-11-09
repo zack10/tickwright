@@ -13,6 +13,10 @@ Prompt files keep their own versions (`src/prompts/execution/*.vN.md`).
 
 ## [Unreleased]
 
+### Added
+
+- **Devcontainer builds.** A project whose devcontainer builds a Dockerfile, uses Docker Compose or adds features now runs in the image the official Dev Container CLI builds from it (before setup, with network and without credentials), instead of falling back to the default image. The other Compose services start beside the run as its service containers. Builds that would read files outside the repository are refused and reported.
+
 ## [0.1.0] - 2026-11-08
 
 First tagged version. It covers roadmap Phases 0–3 and the Phase 4 work done so far.

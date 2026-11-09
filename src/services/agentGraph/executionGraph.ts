@@ -41,6 +41,7 @@ import {
   SetupFailedError,
   prepareVerification,
   setupWorkspace,
+  buildEnvironmentImage,
   removeWorkspace,
   resetWorkspace,
   restoreClone,
@@ -243,6 +244,17 @@ const prepareEnvironment = async (
     const setup = await setupWorkspace(executionId, toolchain, checksFor(toolchain), setupOptions);
     return { toolchain: { ...toolchain, image: setup.image }, setup };
   };
+  // The project's Dockerfile is the image; discovery and setup run in what it builds.
+  if (resolution.toolchain.build) {
+    const image = await buildEnvironmentImage(
+      executionId,
+      repository.id,
+      resolution.toolchain.build,
+      setupOptions.setupTimeoutMs,
+    );
+    await graphEvent(executionId, "GRAPH_ENVIRONMENT_BUILT", { config: resolution.toolchain.build.config, image });
+    resolution = { ...resolution, toolchain: { ...resolution.toolchain, image } };
+  }
   if (Object.keys(resolution.toolchain.checks).length || !config.executionDiscoveryMaxAttempts)
     return setUp(resolution.toolchain);
 
@@ -387,6 +399,7 @@ const loadExecutionContext = async (
     reason: resolution.reason,
     notes: resolution.notes,
     image: resolution.toolchain.image,
+    ...(resolution.toolchain.build ? { build: resolution.toolchain.build } : {}),
     setup: resolution.toolchain.setup !== null,
     checks: Object.keys(resolution.toolchain.checks),
   });

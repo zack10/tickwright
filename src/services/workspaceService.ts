@@ -5,7 +5,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { config } from "../config";
-import { SANDBOX_ROOT, ServiceContainer, Toolchain, commandText } from "./toolchain";
+import { findSymlink } from "../utils/safePath";
+import { DevcontainerBuild, SANDBOX_ROOT, ServiceContainer, Toolchain, commandText } from "./toolchain";
 
 const exec = promisify(execFile);
 const safeId = (id: string) => {
@@ -247,6 +248,66 @@ export const removeEnvironmentSnapshot = async (id: string) => {
 export class SetupFailedError extends Error {
   name = "SetupFailedError";
 }
+
+/**
+ * Builds the project's devcontainer (its Dockerfile or Compose service, and
+ * its features) with the Dev Container CLI, the spec's reference
+ * implementation, and returns the image. Network for base images, features
+ * and packages, never the token. The CLI's `build` does not run
+ * `initializeCommand` (the one command meant for the host), and is given
+ * no lockfile so it writes nothing into the clone. Docker's layer cache keeps
+ * an unchanged build quick. shortcut: BuildKit takes no --cpus/--memory, so a
+ * build is limited only by its timeout; limit the builder once servers run it.
+ */
+export const buildEnvironmentImage = async (
+  id: string,
+  scope: string,
+  build: DevcontainerBuild,
+  timeoutMs = SETUP_TIMEOUT_MS,
+) => {
+  const root = workspacePath(id);
+  // A link could make the build read a host file or folder.
+  for (const input of build.inputs)
+    if (findSymlink(root, input)) throw new SetupFailedError(`${input} is a symlink, so the devcontainer was not built`);
+  const built = `agent-build-tmp-${safeId(id).toLowerCase()}`;
+  try {
+    await exec(
+      process.execPath,
+      [
+        DEVCONTAINER_CLI, "build", "--workspace-folder", root, "--config", path.join(root, build.config),
+        "--image-name", built, "--no-lockfile", "--oci-auth-hardening", "--log-format", "text",
+      ],
+      { timeout: timeoutMs, maxBuffer: 20_000_000, env: buildEnvironment() },
+    );
+  } catch (error) {
+    throw new SetupFailedError(`building ${build.config} failed: ${dockerFailure(error).message}`);
+  }
+  try {
+    // Identical rebuilds get new IDs, so the tag is the image's content: the
+    // environment cache stays valid while that is unchanged.
+    const { stdout } = await execDocker(["image", "inspect", "--format", "{{json .RootFS.Layers}}{{json .Config}}", built]);
+    const image = `agent-build-${safeId(scope).toLowerCase()}:${crypto.createHash("sha256").update(stdout).digest("hex").slice(0, 32)}`;
+    await execDocker(["tag", built, image]);
+    return image;
+  } finally {
+    await exec("docker", ["rmi", built]).catch(() => undefined);
+  }
+};
+
+const DEVCONTAINER_CLI = require.resolve("@devcontainers/cli/devcontainer.js");
+// devcontainer.json's ${localEnv:NAME} and Compose's ${NAME} read the build's
+// environment, so it gets only what Docker and the OS need, none of the app's secrets.
+const BUILD_ENV = new Set(
+  ["PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
+   "PROGRAMDATA", "PROGRAMFILES", "XDG_RUNTIME_DIR", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_CERT_PATH", "DOCKER_TLS_VERIFY"],
+);
+const buildEnvironment = () => ({
+  ...Object.fromEntries(Object.entries(process.env).filter(([name]) => BUILD_ENV.has(name.toUpperCase()))),
+  // Compose builds through Bake, which refuses the CLI's generated Dockerfile
+  // (in the temp folder) unless file reads are allowed. readCompose refuses
+  // every Compose path outside the repository instead.
+  BUILDX_BAKE_ENTITLEMENTS_FS: "0",
+});
 
 /**
  * The toolchain's service containers (a database, a cache) for one run, on

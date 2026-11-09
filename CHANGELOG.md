@@ -15,7 +15,14 @@ Prompt files keep their own versions (`src/prompts/execution/*.vN.md`).
 
 ### Added
 
+- **Setup secrets.** `PATCH /api/repositories/:id` accepts `setupSecrets` (environment variables such as a private registry token), stored encrypted. Only the setup command gets them; checks, the environment snapshot and the agent never do, and a change that contains one is rejected.
+- **Unverified plans are flagged.** The plan comment on the ticket says when nothing will test the change (the repository has no checks) or when checks will only be proposed during the run, and the `PLAN_WRITTEN` event records which applies and the checks that will run.
+- **Git submodules.** The clone fetches a repository's submodules at the commit's revisions.
 - **Devcontainer builds.** A project whose devcontainer builds a Dockerfile, uses Docker Compose or adds features now runs in the image the official Dev Container CLI builds from it (before setup, with network and without credentials), instead of falling back to the default image. The other Compose services start beside the run as its service containers. Builds that would read files outside the repository are refused and reported.
+
+### Security
+
+- The GitHub token is sent to `https://github.com/` only (before, to any host git contacted during a clone or push), and git may use HTTPS only, so a submodule URL cannot use `file://`, ssh or other transports.
 
 ## [0.1.0] - 2026-11-08
 

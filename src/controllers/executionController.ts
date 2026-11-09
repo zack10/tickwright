@@ -13,6 +13,7 @@ import {
   submitPlan,
 } from "../services/executionService";
 import { syncIntegrationConnection } from "../services/ingestionService";
+import { sealSetupSecrets } from "../services/setupSecrets";
 import {
   redactIntegration,
   sealIntegrationConfig,
@@ -43,16 +44,20 @@ export const createRepository = asyncHandler(
     res.status(201).json(repository);
   },
 );
-/** Sets a repository's environment or policy; later executions use it. */
+/** Sets a repository's environment, policy or setup secrets; later executions use them. */
 export const updateRepository = asyncHandler(
   async (req: Request, res: Response) => {
-    const { verificationConfig, executionPolicy } = req.body;
-    res.json(
-      await prisma.repository.update({
-        where: { id: req.params.id },
-        data: { verificationConfig, executionPolicy },
-      }),
-    );
+    const { verificationConfig, executionPolicy, setupSecrets } = req.body;
+    const repository = await prisma.repository.update({
+      where: { id: req.params.id },
+      data: {
+        verificationConfig,
+        executionPolicy,
+        ...(setupSecrets !== undefined ? { encryptedSetupSecrets: sealSetupSecrets(setupSecrets) } : {}),
+      },
+    });
+    // Names only, so a person can see what is set; values never leave.
+    res.json(setupSecrets !== undefined ? { ...repository, setupSecretNames: Object.keys(setupSecrets ?? {}) } : repository);
   },
 );
 /**

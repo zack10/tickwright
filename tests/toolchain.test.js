@@ -245,6 +245,16 @@ test("selected checks that the repository lacks are unavailable, not failed", ()
   assert.deepEqual(selected.unavailable, ["lint"]);
 });
 
+test("the plan says whether checks, discovery or nothing will verify the change", () => {
+  const { planVerification } = require("../dist/services/toolchain");
+  const configured = { toolchain: { checks: { test: ["make", "test"] } } };
+  assert.equal(planVerification(resolve({}, configured).toolchain, configured, 3), "checks");
+  assert.equal(planVerification(resolve({}).toolchain, {}, 3), "discovery", "no checks yet: discovery proposes them");
+  assert.equal(planVerification(resolve({}).toolchain, {}, 0), "none", "discovery is off");
+  const missing = { ...configured, scripts: ["lint"] };
+  assert.equal(planVerification(resolve({}, missing).toolchain, missing, 3), "none", "only missing checks selected, and discovery does not run");
+});
+
 test("the agent is told the image and each check's command, or how to find them", () => {
   const { describeEnvironment } = require("../dist/services/toolchain");
   const { toolchain } = resolve({}, { toolchain: { image: "python:3.12", language: "Python", checks: { test: ["pytest", "-q"] } } });
@@ -469,6 +479,33 @@ test("the project's devcontainer is built with its features, and nothing reaches
   await assert.rejects(
     buildEnvironmentImage(id, scope, { config: ".devcontainer/devcontainer.json", inputs: [".devcontainer/Dockerfile"] }),
     (error) => error instanceof SetupFailedError && /broken-step-output/.test(error.message),
+  );
+});
+
+test("setup secrets reach the setup command only, never the checks or the snapshot, and are masked", { skip: require("node:child_process").spawnSync("docker", ["version"]).status === 0 ? false : "Docker is not available" }, async (t) => {
+  const fs = require("node:fs");
+  const { execFileSync } = require("node:child_process");
+  const { removeEnvironmentSnapshot, setupWorkspace, SetupFailedError, workspacePath } = require("../dist/services/workspaceService");
+  const id = `secrets-test-${process.pid}`;
+  fs.mkdirSync(workspacePath(id), { recursive: true });
+  execFileSync("git", ["init", "-q"], { cwd: workspacePath(id) });
+  t.after(async () => {
+    await removeEnvironmentSnapshot(id);
+    fs.rmSync(workspacePath(id), { recursive: true, force: true });
+  });
+  const secrets = { REGISTRY_TOKEN: "registry-secret-value-9" };
+  const sh = (script) => ["sh", "-c", script];
+  const toolchain = { image: "alpine:3.20", env: {}, setup: sh('test "$REGISTRY_TOKEN" = registry-secret-value-9 && touch /setup-saw-it') };
+
+  const result = await setupWorkspace(id, toolchain, [{ name: "check", command: sh('test -f /setup-saw-it && test -z "$REGISTRY_TOKEN"') }], { secrets });
+  assert.deepEqual(result.baseline.map(({ passed }) => passed), [true], result.baseline[0]?.output);
+  const snapshot = execFileSync("docker", ["image", "inspect", "--format", "{{json .Config.Env}}", result.image], { encoding: "utf8" });
+  assert.doesNotMatch(snapshot, /registry-secret-value-9|REGISTRY_TOKEN/, "the snapshot does not keep it");
+  assert.doesNotMatch(execFileSync("docker", ["run", "--rm", result.image, "env"], { encoding: "utf8" }), /registry-secret-value-9/);
+
+  await assert.rejects(
+    setupWorkspace(id, { ...toolchain, setup: sh('echo "token is $REGISTRY_TOKEN"; exit 1') }, [], { secrets }),
+    (error) => error instanceof SetupFailedError && /token is \*\*\*/.test(error.message) && !error.message.includes("registry-secret-value-9"),
   );
 });
 

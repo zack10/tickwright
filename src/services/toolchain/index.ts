@@ -176,6 +176,19 @@ export const selectChecks = (toolchain: Toolchain, rawConfig: unknown) => {
   };
 };
 
+/**
+ * What will check a change, for the person approving its plan: the selected
+ * checks, discovery during the run (it runs only when the toolchain has no
+ * checks), or nothing at all.
+ */
+export type PlanVerification = "checks" | "discovery" | "none";
+export const planVerification = (toolchain: Toolchain, rawConfig: unknown, discoveryAttempts: number): PlanVerification =>
+  selectChecks(toolchain, rawConfig).run.length
+    ? "checks"
+    : !Object.keys(toolchain.checks).length && discoveryAttempts > 0
+      ? "discovery"
+      : "none";
+
 /** A command as a person would type it: `sh -c "<script>"` shows as the script. */
 export const commandText = (command: string[]) =>
   command.length === 3 && command[0] === "sh" && command[1] === "-c" ? command[2] : command.join(" ");

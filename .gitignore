@@ -58,3 +58,4 @@ graphify-out/
 
 # Understand-Anything knowledge graph
 src/.ua/
+.ua/

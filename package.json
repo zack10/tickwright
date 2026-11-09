@@ -13,7 +13,7 @@
     "prisma:migrate:local": "dotenv -e .env.local -- npx prisma migrate dev",
     "prisma:migrate:deploy": "npx prisma migrate deploy",
     "build": "prisma generate && rimraf dist && tsc && node scripts/copy-prompts.js",
-    "test": "npm run build && node --test tests/codeWriter.test.js tests/llmUtils.test.js tests/executionSecurity.test.js tests/agentGraphHelpers.test.js tests/triage.test.js tests/ticketConversation.test.js tests/auditFixes.test.js tests/trackerAdapters.test.js tests/llmRetry.test.js tests/checkpointer.test.js tests/reviewOutcome.test.js tests/llmRegistry.test.js tests/llmTools.test.js tests/llmUsage.test.js tests/sandboxTools.test.js tests/agentLoop.test.js tests/toolchain.test.js tests/environmentDiscovery.test.js tests/prompts.test.js tests/codingScenarios.test.js",
+    "test": "npm run build && node --test tests/codeWriter.test.js tests/llmUtils.test.js tests/executionSecurity.test.js tests/agentGraphHelpers.test.js tests/triage.test.js tests/ticketConversation.test.js tests/environmentSweep.test.js tests/auditFixes.test.js tests/trackerAdapters.test.js tests/llmRetry.test.js tests/checkpointer.test.js tests/reviewOutcome.test.js tests/llmRegistry.test.js tests/llmTools.test.js tests/llmUsage.test.js tests/sandboxTools.test.js tests/agentLoop.test.js tests/toolchain.test.js tests/environmentDiscovery.test.js tests/prompts.test.js tests/codingScenarios.test.js",
     "test:e2e": "dotenv -e .env.e2e -- node --test --test-concurrency=1 tests/e2e/smoke.test.js tests/e2e/taskPipeline.test.js tests/e2e/executionPipeline.test.js",
     "test:e2e:smoke": "dotenv -e .env.e2e -- node --test tests/e2e/smoke.test.js",
     "eval:coding": "dotenv -e .env.e2e -- node tests/e2e/codingEval.js",

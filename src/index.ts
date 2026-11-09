@@ -20,6 +20,7 @@ import {
   startExecutionWorkers,
   stopExecutionWorkers,
 } from "./services/executionWorker";
+import { startEnvironmentSweep, stopEnvironmentSweep } from "./services/environmentSweep";
 import { startOutbox, stopOutbox } from "./services/outboxService";
 import rabbitMQService from "./services/rabbitMQService";
 import taskQueueService from "./services/taskQueueService";
@@ -102,6 +103,7 @@ async function start() {
       "RabbitMQ task worker unavailable at startup; API will run in degraded mode",
     );
   }
+  startEnvironmentSweep();
 
   const server = app.listen(config.port, () => {
     console.log(`Server is running on port ${config.port}`);
@@ -113,6 +115,7 @@ async function start() {
     stopOutbox();
     stopIntegrationPolling();
     stopExecutionWorkers();
+    stopEnvironmentSweep();
     await new Promise<void>((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()));
     });

@@ -72,6 +72,7 @@ import {
 import { AgentStep, AgentStopReason, attemptAllowance, describeAttempt, runAgentLoop } from "./agentLoop";
 import { reviewDiffSafety } from "./diffReview";
 import { setupSecretsOf, setupSecretsOfExecution } from "../setupSecrets";
+import { ensureDiskSpace } from "../environmentSweep";
 import { fileActionsError } from "./outputFormat";
 import { RepoContext, collectRepoContext } from "./repoContext";
 import { describeApprovedPlan } from "./planning";
@@ -238,6 +239,7 @@ const prepareEnvironment = async (
   resolution: ToolchainResolution,
   ask: (prompt: RenderedPrompt) => Promise<string>,
 ): Promise<{ toolchain: Toolchain; setup: SetupResult; environmentProposal?: ProposedEnvironment }> => {
+  await ensureDiskSpace();
   const checksFor = (toolchain: Toolchain) => selectChecks(toolchain, repository.verificationConfig).run;
   const timeout = (repository.executionPolicy as RepositoryPolicy | null)?.setupTimeoutSeconds;
   const setupOptions = {

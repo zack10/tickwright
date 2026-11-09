@@ -472,6 +472,33 @@ test("the project's devcontainer is built with its features, and nothing reaches
   );
 });
 
+test("setup secrets reach the setup command only, never the checks or the snapshot, and are masked", { skip: require("node:child_process").spawnSync("docker", ["version"]).status === 0 ? false : "Docker is not available" }, async (t) => {
+  const fs = require("node:fs");
+  const { execFileSync } = require("node:child_process");
+  const { removeEnvironmentSnapshot, setupWorkspace, SetupFailedError, workspacePath } = require("../dist/services/workspaceService");
+  const id = `secrets-test-${process.pid}`;
+  fs.mkdirSync(workspacePath(id), { recursive: true });
+  execFileSync("git", ["init", "-q"], { cwd: workspacePath(id) });
+  t.after(async () => {
+    await removeEnvironmentSnapshot(id);
+    fs.rmSync(workspacePath(id), { recursive: true, force: true });
+  });
+  const secrets = { REGISTRY_TOKEN: "registry-secret-value-9" };
+  const sh = (script) => ["sh", "-c", script];
+  const toolchain = { image: "alpine:3.20", env: {}, setup: sh('test "$REGISTRY_TOKEN" = registry-secret-value-9 && touch /setup-saw-it') };
+
+  const result = await setupWorkspace(id, toolchain, [{ name: "check", command: sh('test -f /setup-saw-it && test -z "$REGISTRY_TOKEN"') }], { secrets });
+  assert.deepEqual(result.baseline.map(({ passed }) => passed), [true], result.baseline[0]?.output);
+  const snapshot = execFileSync("docker", ["image", "inspect", "--format", "{{json .Config.Env}}", result.image], { encoding: "utf8" });
+  assert.doesNotMatch(snapshot, /registry-secret-value-9|REGISTRY_TOKEN/, "the snapshot does not keep it");
+  assert.doesNotMatch(execFileSync("docker", ["run", "--rm", result.image, "env"], { encoding: "utf8" }), /registry-secret-value-9/);
+
+  await assert.rejects(
+    setupWorkspace(id, { ...toolchain, setup: sh('echo "token is $REGISTRY_TOKEN"; exit 1') }, [], { secrets }),
+    (error) => error instanceof SetupFailedError && /token is \*\*\*/.test(error.message) && !error.message.includes("registry-secret-value-9"),
+  );
+});
+
 test("environment snapshots are cached per repository and per environment", () => {
   const { environmentCacheImage } = require("../dist/services/workspaceService");
   const toolchain = { image: "example/runtime:1", setup: ["sh", "-c", "make deps"], env: { A: "1", B: "2" } };

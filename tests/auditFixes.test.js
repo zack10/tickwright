@@ -127,6 +127,14 @@ test("H5: diff review catches GitHub app, fine-grained, and Anthropic tokens", (
   }
 });
 
+test("diff review rejects a repository setup secret's value, whatever it looks like", () => {
+  const secret = "plain-looking-value-42";
+  assert.equal(reviewDiffSafety(`+registry = ${secret}`, ["config.txt"]).passed, true, "no pattern matches it");
+  assert.equal(reviewDiffSafety(`+registry = ${secret}`, ["config.txt"], [secret]).passed, false);
+  assert.equal(reviewDiffSafety(`-registry = ${secret}`, ["config.txt"], [secret]).passed, true, "removing it is fine");
+  assert.equal(reviewDiffSafety("+x = 1", ["a.txt"], ["1"]).passed, true, "short values are not matched");
+});
+
 // --- H6: log redaction ------------------------------------------------------
 
 test("H6: describeError never includes query strings or headers", () => {

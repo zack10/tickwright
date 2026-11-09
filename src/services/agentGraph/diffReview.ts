@@ -28,6 +28,8 @@ const riskyFiles = new Set([
 export const reviewDiffSafety = (
   diff: string,
   files: string[],
+  /** The repository's setup secrets: never in a change, though the agent should never have seen them. */
+  knownSecrets: string[] = [],
 ): DiffReviewResult => {
   const issues: string[] = [];
 
@@ -47,8 +49,9 @@ export const reviewDiffSafety = (
   const addedLines = diff
     .split(/\r?\n/)
     .filter((line) => line.startsWith("+") && !line.startsWith("+++"));
+  const secrets = knownSecrets.filter((secret) => secret.length >= 8);
   for (const line of addedLines) {
-    if (SECRET_PATTERNS.some((pattern) => pattern.test(line))) {
+    if (SECRET_PATTERNS.some((pattern) => pattern.test(line)) || secrets.some((secret) => line.includes(secret))) {
       issues.push("Diff appears to add a secret or credential.");
       break;
     }

@@ -71,6 +71,7 @@ import {
 } from "../toolchain/discovery";
 import { AgentStep, AgentStopReason, attemptAllowance, describeAttempt, runAgentLoop } from "./agentLoop";
 import { reviewDiffSafety } from "./diffReview";
+import { setupSecretsOf, setupSecretsOfExecution } from "../setupSecrets";
 import { fileActionsError } from "./outputFormat";
 import { RepoContext, collectRepoContext } from "./repoContext";
 import { describeApprovedPlan } from "./planning";
@@ -233,13 +234,17 @@ const describeFixed = (fixed: FixedEnvironment) =>
  */
 const prepareEnvironment = async (
   executionId: string,
-  repository: Repository,
+  repository: Omit<Repository, "encryptedSetupSecrets">,
   resolution: ToolchainResolution,
   ask: (prompt: RenderedPrompt) => Promise<string>,
 ): Promise<{ toolchain: Toolchain; setup: SetupResult; environmentProposal?: ProposedEnvironment }> => {
   const checksFor = (toolchain: Toolchain) => selectChecks(toolchain, repository.verificationConfig).run;
   const timeout = (repository.executionPolicy as RepositoryPolicy | null)?.setupTimeoutSeconds;
-  const setupOptions = { cacheFor: repository.id, ...(timeout ? { setupTimeoutMs: timeout * 1000 } : {}) };
+  const setupOptions = {
+    cacheFor: repository.id,
+    secrets: await setupSecretsOf(repository.id),
+    ...(timeout ? { setupTimeoutMs: timeout * 1000 } : {}),
+  };
   const setUp = async (toolchain: Toolchain) => {
     const setup = await setupWorkspace(executionId, toolchain, checksFor(toolchain), setupOptions);
     return { toolchain: { ...toolchain, image: setup.image }, setup };
@@ -918,7 +923,7 @@ const reviewDiff = async (state: typeof ExecutionGraphState.State) => {
 
   const diff = await gitDiff(state.executionId);
   const files = await changedFiles(state.executionId);
-  const deterministicReview = reviewDiffSafety(diff, files);
+  const deterministicReview = reviewDiffSafety(diff, files, Object.values(await setupSecretsOfExecution(state.executionId)));
   if (!deterministicReview.passed) {
     const feedback = deterministicReview.issues.join("\n");
     await prisma.taskAttempt.update({

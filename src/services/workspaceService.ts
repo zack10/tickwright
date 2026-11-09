@@ -62,8 +62,10 @@ const SAFE_GIT_ARGS = [
   "core.fileMode=false",
 ];
 // The token is read from the container env and sent as an HTTP header, so it
-// is never written to .git/config or placed on the docker command line.
-const AUTH_GIT = `${SAFE_GIT} -c http.extraHeader="Authorization: Basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"`;
+// is never written to .git/config or placed on the docker command line. Only
+// to github.com, and only over HTTPS: a submodule on another host never gets
+// it, and no submodule can use file://, ssh or ext:: transports.
+const AUTH_GIT = `${SAFE_GIT} -c protocol.allow=never -c protocol.https.allow=always -c http.https://github.com/.extraHeader="Authorization: Basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"`;
 
 // Clone, diff, reset and cleanup only: any image with git and a shell. The
 // repository's own commands run in its toolchain's image instead.
@@ -124,7 +126,7 @@ const workspaceMounts = (root: string, writableGit: boolean) => [
  * execFile's error message is the command line plus stderr only; failures
  * need the exit status and stdout too (npm prints test failures there).
  */
-const dockerFailure = (error: unknown, token?: string) => {
+const dockerFailure = (error: unknown, secrets: string[] = []) => {
   const failure = error as {
     code?: unknown;
     signal?: unknown;
@@ -133,7 +135,7 @@ const dockerFailure = (error: unknown, token?: string) => {
     stderr?: string;
   };
   const tail = (text = "") =>
-    (token ? text.split(token).join("***") : text).trim().slice(-4000) ||
+    secrets.filter(Boolean).reduce((masked, secret) => masked.split(secret).join("***"), text).trim().slice(-4000) ||
     "(empty)";
   const status = failure.killed
     ? `killed by ${failure.signal ?? "timeout"}`
@@ -143,15 +145,16 @@ const dockerFailure = (error: unknown, token?: string) => {
   );
 };
 
-const execDocker = async (args: string[], token?: string, timeout = 300_000) => {
+/** `secrets` are passed by name (`-e NAME` in args) through our env, and masked in failures. */
+const execDocker = async (args: string[], secrets: Record<string, string> = {}, timeout = 300_000) => {
   try {
     return await exec("docker", args, {
       timeout,
       maxBuffer: 5_000_000,
-      env: token ? { ...process.env, GITHUB_TOKEN: token } : process.env,
+      env: { ...process.env, ...secrets },
     });
   } catch (error) {
-    throw dockerFailure(error, token);
+    throw dockerFailure(error, Object.values(secrets));
   }
 };
 
@@ -164,7 +167,7 @@ export const runDocker = async (
   // tree), so they get setup's bound, not the 5-minute default (found on fd).
   const result = await execDocker(
     dockerArgs(workspacePath(id), network, false, command),
-    undefined,
+    {},
     SETUP_TIMEOUT_MS,
   );
   return { stdout: result.stdout, stderr: result.stderr };
@@ -186,8 +189,9 @@ export const cloneGithubWorkspace = async (
   // Start from an empty directory so a partial earlier clone cannot wedge retries.
   await removeWorkspace(id);
   const root = await createWorkspace(id);
-  const script = `${AUTH_GIT} clone https://github.com/${owner}/${repo}.git . && ${SAFE_GIT} checkout ${sha}`;
-  await execDocker(dockerArgs(root, true, true, ["sh", "-c", script]), token);
+  // Submodules at the commit's recorded revisions; a no-op without .gitmodules.
+  const script = `${AUTH_GIT} clone https://github.com/${owner}/${repo}.git . && ${SAFE_GIT} checkout ${sha} && ${AUTH_GIT} submodule update --init --recursive`;
+  await execDocker(dockerArgs(root, true, true, ["sh", "-c", script]), { GITHUB_TOKEN: token });
 };
 
 /** Untracked files git doesn't ignore; `directories` collapses whole new folders. */
@@ -338,7 +342,7 @@ export const startServices = async (id: string, toolchain: Toolchain) => {
     // The daemon pulls the image, so the internal network does not stop that.
     await execDocker(
       ["run", "-d", "--name", name, ...label, ...LIMIT_ARGS, "--network", network, "--network-alias", service.name, ...envArgs(service.env), service.image],
-      undefined,
+      {},
       SETUP_TIMEOUT_MS,
     );
     if (service.ready) await waitUntilReady(name, service);
@@ -398,7 +402,7 @@ export const setupWorkspace = async (
   id: string,
   toolchain: Toolchain,
   checks: Array<{ name: string; command: string[] }>,
-  options: { cacheFor?: string; setupTimeoutMs?: number } = {},
+  options: { cacheFor?: string; setupTimeoutMs?: number; secrets?: Record<string, string> } = {},
 ) => {
   const baseline: BaselineResult[] = [];
   let setupOutputs: string[] = [];
@@ -417,15 +421,21 @@ export const setupWorkspace = async (
   });
   // Same limits as every container, but long-lived so it can be committed.
   args.splice(args.indexOf("--rm"), 1, "-d", "--name", setupContainer(id));
-  const run = (command: string[]) =>
-    execDocker(["exec", setupContainer(id), ...command], undefined, options.setupTimeoutMs ?? SETUP_TIMEOUT_MS);
+  // Secrets go to the setup command only, as exec env, which `docker commit`
+  // does not keep: the checks, the snapshot and the agent never have them.
+  const run = (command: string[], secrets: Record<string, string> = {}) =>
+    execDocker(
+      ["exec", ...Object.keys(secrets).flatMap((name) => ["-e", name]), setupContainer(id), ...command],
+      secrets,
+      options.setupTimeoutMs ?? SETUP_TIMEOUT_MS,
+    );
   try {
     try {
       const services = await startServices(id, toolchain);
       await execDocker(args);
       // Setup keeps the bridge for package registries and joins the services' network too.
       if (services) await execDocker(["network", "connect", services, setupContainer(id)]);
-      if (toolchain.setup) await run(toolchain.setup);
+      if (toolchain.setup) await run(toolchain.setup, options.secrets);
     } catch (error) {
       throw new SetupFailedError((error as Error).message);
     }
@@ -546,7 +556,7 @@ export const prepareVerification = async (id: string, image: string, setupOutput
       dockerArgs(workspacePath(id), false, false, ["sh", "-c", COPY_ENTRIES, "sh", SETUP_COPY_DIR, SANDBOX_ROOT, ...setupOutputs], {
         image,
       }),
-      undefined,
+      {},
       SETUP_TIMEOUT_MS,
     );
 };
@@ -648,7 +658,7 @@ export const publishApprovedDiff = async (input: {
   try {
     await execDocker(
       dockerArgs(root, true, true, ["sh", "-c", script]),
-      input.token,
+      { GITHUB_TOKEN: input.token },
     );
   } finally {
     await removeWorkspace(publishId);

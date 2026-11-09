@@ -12,6 +12,8 @@ The existing plumbing stays: Docker sandbox, LangGraph run graph, snapshot-bound
 
 **Deployment (decided 2026-10-26): developer laptop first, shared server later.** First each developer runs the orchestrator on their own machine for their own tickets; once that works well, a team installs it on a server and shares it. Both run executions in containers: runs are started by tickets, not watched command by command, so the agent never gets the developer's machine (files, SSH keys, credentials), and it works on its own clone so it never touches the developer's checkout. Design for both from now on: what runs on a laptop must also work on a server (several users, several executions at once, Phase 8), and laptop costs matter (disk for images, Docker Desktop speed, one-command install, a per-developer token budget). A supervised "host mode" that uses the developer's own environment, like Claude Code, can be added later as an explicit option for runs a person starts and watches.
 
+**Possible later (noted 2026-11-08): hooks.** User commands at fixed points of a run (after an edit, before publishing, when a run ends), run in the sandbox and configured per repository, like Claude Code's hooks. Not planned yet: the sandbox, protected paths with `enforce_policy` on the final diff, the approved checks, the reviewer and the two human approvals already cover what hooks are mostly used for (blocking commands, protecting files, running checks after a change). Add them when a user needs a rule those can't express (e.g. a company secret scanner on every edit), most likely with host mode or the shared server.
+
 ## Progress
 
 | Phase | Problem it solves | How (concept) | Size | Status |

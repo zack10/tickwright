@@ -11,6 +11,7 @@ const {
 } = require("../dist/services/toolchain");
 const { parseJsonc } = require("../dist/services/toolchain/devcontainer");
 const { config } = require("../dist/config");
+const { UNBUILT_IMAGE } = require("../dist/services/toolchain");
 
 /** An in-memory repository: { "path": "content" }. */
 const repo = (files) => (file) => files[file];
@@ -60,8 +61,12 @@ const DEVCONTAINER = `{
 test("the project's devcontainer gives the image, env and setup, and reports what it skipped", () => {
   const { toolchain, source, reason, notes } = resolve({ ".devcontainer/devcontainer.json": DEVCONTAINER });
   assert.equal(source, "devcontainer");
-  assert.match(reason, /\.devcontainer\/devcontainer\.json/);
-  assert.equal(toolchain.image, "mcr.microsoft.com/devcontainers/php:8.3");
+  assert.match(reason, /built from the project's \.devcontainer\/devcontainer\.json/, "features need a build");
+  assert.equal(toolchain.image, UNBUILT_IMAGE);
+  assert.deepEqual(toolchain.build, { config: ".devcontainer/devcontainer.json", inputs: [".devcontainer/devcontainer.json"] });
+  const plain = resolve({ ".devcontainer.json": '{ "image": "mcr.microsoft.com/devcontainers/php:8.3" }' }).toolchain;
+  assert.equal(plain.image, "mcr.microsoft.com/devcontainers/php:8.3", "a plain image is used as it is");
+  assert.equal(plain.build, undefined);
   assert.equal(toolchain.env.APP_ENV, "testing");
   assert.equal(toolchain.env.PATH, undefined, "variables need a running dev container");
   assert.deepEqual(toolchain.setup, [
@@ -69,7 +74,6 @@ test("the project's devcontainer gives the image, env and setup, and reports wha
     "-c",
     "composer install --no-interaction && npm ci && echo 'http://x/*y*/'",
   ]);
-  assert.ok(notes.some((note) => /features were not applied: ghcr\.io\/devcontainers\/features\/node:1/.test(note)));
   assert.ok(notes.some((note) => /containerEnv\.PATH was not applied/.test(note)));
 });
 
@@ -88,31 +92,117 @@ test("configuration wins over the devcontainer field by field", () => {
 });
 
 test("a devcontainer's Dockerfile is built, with paths relative to devcontainer.json", () => {
-  const { toolchain, source, reason, notes } = resolve({
-    ".devcontainer/devcontainer.json":
-      '{ "build": { "dockerfile": "Dockerfile", "context": "..", "args": { "V": "1", "P": "${localEnv:P}" }, "target": "dev" }, "postCreateCommand": "make deps" }',
+  const { toolchain, source, reason } = resolve({
+    ".devcontainer/devcontainer.json": '{ "build": { "dockerfile": "Dockerfile", "context": "..", "args": { "V": "1" } }, "postCreateCommand": "make deps" }',
   });
   assert.equal(source, "devcontainer");
-  assert.match(reason, /built from the project's \.devcontainer\/Dockerfile/);
-  assert.deepEqual(toolchain.build, { dockerfile: ".devcontainer/Dockerfile", context: ".", args: { V: "1" }, target: "dev" });
-  assert.match(toolchain.image, /^agent-build:[0-9a-f]{16}$/);
+  assert.match(reason, /built from the project's \.devcontainer\/devcontainer\.json/);
+  assert.deepEqual(toolchain.build, {
+    config: ".devcontainer/devcontainer.json",
+    inputs: [".devcontainer/devcontainer.json", ".devcontainer/Dockerfile", "."],
+  });
+  assert.equal(toolchain.image, UNBUILT_IMAGE);
   assert.deepEqual(toolchain.setup, ["sh", "-c", "make deps"]);
-  assert.ok(notes.some((note) => /build\.args\.P was not applied/.test(note)));
-  assert.match(describeEnvironment(toolchain, [], false), /Image: built from the project's \.devcontainer\/Dockerfile/);
+  assert.match(describeEnvironment(toolchain, [], false), /Image: built from the project's \.devcontainer\/devcontainer\.json/);
 
   const legacy = resolve({ ".devcontainer/devcontainer.json": '{ "dockerFile": "Dockerfile" }' }).toolchain.build;
-  assert.deepEqual(legacy, { dockerfile: ".devcontainer/Dockerfile", context: ".devcontainer", args: {} }, "context defaults to its folder");
+  assert.deepEqual(legacy.inputs, [".devcontainer/devcontainer.json", ".devcontainer/Dockerfile", ".devcontainer"], "context defaults to its folder");
+
+  const local = resolve({ ".devcontainer/devcontainer.json": '{ "image": "alpine:3.20", "features": { "./tools": {} } }' }).toolchain.build;
+  assert.deepEqual(local.inputs, [".devcontainer/devcontainer.json", ".devcontainer/tools"], "a local feature is an input");
+
+  const noBase = resolve({ ".devcontainer/devcontainer.json": '{ "features": { "./tools": {} } }' });
+  assert.equal(noBase.toolchain.build, undefined, "features alone have nothing to build on");
 
   const configured = resolve({ ".devcontainer.json": '{ "build": { "dockerfile": "Dockerfile" } }' }, { toolchain: { image: "python:3.13" } });
   assert.equal(configured.toolchain.image, "python:3.13", "a configured image wins and nothing is built");
   assert.equal(configured.toolchain.build, undefined);
 });
 
+const COMPOSE_DEVCONTAINER =
+  '{ "dockerComposeFile": ["compose.yml", "compose.override.yml"], "service": "app", "runServices": ["app", "db", "cache", "worker", "Bad_Name"] }';
+const COMPOSE = [
+  "services:",
+  "  app:",
+  "    build: { context: .., dockerfile: .devcontainer/Dockerfile }",
+  "    environment:",
+  "      - APP_MODE=test",
+  "      - DATABASE_URL=postgres://postgres:${PG_PW:-secret}@db/app",
+  "      - FROM_HOST",
+  "  db:",
+  "    image: postgres:16-alpine",
+  '    environment: { POSTGRES_PASSWORD: "${PG_PW:-secret}", COST: "$$5", HOST_VALUE: "${HOME}" }',
+  '    healthcheck: { test: ["CMD-SHELL", "pg_isready -U postgres"] }',
+  "  cache:",
+  "    image: redis:7",
+  '    healthcheck: { test: ["CMD", "redis-cli", "ping"] }',
+  "  worker:",
+  "    build: .",
+  "  Bad_Name:",
+  "    image: busybox",
+  "  docs:",
+  "    image: nginx",
+].join("\n");
+
+test("a Compose devcontainer builds its service and starts the others beside the run", () => {
+  const { toolchain, source, notes } = resolve({
+    ".devcontainer/devcontainer.json": COMPOSE_DEVCONTAINER,
+    ".devcontainer/compose.yml": COMPOSE,
+    ".devcontainer/compose.override.yml": "services:\n  cache:\n    image: redis:7-alpine\n",
+  });
+  assert.equal(source, "devcontainer");
+  assert.deepEqual(toolchain.build.inputs, [
+    ".devcontainer/devcontainer.json",
+    ".devcontainer/compose.yml",
+    ".devcontainer/compose.override.yml",
+    ".",
+    ".devcontainer/Dockerfile",
+  ]);
+  assert.deepEqual(toolchain.env, { APP_MODE: "test", DATABASE_URL: "postgres://postgres:secret@db/app" });
+  assert.deepEqual(
+    toolchain.services,
+    [
+      { name: "db", image: "postgres:16-alpine", env: { POSTGRES_PASSWORD: "secret", COST: "$5" }, ready: ["sh", "-c", "pg_isready -U postgres"] },
+      { name: "cache", image: "redis:7-alpine", ready: ["redis-cli", "ping"] },
+    ],
+    "runServices limits them; the override file wins; only defaults fill variables",
+  );
+  for (const expected of [/app environment FROM_HOST was not applied/, /db environment HOST_VALUE was not applied/, /worker was not started/, /Bad_Name \(busybox\) was not started/])
+    assert.ok(notes.some((note) => expected.test(note)), `${expected} in ${notes.join("; ")}`);
+
+  const configured = resolve(
+    { ".devcontainer/devcontainer.json": COMPOSE_DEVCONTAINER, ".devcontainer/compose.yml": COMPOSE, ".devcontainer/compose.override.yml": "" },
+    { toolchain: { services: [{ name: "pg", image: "postgres:16" }] } },
+  );
+  assert.deepEqual(configured.toolchain.services, [{ name: "pg", image: "postgres:16" }], "configured services replace Compose's");
+});
+
+test("a devcontainer that would build from outside the repository is not built", () => {
+  const compose = (yaml) => ({ ".devcontainer/devcontainer.json": '{ "dockerComposeFile": "c.yml", "service": "app" }', ".devcontainer/c.yml": yaml });
+  const cases = {
+    "context outside": { ".devcontainer/devcontainer.json": '{ "build": { "dockerfile": "Dockerfile", "context": "../.." } }' },
+    "build options": { ".devcontainer/devcontainer.json": '{ "build": { "dockerfile": "Dockerfile", "options": ["--secret", "id=k,src=/etc/shadow"] } }' },
+    "compose file outside": { ".devcontainer/devcontainer.json": '{ "dockerComposeFile": "../../compose.yml", "service": "app" }' },
+    "compose context outside": compose("services:\n  app:\n    build: ../../..\n"),
+    "compose build secrets": compose("services:\n  app:\n    build: { context: ., secrets: [k] }\n"),
+    "compose include": compose("include: [../../x.yml]\nservices: {}\n"),
+    "missing service": compose("services:\n  web:\n    image: nginx\n"),
+    "compose build cache": compose("services:\n  app:\n    build: { context: ., cache_from: [type=local,src=/home] }\n"),
+    "compose env_file outside": compose("services:\n  app:\n    image: alpine\n  db:\n    image: postgres\n    env_file: ../../../etc/env\n"),
+    "compose extends outside": compose("services:\n  app:\n    image: alpine\n  db:\n    extends: { file: /etc/compose.yml, service: x }\n"),
+    "local feature outside": { ".devcontainer/devcontainer.json": '{ "image": "alpine:3.20", "features": { "../../feature": {} } }' },
+  };
+  for (const [name, files] of Object.entries(cases)) {
+    const { toolchain, notes } = resolve(files);
+    assert.equal(toolchain.build, undefined, name);
+    assert.equal(toolchain.services, undefined, name);
+    assert.ok(notes.some((note) => /so the devcontainer was not built/.test(note)), `${name}: ${notes.join("; ")}`);
+  }
+  assert.equal(resolve(cases["local feature outside"]).toolchain.image, "alpine:3.20", "its plain image is still used");
+  assert.equal(resolve(cases["context outside"]).toolchain.image, config.executionDefaultImage);
+});
+
 test("a devcontainer that can't be used falls back to the default image and says why", () => {
-  const outside = resolve({ ".devcontainer/devcontainer.json": '{ "build": { "dockerfile": "Dockerfile", "context": "../.." } }' });
-  assert.equal(outside.source, "default");
-  assert.equal(outside.toolchain.build, undefined);
-  assert.ok(outside.notes.some((note) => /points outside the repository/.test(note)));
 
   const broken = resolve({ ".devcontainer.json": "{ not json" });
   assert.equal(broken.source, "default");
@@ -331,30 +421,53 @@ test("a new environment cache replaces the repository's old one", { skip: requir
   assert.deepEqual(images("-q", "--filter", "dangling=true", "--filter", `label=agent.environment-cache=agent-cache-${scope}`), []);
 });
 
-test("the project's Dockerfile is built as it is, and a failed build reports its output", { skip: require("node:child_process").spawnSync("docker", ["version"]).status === 0 ? false : "Docker is not available" }, async (t) => {
+test("the project's devcontainer is built with its features, and nothing reaches or runs on the host", { skip: require("node:child_process").spawnSync("docker", ["version"]).status === 0 ? false : "Docker is not available" }, async (t) => {
   const fs = require("node:fs");
   const path = require("node:path");
-  const { execFileSync } = require("node:child_process");
+  const { execFileSync, spawnSync } = require("node:child_process");
   const { buildEnvironmentImage, SetupFailedError, workspacePath } = require("../dist/services/workspaceService");
   const id = `build-test-${process.pid}`;
-  const tag = `agent-build:test-${process.pid}`;
+  const scope = `build-scope-${process.pid}`;
   const dir = workspacePath(id);
-  fs.mkdirSync(path.join(dir, ".devcontainer"), { recursive: true });
+  const write = (file, text) => {
+    fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+    fs.writeFileSync(path.join(dir, file), text);
+  };
+  const images = () => execFileSync("docker", ["images", `agent-build-${scope}`, "--format", "{{.Repository}}:{{.Tag}}"], { encoding: "utf8" }).trim().split("\n").filter(Boolean);
+  process.env.SECRET_PROBE = "app-secret-value";
   t.after(() => {
+    delete process.env.SECRET_PROBE;
     fs.rmSync(dir, { recursive: true, force: true });
-    require("node:child_process").spawnSync("docker", ["rmi", "-f", tag]);
+    for (const image of images()) spawnSync("docker", ["rmi", "-f", image]);
   });
-  fs.writeFileSync(path.join(dir, "hello.txt"), "from the context\n");
-  fs.writeFileSync(path.join(dir, ".devcontainer", "Dockerfile"), "FROM alpine:3.20 AS dev\nARG V\nCOPY hello.txt /hello.txt\nRUN echo \"v=$V\" >> /hello.txt\n");
+  execFileSync("git", ["init", "-q"], { cwd: (fs.mkdirSync(dir, { recursive: true }), dir) });
+  write("hello.txt", "from the context\n");
+  write(".devcontainer/Dockerfile", 'FROM alpine:3.20\nARG S\nCOPY hello.txt /hello.txt\nRUN echo "s=$S" >> /hello.txt\n');
+  write(".devcontainer/devcontainer.json", JSON.stringify({
+    build: { dockerfile: "Dockerfile", context: "..", args: { S: "${localEnv:SECRET_PROBE}" } },
+    initializeCommand: "echo ran > initialize-ran.txt",
+    features: { "ghcr.io/devcontainers/features/common-utils:2": { installZsh: false, installOhMyZsh: false } },
+  }));
+  const build = { config: ".devcontainer/devcontainer.json", inputs: [".devcontainer/devcontainer.json", ".devcontainer/Dockerfile", "."] };
 
-  const image = await buildEnvironmentImage(id, tag, { dockerfile: ".devcontainer/Dockerfile", context: ".", args: { V: "7" }, target: "dev" });
-  assert.match(image, /^sha256:[0-9a-f]{64}$/);
-  assert.equal(execFileSync("docker", ["run", "--rm", image, "cat", "/hello.txt"], { encoding: "utf8" }), "from the context\nv=7\n");
-  assert.equal(fs.existsSync(`${dir}.iid`), false, "the ID file is removed");
+  const image = await buildEnvironmentImage(id, scope, build);
+  assert.match(image, new RegExp(`^agent-build-${scope}:[0-9a-f]{32}$`));
+  assert.equal(execFileSync("docker", ["run", "--rm", image, "cat", "/hello.txt"], { encoding: "utf8" }), "from the context\ns=\n", "the app's environment is not the build's");
+  assert.equal(spawnSync("docker", ["run", "--rm", image, "which", "jq"]).status, 0, "the feature is installed");
+  assert.equal(fs.existsSync(path.join(dir, "initialize-ran.txt")), false, "initializeCommand does not run on the host");
+  assert.equal(execFileSync("git", ["status", "--porcelain", "--untracked-files=all"], { cwd: dir, encoding: "utf8" }).split("\n").filter((line) => line && !/hello\.txt|\.devcontainer\//.test(line)).length, 0, "nothing is written into the clone");
+  assert.equal(await buildEnvironmentImage(id, scope, build), image, "an unchanged rebuild is the same image");
 
-  fs.writeFileSync(path.join(dir, ".devcontainer", "Dockerfile"), "FROM alpine:3.20\nRUN echo broken-step-output && exit 3\n");
+  // Compose: the main service's build, without starting anything.
+  write(".devcontainer/devcontainer.json", JSON.stringify({ dockerComposeFile: "compose.yml", service: "app" }));
+  write(".devcontainer/compose.yml", "services:\n  app:\n    build: { context: .., dockerfile: .devcontainer/Dockerfile }\n    command: sleep infinity\n  db:\n    image: postgres:16-alpine\n");
+  const composed = await buildEnvironmentImage(id, scope, { config: ".devcontainer/devcontainer.json", inputs: [".devcontainer/compose.yml", ".", ".devcontainer/Dockerfile"] });
+  assert.match(execFileSync("docker", ["run", "--rm", composed, "cat", "/hello.txt"], { encoding: "utf8" }), /from the context/);
+
+  write(".devcontainer/devcontainer.json", JSON.stringify({ build: { dockerfile: "Dockerfile" } }));
+  write(".devcontainer/Dockerfile", "FROM alpine:3.20\nRUN echo broken-step-output && exit 3\n");
   await assert.rejects(
-    buildEnvironmentImage(id, tag, { dockerfile: ".devcontainer/Dockerfile", context: ".", args: {} }),
+    buildEnvironmentImage(id, scope, { config: ".devcontainer/devcontainer.json", inputs: [".devcontainer/Dockerfile"] }),
     (error) => error instanceof SetupFailedError && /broken-step-output/.test(error.message),
   );
 });

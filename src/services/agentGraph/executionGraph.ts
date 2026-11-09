@@ -248,11 +248,11 @@ const prepareEnvironment = async (
   if (resolution.toolchain.build) {
     const image = await buildEnvironmentImage(
       executionId,
-      resolution.toolchain.image,
+      repository.id,
       resolution.toolchain.build,
       setupOptions.setupTimeoutMs,
     );
-    await graphEvent(executionId, "GRAPH_ENVIRONMENT_BUILT", { dockerfile: resolution.toolchain.build.dockerfile, image });
+    await graphEvent(executionId, "GRAPH_ENVIRONMENT_BUILT", { config: resolution.toolchain.build.config, image });
     resolution = { ...resolution, toolchain: { ...resolution.toolchain, image } };
   }
   if (Object.keys(resolution.toolchain.checks).length || !config.executionDiscoveryMaxAttempts)

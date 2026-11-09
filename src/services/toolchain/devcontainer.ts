@@ -5,8 +5,8 @@
  * taken; everything else is reported, never guessed.
  */
 
-import path from "node:path";
-import type { DockerBuild } from "./types";
+import { readCompose, repoPath } from "./compose";
+import type { DevcontainerBuild, ServiceContainer } from "./types";
 
 export const DEVCONTAINER_FILES = [".devcontainer/devcontainer.json", ".devcontainer.json"];
 
@@ -65,39 +65,28 @@ const LIFECYCLE = ["onCreateCommand", "updateContentCommand", "postCreateCommand
 // Values like ${containerEnv:PATH} need a running dev container to resolve.
 const hasVariable = (value: string) => value.includes("${");
 
-/** A path from devcontainer.json (relative to its folder) as a repository path, or undefined if it leaves the repository. */
-const repoPath = (file: string, relative: string) => {
-  const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(file), relative.replaceAll("\\", "/")));
-  return path.posix.isAbsolute(relative) || resolved === ".." || resolved.startsWith("../") ? undefined : resolved;
-};
-
-/** `build` (or the older top-level `dockerFile`/`context`): built as-is, before setup. */
-const readBuild = (file: string, spec: Record<string, unknown>, notes: string[]): DockerBuild | undefined => {
+/**
+ * What the Dev Container CLI builds from (a Dockerfile, or the Compose files
+ * and the main service's build), or a reason it would read outside the
+ * repository. The CLI itself applies args, target and features.
+ */
+const readDockerfile = (file: string, spec: Record<string, unknown>): string[] | { refused: string } | undefined => {
   const build = (spec.build && typeof spec.build === "object" ? spec.build : spec) as Record<string, unknown>;
   const dockerfileField = build === spec ? spec.dockerFile : build.dockerfile;
-  if (typeof dockerfileField !== "string") {
-    if (spec.build) notes.push(`${file} build names no dockerfile`);
-    return undefined;
-  }
+  if (typeof dockerfileField !== "string") return spec.build ? { refused: `${file} build names no dockerfile` } : undefined;
+  // Raw docker build options can hand the build host files (--secret, --build-context).
+  if (build.options) return { refused: `${file} build.options is not supported` };
   const dockerfile = repoPath(file, dockerfileField);
   const context = repoPath(file, typeof build.context === "string" ? build.context : ".");
-  if (!dockerfile || !context) {
-    notes.push(`${file} build points outside the repository, so it was not built`);
-    return undefined;
-  }
-  const args: Record<string, string> = {};
-  for (const [name, value] of Object.entries((build.args as Record<string, unknown>) ?? {})) {
-    if (typeof value !== "string" || hasVariable(value)) notes.push(`build.args.${name} was not applied`);
-    else args[name] = value;
-  }
-  for (const key of ["options", "cacheFrom"]) if (build[key]) notes.push(`build.${key} was not applied`);
-  return { dockerfile, context, args, ...(typeof build.target === "string" ? { target: build.target } : {}) };
+  return dockerfile && context ? [dockerfile, context] : { refused: `${file} builds from outside the repository` };
 };
 
 export interface DevcontainerEnvironment {
   file: string;
   image?: string;
-  build?: DockerBuild;
+  build?: DevcontainerBuild;
+  /** Compose services beside the main one, not yet validated. */
+  services?: ServiceContainer[];
   setup: string[] | null;
   env: Record<string, string>;
   notes: string[];
@@ -116,12 +105,37 @@ export const readDevcontainer = (read: (file: string) => string | undefined): De
   }
 
   const image = typeof spec.image === "string" ? spec.image : undefined;
-  const build = image ? undefined : readBuild(file, spec, notes);
-  if (spec.dockerComposeFile) notes.push(`${file} uses Docker Compose, which is not supported yet`);
-  if (spec.features && Object.keys(spec.features as object).length)
-    notes.push(`${file} features were not applied: ${Object.keys(spec.features as object).join(", ")}`);
+  const inputs = [file];
+  let refused: string | undefined;
+  let composeEnv: Record<string, string> = {};
+  let services: ServiceContainer[] | undefined;
+  let dockerfile: string[] | { refused: string } | undefined;
+  if (spec.dockerComposeFile) {
+    const compose = readCompose(file, spec, read, notes);
+    if ("refused" in compose) refused = compose.refused;
+    else {
+      inputs.push(...compose.inputs);
+      composeEnv = compose.env;
+      services = compose.services;
+    }
+  } else if (!image) {
+    dockerfile = readDockerfile(file, spec);
+    if (dockerfile && "refused" in dockerfile) refused = dockerfile.refused;
+    else if (dockerfile) inputs.push(...dockerfile);
+  }
+  const features = Object.keys((spec.features as object) ?? {});
+  for (const feature of features)
+    if (feature.startsWith(".")) {
+      // A local feature is a folder of the repository (spec: inside .devcontainer).
+      const folder = repoPath(file, feature);
+      if (folder) inputs.push(folder);
+      else refused ??= `${file} feature ${feature} is outside the repository`;
+    }
+  // A plain image is used as it is; a Dockerfile, Compose or features need the CLI.
+  const needsBuild = Boolean(spec.dockerComposeFile) || Array.isArray(dockerfile) || (Boolean(image) && features.length > 0);
+  if (refused) notes.push(`${refused}, so the devcontainer was not built`);
 
-  const env: Record<string, string> = {};
+  const env: Record<string, string> = { ...composeEnv };
   for (const key of ["containerEnv", "remoteEnv"])
     for (const [name, value] of Object.entries((spec[key] as Record<string, unknown>) ?? {})) {
       if (typeof value !== "string" || hasVariable(value)) notes.push(`${key}.${name} was not applied`);
@@ -132,7 +146,8 @@ export const readDevcontainer = (read: (file: string) => string | undefined): De
   return {
     file,
     image,
-    ...(build ? { build } : {}),
+    ...(needsBuild && !refused ? { build: { config: file, inputs } } : {}),
+    ...(services && !refused ? { services } : {}),
     setup: commands.length ? ["sh", "-c", commands.join(" && ")] : null,
     env,
     notes,

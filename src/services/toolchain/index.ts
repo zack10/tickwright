@@ -1,4 +1,3 @@
-import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -6,7 +5,6 @@ import { config } from "../../config";
 import { NonRetryableError } from "../../utils/safeError";
 import { readDevcontainer } from "./devcontainer";
 import {
-  DockerBuild,
   Toolchain,
   ToolchainResolution,
   ToolchainSource,
@@ -100,9 +98,8 @@ export const parseVerificationConfig = (raw: unknown): VerificationConfig => {
   return parsed.data;
 };
 
-// Names the image a build produces; runs use the built image's ID, so a changed Dockerfile or context is never mistaken for the old one.
-const buildTag = (build: DockerBuild) =>
-  `agent-build:${crypto.createHash("sha256").update(JSON.stringify(build)).digest("hex").slice(0, 16)}`;
+/** Stands for the image a devcontainer build produces, until the run builds it (`buildEnvironmentImage`). */
+export const UNBUILT_IMAGE = "agent-build:unbuilt";
 
 /**
  * The repository's environment, from (in order) its configuration, the
@@ -119,14 +116,17 @@ export const resolveToolchain = (read: ReadRepoFile, rawConfig: unknown): Toolch
   if (configured.image) {
     source = "configured";
     reason = "image set in the repository configuration";
-  } else if (devcontainer?.image && IMAGE_PATTERN.test(devcontainer.image)) {
-    source = "devcontainer";
-    reason = `image from the project's ${devcontainer.file}`;
+  } else if (devcontainer?.image && !IMAGE_PATTERN.test(devcontainer.image)) {
+    notes.push(`${devcontainer.file} image "${devcontainer.image}" is not a valid image reference`);
+    source = "default";
+    reason = `${devcontainer.file} names no usable image; using the default image`;
   } else if (devcontainer?.build) {
     source = "devcontainer";
-    reason = `image built from the project's ${devcontainer.build.dockerfile} (${devcontainer.file})`;
+    reason = `image built from the project's ${devcontainer.file}`;
+  } else if (devcontainer?.image) {
+    source = "devcontainer";
+    reason = `image from the project's ${devcontainer.file}`;
   } else {
-    if (devcontainer?.image) notes.push(`${devcontainer.file} image "${devcontainer.image}" is not a valid image reference`);
     source = "default";
     reason = devcontainer
       ? `${devcontainer.file} names no usable image; using the default image`
@@ -134,19 +134,27 @@ export const resolveToolchain = (read: ReadRepoFile, rawConfig: unknown): Toolch
   }
 
   const fromProject = source !== "configured" && devcontainer;
-  const build = source === "devcontainer" && !devcontainer!.image ? devcontainer!.build : undefined;
+  const build = source === "devcontainer" ? devcontainer!.build : undefined;
+  // Compose services are checked like configured ones; configured services replace them.
+  const projectServices = (fromProject ? devcontainer.services ?? [] : []).filter((candidate) => {
+    const valid = service.safeParse(candidate).success;
+    if (!valid) notes.push(`Compose service ${candidate.name} (${candidate.image}) was not started: invalid name or image`);
+    return valid;
+  });
+  const services = configured.services?.length ? configured.services : projectServices.slice(0, 5);
+  if (!configured.services?.length && projectServices.length > 5) notes.push("only the first 5 Compose services were started");
   const toolchain: Toolchain = {
     ...(configured.language ? { language: configured.language } : {}),
     image:
       configured.image ??
-      (build ? buildTag(build) : source === "devcontainer" ? devcontainer!.image! : config.executionDefaultImage),
+      (build ? UNBUILT_IMAGE : source === "devcontainer" ? devcontainer!.image! : config.executionDefaultImage),
     ...(build ? { build } : {}),
     setup: configured.setup !== undefined ? configured.setup : fromProject ? devcontainer.setup : null,
     checks: configured.checks ?? {},
     env: { ...(devcontainer?.env ?? {}), ...(configured.env ?? {}) },
     testFilePatterns: configured.testFilePatterns ?? DEFAULT_TEST_FILE_PATTERNS,
     protectedPaths: configured.protectedPaths ?? DEFAULT_PROTECTED_PATHS,
-    ...(configured.services?.length ? { services: configured.services } : {}),
+    ...(services.length ? { services } : {}),
   };
   if (!Object.keys(toolchain.checks).length)
     notes.push("no checks are configured for this repository, so changes cannot be verified");
@@ -185,7 +193,7 @@ export const describeEnvironment = (
 ) =>
   [
     ...(toolchain.language ? [`Language: ${toolchain.language}`] : []),
-    `Image: ${toolchain.build ? `built from the project's ${toolchain.build.dockerfile}` : toolchain.image}`,
+    `Image: ${toolchain.build ? `built from the project's ${toolchain.build.config}` : toolchain.image}`,
     ...(toolchain.services?.length
       ? [
           `Services, reachable by name from setup, checks and commands: ${toolchain.services.map((s) => `${s.name} (${s.image})`).join(", ")}`,

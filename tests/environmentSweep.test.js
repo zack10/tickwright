@@ -40,6 +40,8 @@ test(
   { skip: docker("version").status === 0 ? false : "Docker is not available" },
   async (t) => {
     const [ended, running, unknown, idleRepo, busyRepo] = Array.from({ length: 5 }, () => crypto.randomUUID());
+    // `docker tag` does not pull, unlike `docker run`; a fresh CI runner has no image yet.
+    if (!exists("image", "alpine:3.20")) assert.equal(docker("pull", "alpine:3.20").status, 0, "pull alpine:3.20");
     const made = { images: [], containers: [], networks: [] };
     t.after(() => {
       for (const container of made.containers) docker("rm", "-f", container);

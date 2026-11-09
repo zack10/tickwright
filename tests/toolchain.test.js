@@ -245,6 +245,16 @@ test("selected checks that the repository lacks are unavailable, not failed", ()
   assert.deepEqual(selected.unavailable, ["lint"]);
 });
 
+test("the plan says whether checks, discovery or nothing will verify the change", () => {
+  const { planVerification } = require("../dist/services/toolchain");
+  const configured = { toolchain: { checks: { test: ["make", "test"] } } };
+  assert.equal(planVerification(resolve({}, configured).toolchain, configured, 3), "checks");
+  assert.equal(planVerification(resolve({}).toolchain, {}, 3), "discovery", "no checks yet: discovery proposes them");
+  assert.equal(planVerification(resolve({}).toolchain, {}, 0), "none", "discovery is off");
+  const missing = { ...configured, scripts: ["lint"] };
+  assert.equal(planVerification(resolve({}, missing).toolchain, missing, 3), "none", "only missing checks selected, and discovery does not run");
+});
+
 test("the agent is told the image and each check's command, or how to find them", () => {
   const { describeEnvironment } = require("../dist/services/toolchain");
   const { toolchain } = resolve({}, { toolchain: { image: "python:3.12", language: "Python", checks: { test: ["pytest", "-q"] } } });

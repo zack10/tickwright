@@ -5,7 +5,7 @@ import { getBaseSha, getInstallationToken } from "../../integrations/githubApp";
 import { renderExecutionPrompt } from "../../prompts";
 import { NonRetryableError } from "../../utils/safeError";
 import { submitPlan } from "../executionService";
-import { describeEnvironment, fsRepoFiles, resolveToolchain, selectChecks } from "../toolchain";
+import { PlanVerification, describeEnvironment, fsRepoFiles, planVerification, resolveToolchain, selectChecks } from "../toolchain";
 import { cloneGithubWorkspace, removeWorkspace, workspacePath } from "../workspaceService";
 import { CallContext, askAgent, graphEvent, parseJsonRecord, resolveAgentCalls } from "./agentCalls";
 import { collectRepoContext } from "./repoContext";
@@ -73,7 +73,7 @@ const positive = (value: unknown, fallback: number) =>
   typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
 
 export type PlanningOutcome =
-  | { status: "submitted"; plan: AgentPlan; version: number }
+  | { status: "submitted"; plan: AgentPlan; version: number; verification: PlanVerification }
   | { status: "declined"; reason: string };
 
 /**
@@ -117,11 +117,9 @@ export const planExecution = async (executionId: string): Promise<PlanningOutcom
     const { toolchain } = resolveToolchain(fsRepoFiles(root), repository.verificationConfig);
     const ticket = `${workItem.title}\n${workItem.description ?? ""}`;
     const repoContext = await collectRepoContext(root, ticket, toolchain);
-    const environment = describeEnvironment(
-      toolchain,
-      selectChecks(toolchain, repository.verificationConfig).run,
-      config.executionAgentMode === "tool_loop",
-    );
+    const checks = selectChecks(toolchain, repository.verificationConfig).run;
+    const environment = describeEnvironment(toolchain, checks, config.executionAgentMode === "tool_loop");
+    const verification = planVerification(toolchain, repository.verificationConfig, config.executionDiscoveryMaxAttempts);
     const ctx: CallContext = {
       executionId,
       ...resolveAgentCalls(agent),
@@ -154,8 +152,13 @@ export const planExecution = async (executionId: string): Promise<PlanningOutcom
         },
       ],
     });
-    await graphEvent(executionId, "PLAN_WRITTEN", { version: submitted.version, promptVersion: prompt.version });
-    return { status: "submitted", plan, version: submitted.version };
+    await graphEvent(executionId, "PLAN_WRITTEN", {
+      version: submitted.version,
+      promptVersion: prompt.version,
+      verification,
+      checks: checks.map((check) => check.name),
+    });
+    return { status: "submitted", plan, version: submitted.version, verification };
   } finally {
     // The run clones the pinned commit again; nothing waits on disk for a person.
     await removeWorkspace(executionId);

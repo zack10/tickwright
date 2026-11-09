@@ -3,6 +3,7 @@ import prisma from "../db";
 import { IssueTrackerAdapter, TrackerComment } from "../integrations/types";
 import { describeError } from "../utils/safeError";
 import type { AgentPlan } from "./agentGraph/planning";
+import type { PlanVerification } from "./toolchain";
 import { decideApproval, requestPlanRevision } from "./executionService";
 
 /**
@@ -21,7 +22,14 @@ export const isAgentComment = (text: string) => text.trimEnd().endsWith(AGENT_SI
 
 const COMMANDS = "Reply `/approve` to go ahead, `/reject <reason>` to stop, or write what should change and I'll revise the plan.";
 
-export const formatPlanComment = (plan: AgentPlan, version: number) =>
+// The approver should know before approving when nothing will test the change.
+const VERIFICATION_NOTES: Record<PlanVerification, string> = {
+  checks: "",
+  discovery: "**No checks are set for this repository yet:** I'll propose a setup and checks during the run, and the pull request will say they are not approved.",
+  none: "**Unverified:** this repository has no checks, so nothing will test the change; you will have to check it yourself.",
+};
+
+export const formatPlanComment = (plan: AgentPlan, version: number, verification: PlanVerification = "checks") =>
   [
     `**Plan${version > 1 ? ` (version ${version})` : ""}:** ${plan.summary}`,
     plan.expectedBehaviour.length
@@ -32,6 +40,7 @@ export const formatPlanComment = (plan: AgentPlan, version: number) =>
       : "",
     plan.filesToEdit.length ? `**Files I expect to change:** ${plan.filesToEdit.join(", ")}` : "",
     plan.testStrategy.length ? ["**How I'll check it:**", ...plan.testStrategy.map((step) => `- ${step}`)].join("\n") : "",
+    VERIFICATION_NOTES[verification],
     COMMANDS,
   ]
     .filter(Boolean)

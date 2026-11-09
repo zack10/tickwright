@@ -140,6 +140,9 @@ export const config = {
   // from its image. 0 turns reuse off.
   executionSnapshotMaxAgeHours: parseNonNegativeInt(process.env.EXECUTION_SNAPSHOT_MAX_AGE_HOURS, 24),
   executionDiscoveryMaxAttempts: parseNonNegativeInt(process.env.EXECUTION_DISCOVERY_MAX_ATTEMPTS, 3),
+  // A run does not start below this much free disk (after a sweep of what
+  // ended runs left). 0 turns the check off.
+  executionMinFreeDiskGb: parseNonNegativeInt(process.env.EXECUTION_MIN_FREE_DISK_GB, 10),
   storeRawLlmOutput: process.env.STORE_RAW_LLM_OUTPUT === "true",
 };
 

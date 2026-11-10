@@ -5,10 +5,13 @@ import { getBaseSha, getInstallationToken } from "../../integrations/githubApp";
 import { renderExecutionPrompt } from "../../prompts";
 import { NonRetryableError } from "../../utils/safeError";
 import { submitPlan } from "../executionService";
-import { PlanVerification, describeEnvironment, fsRepoFiles, planVerification, resolveToolchain, selectChecks } from "../toolchain";
+import { ToolContext } from "../sandbox/tools";
+import { PlanVerification, describeEnvironment, fsRepoFiles, isTestFile, planVerification, resolveToolchain, selectChecks } from "../toolchain";
 import { cloneGithubWorkspace, removeWorkspace, workspacePath } from "../workspaceService";
-import { CallContext, askAgent, graphEvent, parseJsonRecord, resolveAgentCalls } from "./agentCalls";
+import { CallContext, askAgent, askAgentWithTools, executionTokensUsed, graphEvent, parseJsonRecord, resolveAgentCalls } from "./agentCalls";
+import { PLAN_MAX_TOKENS, runPlanner } from "./planner";
 import { collectRepoContext } from "./repoContext";
+import { RepositoryPolicy } from "./repoPolicy";
 
 /** The agent's plan as the person approves it and the run follows it. */
 export interface AgentPlan {
@@ -120,9 +123,13 @@ export const planExecution = async (executionId: string): Promise<PlanningOutcom
     const checks = selectChecks(toolchain, repository.verificationConfig).run;
     const environment = describeEnvironment(toolchain, checks, config.executionAgentMode === "tool_loop");
     const verification = planVerification(toolchain, repository.verificationConfig, config.executionDiscoveryMaxAttempts);
+    const calls = resolveAgentCalls(agent);
     const ctx: CallContext = {
       executionId,
-      ...resolveAgentCalls(agent),
+      ...calls,
+      // A model or effort configured for the plan covers both ways of writing it.
+      callModels: { ...calls.callModels, planner: calls.callModels.planner ?? calls.callModels.plan },
+      reasoningEffort: { ...calls.reasoningEffort, planner: calls.reasoningEffort.planner ?? calls.reasoningEffort.plan },
       maxTokens: positive((execution.budget as { maxTokens?: number } | null)?.maxTokens, 200_000),
     };
 
@@ -133,13 +140,46 @@ export const planExecution = async (executionId: string): Promise<PlanningOutcom
       if (decision === "decline") return { status: "declined", reason };
     }
 
-    const prompt = renderExecutionPrompt("plan", {
-      ticket,
-      environment,
-      repoContext: repoContext.summary,
-      revisions: describeRevisions(execution.plans, execution.approvals),
-    });
-    const plan = planFromReply(parseJsonRecord(await askAgent(ctx, prompt)), workItem.title);
+    const revisions = describeRevisions(execution.plans, execution.approvals);
+    // With tools the planner reads the code itself; without, it gets a sample of it (each file cut short).
+    const withTools = config.executionAgentMode === "tool_loop";
+    const prompt = withTools
+      ? renderExecutionPrompt("planner", { ticket, environment, repoOverview: repoContext.overview, revisions })
+      : renderExecutionPrompt("plan", { ticket, environment, repoContext: repoContext.summary, revisions });
+    const policy = repository.executionPolicy as RepositoryPolicy | null;
+    const noSandbox = async (): Promise<never> => {
+      throw new Error("The plan step runs nothing");
+    };
+    const tools: ToolContext = {
+      root,
+      protectedPaths: [],
+      checkScripts: [],
+      runCheck: noSandbox,
+      runCommand: noSandbox,
+      isTestFile: (file) => isTestFile(toolchain, file),
+      isBaseFile: () => true,
+      reproduction: { shown: false, newTest: false },
+      limits: { maxOutputChars: policy?.maxToolOutputChars, maxReadLines: policy?.maxReadLines },
+    };
+    const reply = withTools
+      ? ((await runPlanner(tools, prompt, {
+          generate: (request) => askAgentWithTools(ctx, request, prompt.version),
+          maxTokens: Math.min(PLAN_MAX_TOKENS, Math.max(0, ctx.maxTokens - (await executionTokensUsed(ctx)))),
+          deadline: Date.now() + config.executionMaxDurationSeconds * 1000,
+          onStep: (step) =>
+            graphEvent(executionId, "PLAN_STEP", {
+              step: step.step,
+              promptVersion: prompt.version,
+              usage: step.usage,
+              toolCalls: step.toolCalls.map(({ call, outcome }) => ({
+                name: call.name,
+                status: outcome.status,
+                input: JSON.stringify(call.arguments).slice(0, 300),
+              })),
+            }),
+        })) ?? {})
+      : parseJsonRecord(await askAgent(ctx, prompt));
+    const plan = planFromReply(reply, workItem.title);
     const submitted = await submitPlan(executionId, {
       summary: plan.summary,
       acceptanceCriteria: plan.expectedBehaviour.length ? plan.expectedBehaviour : [workItem.description || workItem.title],

@@ -38,6 +38,7 @@ import {
   changes,
   cloneGithubWorkspace,
   gitDiff,
+  ProgressReporter,
   SetupFailedError,
   prepareVerification,
   setupWorkspace,
@@ -233,6 +234,10 @@ const describeFixed = (fixed: FixedEnvironment) =>
  * proposal is stored on the repository until a person approves it. If none
  * works, the run continues in the resolved toolchain (the default image).
  */
+/** Progress of a long build, setup or check, as an event the API shows (see withProgress). */
+const reportProgress = (executionId: string): ProgressReporter => (progress) =>
+  graphEvent(executionId, "GRAPH_STEP_PROGRESS", progress);
+
 const prepareEnvironment = async (
   executionId: string,
   repository: Omit<Repository, "encryptedSetupSecrets">,
@@ -242,9 +247,11 @@ const prepareEnvironment = async (
   await ensureDiskSpace();
   const checksFor = (toolchain: Toolchain) => selectChecks(toolchain, repository.verificationConfig).run;
   const timeout = (repository.executionPolicy as RepositoryPolicy | null)?.setupTimeoutSeconds;
+  const progress = reportProgress(executionId);
   const setupOptions = {
     cacheFor: repository.id,
     secrets: await setupSecretsOf(repository.id),
+    progress,
     ...(timeout ? { setupTimeoutMs: timeout * 1000 } : {}),
   };
   const setUp = async (toolchain: Toolchain) => {
@@ -258,6 +265,7 @@ const prepareEnvironment = async (
       repository.id,
       resolution.toolchain.build,
       setupOptions.setupTimeoutMs,
+      progress,
     );
     await graphEvent(executionId, "GRAPH_ENVIRONMENT_BUILT", { config: resolution.toolchain.build.config, image });
     resolution = { ...resolution, toolchain: { ...resolution.toolchain, image } };
@@ -814,6 +822,7 @@ const verifyChange = async (state: typeof ExecutionGraphState.State) => {
     toolchain,
     agentTest && !runsAlready(agentTest.command) ? { ...checks, run: [...checks.run, agentTest] } : checks,
     Object.keys(state.failingBefore),
+    reportProgress(state.executionId),
   );
 
   if (!verification.passed) {

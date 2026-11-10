@@ -15,6 +15,7 @@ Prompt files keep their own versions (`src/prompts/execution/*.vN.md`).
 
 ### Added
 
+- **Progress of long steps.** While a devcontainer build, setup or a check runs, the execution records a `GRAPH_STEP_PROGRESS` event about once a minute (`EXECUTION_PROGRESS_INTERVAL_SECONDS`) with the step, its command, the elapsed time and the end of its output (secrets masked), so the API shows a run is alive and what it is doing. A step with no new output for `EXECUTION_HUNG_AFTER_SECONDS` (default 600) is marked as possibly hung.
 - **Environment sweep.** On start and every hour, the app removes what ended runs left behind (snapshot, containers, network, clone) and repository environment caches and devcontainer builds older than `EXECUTION_SNAPSHOT_MAX_AGE_HOURS` while the repository has no run in progress; only what its own database knows is touched. A run does not start with less than `EXECUTION_MIN_FREE_DISK_GB` (default 10) free after a sweep.
 - **Setup secrets.** `PATCH /api/repositories/:id` accepts `setupSecrets` (environment variables such as a private registry token), stored encrypted. Only the setup command gets them; checks, the environment snapshot and the agent never do, and a change that contains one is rejected.
 - **Unverified plans are flagged.** The plan comment on the ticket says when nothing will test the change (the repository has no checks) or when checks will only be proposed during the run, and the `PLAN_WRITTEN` event records which applies and the checks that will run.

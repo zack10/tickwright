@@ -98,14 +98,19 @@ export const executionToolContext = async (
       const check = checks.find((candidate) => candidate.name === name);
       if (!check) throw new Error(`Unknown check "${name}"`);
       // What the check writes (build output, caches) is not the agent's change.
-      return keepOutputOutOfDiffs(executionId, () => execInSandbox(executionId, check.command, CHECK_TIMEOUT_MS));
+      return keepOutputOutOfDiffs(executionId, () => execInSandbox(executionId, check.command, (policy?.checkTimeoutSeconds ?? CHECK_TIMEOUT_MS / 1000) * 1000));
     },
     // What the agent's commands write is its change: visible in the diff and policed there.
     runCommand: (command, timeoutMs) => execInSandbox(executionId, ["sh", "-c", command], timeoutMs),
     isTestFile: (file) => isTestFile(toolchain, file),
     isBaseFile: (file) => baseFiles.has(file),
     reproduction: { shown: newTest, newTest },
-    limits: { maxOutputChars: policy?.maxToolOutputChars, maxReadLines: policy?.maxReadLines },
+    limits: {
+      maxOutputChars: policy?.maxToolOutputChars,
+      maxReadLines: policy?.maxReadLines,
+      checkTimeoutSeconds: policy?.checkTimeoutSeconds,
+      maxFileBytes: policy?.maxFileBytes,
+    },
     failingBefore,
   };
 };

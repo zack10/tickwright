@@ -6,6 +6,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { config } from "../config";
 import { findSymlink } from "../utils/safePath";
+import type { SandboxLimits } from "./agentGraph/repoPolicy";
 import { DevcontainerBuild, SANDBOX_ROOT, ServiceContainer, Toolchain, commandText } from "./toolchain";
 
 const exec = promisify(execFile);
@@ -70,7 +71,15 @@ const AUTH_GIT = `${SAFE_GIT} -c protocol.allow=never -c protocol.https.allow=al
 // Clone, diff, reset and cleanup only: any image with git and a shell. The
 // repository's own commands run in its toolchain's image instead.
 const GIT_IMAGE = "node:20-bookworm";
-const LIMIT_ARGS = ["--cpus", "2", "--memory", "2g", "--pids-limit", "256"];
+/** Docker's resource flags for a container: the repository's limits, else the defaults. */
+export const limitArgs = (limits?: SandboxLimits | null) => [
+  "--cpus",
+  String(limits?.sandboxCpus ?? 2),
+  "--memory",
+  `${limits?.sandboxMemoryMb ?? 2048}m`,
+  "--pids-limit",
+  String(limits?.sandboxMaxProcesses ?? 256),
+];
 const SETUP_TIMEOUT_MS = 900_000;
 
 const envArgs = (env: Record<string, string> = {}) =>
@@ -90,11 +99,11 @@ const dockerArgs = (
   network: boolean,
   withToken: boolean,
   command: string[],
-  options: { image?: string; env?: Record<string, string>; services?: string } = {},
+  options: { image?: string; env?: Record<string, string>; services?: string; limits?: SandboxLimits | null } = {},
 ) => [
   "run",
   "--rm",
-  ...LIMIT_ARGS,
+  ...limitArgs(options.limits),
   "--network",
   network ? "bridge" : (options.services ?? "none"),
   // `-e NAME` without a value makes docker read it from our process env.
@@ -409,7 +418,7 @@ const servicesNetwork = (id: string) => `agent-net-${safeId(id).toLowerCase()}`;
 const serviceContainer = (id: string, name: string) => `agent-svc-${safeId(id).toLowerCase()}-${name}`;
 const SERVICES_LABEL = "agent.services";
 
-export const startServices = async (id: string, toolchain: Toolchain) => {
+export const startServices = async (id: string, toolchain: Toolchain, limits?: SandboxLimits | null) => {
   if (!toolchain.services?.length) return undefined;
   const network = servicesNetwork(id);
   const label = ["--label", `${SERVICES_LABEL}=${safeId(id)}`];
@@ -425,7 +434,7 @@ export const startServices = async (id: string, toolchain: Toolchain) => {
     await exec("docker", ["rm", "-f", "-v", name]).catch(() => undefined);
     // The daemon pulls the image, so the internal network does not stop that.
     await execDocker(
-      ["run", "-d", "--name", name, ...label, ...LIMIT_ARGS, "--network", network, "--network-alias", service.name, ...envArgs(service.env), service.image],
+      ["run", "-d", "--name", name, ...label, ...limitArgs(limits), "--network", network, "--network-alias", service.name, ...envArgs(service.env), service.image],
       {},
       SETUP_TIMEOUT_MS,
     );
@@ -486,7 +495,7 @@ export const setupWorkspace = async (
   id: string,
   toolchain: Toolchain,
   checks: Array<{ name: string; command: string[] }>,
-  options: { cacheFor?: string; setupTimeoutMs?: number; secrets?: Record<string, string>; progress?: ProgressReporter } = {},
+  options: { cacheFor?: string; setupTimeoutMs?: number; secrets?: Record<string, string>; progress?: ProgressReporter; limits?: SandboxLimits | null } = {},
 ) => {
   const baseline: BaselineResult[] = [];
   let setupOutputs: string[] = [];
@@ -502,6 +511,7 @@ export const setupWorkspace = async (
   const args = dockerArgs(workspacePath(id), true, false, ["sleep", "infinity"], {
     image: reuse ? cache : toolchain.image,
     env: toolchain.env,
+    limits: options.limits,
   });
   // Same limits as every container, but long-lived so it can be committed.
   args.splice(args.indexOf("--rm"), 1, "-d", "--name", setupContainer(id));
@@ -516,7 +526,7 @@ export const setupWorkspace = async (
     );
   try {
     try {
-      const services = await startServices(id, toolchain);
+      const services = await startServices(id, toolchain, options.limits);
       await execDocker(args);
       // Setup keeps the bridge for package registries and joins the services' network too.
       if (services) await execDocker(["network", "connect", services, setupContainer(id)]);
@@ -774,6 +784,7 @@ export const verifyWorkspace = async (
   checks: { run: Array<{ name: string; command: string[] }>; unavailable: string[] },
   failingBefore: string[] = [],
   report?: ProgressReporter,
+  limits?: SandboxLimits | null,
 ) => {
   const results: CheckResult[] = checks.unavailable.map((script) => ({
     script,
@@ -782,7 +793,7 @@ export const verifyWorkspace = async (
     output: `No "${script}" check is configured for this repository.`,
   }));
   let failed = false;
-  const services = checks.run.length ? await startServices(id, toolchain) : undefined;
+  const services = checks.run.length ? await startServices(id, toolchain, limits) : undefined;
   for (const { name, command } of checks.run)
     try {
       const result = await keepOutputOutOfDiffs(id, () =>
@@ -791,9 +802,10 @@ export const verifyWorkspace = async (
             image: toolchain.image,
             env: toolchain.env,
             services,
+            limits,
           }),
           {},
-          undefined,
+          limits?.checkTimeoutSeconds ? limits.checkTimeoutSeconds * 1000 : undefined,
           report && { report, step: "check", check: name, command },
         ),
       );
@@ -874,16 +886,16 @@ export const describeVerification = (verification: unknown) => {
  */
 const sandboxName = (id: string) => `agent-sandbox-${safeId(id)}`;
 
-export const startSandbox = async (id: string, toolchain: Toolchain) => {
+export const startSandbox = async (id: string, toolchain: Toolchain, limits?: SandboxLimits | null) => {
   // A crashed earlier attempt may have left one behind.
   await stopSandbox(id);
-  const services = await startServices(id, toolchain);
+  const services = await startServices(id, toolchain, limits);
   await execDocker([
     "run",
     "-d",
     "--name",
     sandboxName(id),
-    ...LIMIT_ARGS,
+    ...limitArgs(limits),
     "--network",
     services ?? "none",
     // `docker exec` inherits these, so every command sees the toolchain's caches.

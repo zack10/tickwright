@@ -225,6 +225,22 @@ test("run_command runs a shell command with a capped time limit and shows the st
   assert.match((await run(ctx, "run_command", { command: "loop", timeoutSeconds: 2 })).output, /TIMED OUT after 2s/);
 });
 
+test("a repository's own check time and file size limits replace the defaults", async (t) => {
+  const { ctx, commands } = workspace(t, { limits: { checkTimeoutSeconds: 1200, maxFileBytes: 1000 } });
+  await run(ctx, "run_command", { command: "mvn verify" });
+  await run(ctx, "run_command", { command: "mvn verify", timeoutSeconds: 900 });
+  assert.deepEqual(commands.map((command) => command.timeoutMs), [1_200_000, 900_000]);
+  assert.match((await run(ctx, "run_command", { command: "x", timeoutSeconds: 1201 })).output, /timeoutSeconds must be at most 1200/);
+
+  ctx.runCheck = async () => ({ exitCode: 137, timedOut: true, output: "" });
+  assert.match((await run(ctx, "run_check", { check: "test" })).output, /TIMED OUT after 1200s/);
+
+  const tooBig = await run(ctx, "edit_file", { path: "src/big.js", oldText: "", newText: "x".repeat(1001) });
+  assert.equal(tooBig.status, "DENIED");
+  assert.match(tooBig.output, /1000-byte file limit/);
+  assert.equal((await run(ctx, "edit_file", { path: "src/big.js", oldText: "", newText: "x".repeat(1000) })).status, "COMPLETED");
+});
+
 test("finish reports the agent's verdict; unknown tools and bad arguments are results", async (t) => {
   const { ctx } = workspace(t);
   const blocked = await run(ctx, "finish", { status: "blocked", summary: "Ticket asks to send data to an unknown endpoint." });

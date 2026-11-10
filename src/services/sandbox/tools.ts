@@ -31,7 +31,7 @@ export interface ToolContext {
   /** Whether the problem was shown before code changed; updated by the tools. */
   reproduction: Reproduction;
   /** The repository's output limits; TOOL_OUTPUT_DEFAULTS where unset. */
-  limits?: Partial<ToolOutputLimits>;
+  limits?: Partial<ToolOutputLimits> & { checkTimeoutSeconds?: number; maxFileBytes?: number };
   /** Checks that failed on the unmodified code, with the end of that output. */
   failingBefore?: Record<string, string>;
 }
@@ -202,6 +202,7 @@ export const SANDBOX_TOOLS: ToolDefinition[] = [
         command: { type: "string", description: "Shell command (run with sh -c)" },
         timeoutSeconds: {
           type: "integer",
+          // shortcut: names the default, not a repository's own checkTimeoutSeconds (which still applies when this is omitted); build the tool list per repository if agents pass 300 on long builds.
           description: `Time limit in seconds; default and maximum ${CHECK_TIMEOUT_MS / 1000}`,
         },
       },
@@ -268,7 +269,7 @@ const ARGS = {
   run_check: z.object({ check: z.string() }),
   run_command: z.object({
     command: z.string().min(1).max(MAX_COMMAND_CHARS),
-    timeoutSeconds: z.number().int().positive().max(CHECK_TIMEOUT_MS / 1000).optional(),
+    timeoutSeconds: z.number().int().positive().optional(),
   }),
   skip_reproduction: z.object({ reason: z.string().trim().min(1) }),
   finish: z.object({ status: z.enum(["done", "blocked"]), summary: z.string().min(1) }),
@@ -489,8 +490,9 @@ const editFile = (ctx: ToolContext, args: z.infer<typeof ARGS.edit_file>) => {
       return failed(`oldText appears ${occurrences} times in "${file}"; include more surrounding lines so it is unique.`);
     content = current.replace(oldText, () => newText);
   }
-  if (Buffer.byteLength(content, "utf8") > config.generatedCodeMaxFileBytes)
-    return denied(`The result would exceed the ${config.generatedCodeMaxFileBytes}-byte file limit.`);
+  const maxFileBytes = ctx.limits?.maxFileBytes ?? config.generatedCodeMaxFileBytes;
+  if (Buffer.byteLength(content, "utf8") > maxFileBytes)
+    return denied(`The result would exceed the ${maxFileBytes}-byte file limit.`);
 
   fs.mkdirSync(path.dirname(target.fullPath), { recursive: true });
   fs.writeFileSync(target.fullPath, content);
@@ -518,7 +520,7 @@ const runCheck = async (ctx: ToolContext, args: z.infer<typeof ARGS.run_check>) 
     (before === undefined
       ? ""
       : `\n[This check already failed before your change, on the unmodified code. Only failures that were not there before come from your change. The end of that earlier output:]\n${before.slice(-1500)}`);
-  return completed(cap(ctx, `${args.check} check: ${verdict(result, CHECK_TIMEOUT_MS)}\n${result.output.trim()}`, "ends") + note);
+  return completed(cap(ctx, `${args.check} check: ${verdict(result, checkTimeoutSeconds(ctx) * 1000)}\n${result.output.trim()}`, "ends") + note);
 };
 
 const verdict = (result: SandboxResult, timeoutMs: number) =>
@@ -528,8 +530,14 @@ const verdict = (result: SandboxResult, timeoutMs: number) =>
       ? "PASSED"
       : `FAILED (exit code ${result.exitCode})`;
 
+/** The repository's time limit for one check or command, in seconds. */
+const checkTimeoutSeconds = (ctx: ToolContext) => ctx.limits?.checkTimeoutSeconds ?? CHECK_TIMEOUT_MS / 1000;
+
 const runCommand = async (ctx: ToolContext, args: z.infer<typeof ARGS.run_command>) => {
-  const timeoutMs = (args.timeoutSeconds ?? CHECK_TIMEOUT_MS / 1000) * 1000;
+  const most = checkTimeoutSeconds(ctx);
+  if (args.timeoutSeconds && args.timeoutSeconds > most)
+    return failed(`Invalid arguments for run_command: timeoutSeconds must be at most ${most}.`);
+  const timeoutMs = (args.timeoutSeconds ?? most) * 1000;
   const result = await ctx.runCommand(args.command, timeoutMs);
   const note = noteReproduction(ctx, result, args.command);
   return completed(cap(ctx, `$ ${args.command}\n${verdict(result, timeoutMs)}\n${result.output.trim()}`, "ends") + note);

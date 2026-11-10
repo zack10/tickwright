@@ -276,6 +276,15 @@ test("the agent is told the image and each check's command, or how to find them"
   assert.equal(resolve({}).toolchain.services, undefined, "no services unless configured");
 });
 
+test("containers get the repository's resource limits, else the defaults", () => {
+  const { limitArgs } = require("../dist/services/workspaceService");
+  assert.deepEqual(limitArgs(null), ["--cpus", "2", "--memory", "2048m", "--pids-limit", "256"]);
+  assert.deepEqual(
+    limitArgs({ sandboxCpus: 4, sandboxMemoryMb: 8192, sandboxMaxProcesses: 1024, maxChangedFiles: 20 }),
+    ["--cpus", "4", "--memory", "8192m", "--pids-limit", "1024"],
+  );
+});
+
 test("the PR body says which checks ran, and when none did", () => {
   const { describeVerification } = require("../dist/services/workspaceService");
   const verified = describeVerification({

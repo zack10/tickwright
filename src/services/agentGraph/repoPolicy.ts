@@ -10,7 +10,23 @@ export interface RepositoryPolicy {
   maxAgentSteps?: number;
   /** How long a run may take, in seconds; default EXECUTION_MAX_DURATION_SECONDS (1800). */
   maxRunSeconds?: number;
+  /** CPUs for each of the run's containers; default 2. */
+  sandboxCpus?: number;
+  /** Memory for each of the run's containers, in MB; default 2048. */
+  sandboxMemoryMb?: number;
+  /** Processes each of the run's containers may hold; default 256. */
+  sandboxMaxProcesses?: number;
+  /** How long one check or agent command may run, in seconds; default 300. */
+  checkTimeoutSeconds?: number;
+  /** Largest file edit_file may write, in bytes; default GENERATED_CODE_MAX_FILE_BYTES (500,000). */
+  maxFileBytes?: number;
 }
+
+/** The policy's container and check limits; what the workspace functions take. */
+export type SandboxLimits = Pick<
+  RepositoryPolicy,
+  "sandboxCpus" | "sandboxMemoryMb" | "sandboxMaxProcesses" | "checkTimeoutSeconds"
+>;
 
 // Used only when no toolchain is known; normally the toolchain's
 // protectedPaths (its manifests and lockfiles) are the default.

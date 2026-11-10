@@ -246,12 +246,14 @@ const prepareEnvironment = async (
 ): Promise<{ toolchain: Toolchain; setup: SetupResult; environmentProposal?: ProposedEnvironment }> => {
   await ensureDiskSpace();
   const checksFor = (toolchain: Toolchain) => selectChecks(toolchain, repository.verificationConfig).run;
-  const timeout = (repository.executionPolicy as RepositoryPolicy | null)?.setupTimeoutSeconds;
+  const limits = repository.executionPolicy as RepositoryPolicy | null;
+  const timeout = limits?.setupTimeoutSeconds;
   const progress = reportProgress(executionId);
   const setupOptions = {
     cacheFor: repository.id,
     secrets: await setupSecretsOf(repository.id),
     progress,
+    limits,
     ...(timeout ? { setupTimeoutMs: timeout * 1000 } : {}),
   };
   const setUp = async (toolchain: Toolchain) => {
@@ -664,7 +666,7 @@ const agentLoop = async (state: GraphState) => {
         : undefined,
   };
   const steps: AgentStep[] = [];
-  await startSandbox(state.executionId, toolchain);
+  await startSandbox(state.executionId, toolchain, execution.repository.executionPolicy as RepositoryPolicy | null);
   let outcome: Awaited<ReturnType<typeof runAgentLoop>>;
   try {
     outcome = await runAgentLoop(
@@ -823,6 +825,7 @@ const verifyChange = async (state: typeof ExecutionGraphState.State) => {
     agentTest && !runsAlready(agentTest.command) ? { ...checks, run: [...checks.run, agentTest] } : checks,
     Object.keys(state.failingBefore),
     reportProgress(state.executionId),
+    execution.repository.executionPolicy as RepositoryPolicy | null,
   );
 
   if (!verification.passed) {

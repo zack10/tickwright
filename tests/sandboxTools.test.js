@@ -4,7 +4,8 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { REVIEW_TOOLS, SANDBOX_TOOLS, agentTestCheck, executeTool } = require("../dist/services/sandbox/tools");
+const { PLAN_TOOLS, REVIEW_TOOLS, SANDBOX_TOOLS, agentTestCheck, executeTool } = require("../dist/services/sandbox/tools");
+const { runPlanner } = require("../dist/services/agentGraph/planner");
 const { json, runRecordedTool } = require("../dist/services/sandbox/toolRunner");
 const { fsRepoFiles, isTestFile, resolveToolchain } = require("../dist/services/toolchain");
 
@@ -398,4 +399,39 @@ test("the command whose failure showed the problem becomes a check verification 
   await run(ctx, "run_command", { command: "exit 4" });
   assert.equal(ctx.reproduction.command, "exit 3");
   assert.equal(agentTestCheck({}), undefined);
+});
+
+test("the planner reads a long file to its end, then submits one plan; it cannot edit", async (t) => {
+  const { root, ctx } = workspace(t);
+  // The rule sits past 20,000 bytes, where the plan step's file sample used to stop (node/07).
+  const filler = Array.from({ length: 420 }, (_, i) => `// area ${i}: ${"x".repeat(40)}`).join("\n");
+  fs.writeFileSync(path.join(root, "src/rates.js"), `${filler}\nconst tier = TIERS.find((c) => weightKg < c.maxKg);\n`);
+  assert.ok(fs.statSync(path.join(root, "src/rates.js")).size > 20_000);
+
+  assert.deepEqual(PLAN_TOOLS.map((tool) => tool.name), ["list_files", "read_file", "search_code", "submit_plan"]);
+  const plan = { summary: "Make limits inclusive.", expectedBehaviour: ["given 1 kg, the result is the tier ending at 1 kg"], risk: "low" };
+  const turns = [
+    [["search_code", { query: "maxKg" }]],
+    [["edit_file", { path: "src/rates.js", oldText: "<", newText: "<=" }]],
+    [["submit_plan", plan]],
+  ];
+  const seen = [];
+  let turn = 0;
+  const generate = async (request) => {
+    seen.push(request.messages.at(-1).content);
+    const toolCalls = turns[turn++].map(([name, args], i) => ({ id: `c${turn}-${i}`, name, arguments: args }));
+    return { message: { role: "assistant", content: "", toolCalls }, text: "", toolCalls, stopReason: "tool_use", usage: { inputTokens: 10, outputTokens: 1 } };
+  };
+  const prompt = { version: "planner.v1", system: "s", user: "u" };
+  const result = await runPlanner(ctx, prompt, { generate, maxTokens: 10_000, deadline: Date.now() + 60_000 });
+  assert.match(seen[1], /src\/rates\.js:421: const tier = TIERS\.find\(\(c\) => weightKg < c\.maxKg\)/, "the search reaches the end of the file");
+  assert.match(seen[2], /Unknown tool "edit_file"/);
+  assert.deepEqual(result, { ...plan, questions: [], filesToEdit: [], testStrategy: [] });
+  assert.match(fs.readFileSync(path.join(root, "src/rates.js"), "utf8"), /weightKg < c\.maxKg/, "nothing was changed");
+
+  const vague = await executeTool(ctx, "submit_plan", { ...plan, expectedBehaviour: [] }, PLAN_TOOLS);
+  assert.equal(vague.status, "FAILED", "a plan needs at least one example");
+  turn = 0;
+  turns.splice(0, turns.length, [], [], []);
+  assert.equal(await runPlanner(ctx, prompt, { generate, maxTokens: 10_000, deadline: Date.now() + 60_000 }), undefined, "no plan when the loop ends without one");
 });

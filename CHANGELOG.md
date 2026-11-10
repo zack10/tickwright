@@ -23,6 +23,10 @@ Prompt files keep their own versions (`src/prompts/execution/*.vN.md`).
 - **Git submodules.** The clone fetches a repository's submodules at the commit's revisions.
 - **Devcontainer builds.** A project whose devcontainer builds a Dockerfile, uses Docker Compose or adds features now runs in the image the official Dev Container CLI builds from it (before setup, with network and without credentials), instead of falling back to the default image. The other Compose services start beside the run as its service containers. Builds that would read files outside the repository are refused and reported.
 
+### Changed
+
+- **The plan is written from the code.** In `tool_loop` mode the plan step now reads the repository with the read-only tools (list, read, search) before it writes the plan, instead of getting the first 20,000 bytes of a few files. Each example now says what the code gives today, worked out from the code, and what it should give after the change ("now 1400; after the change 700"), so a ticket sentence describing the bug is no longer planned as the goal. On the benchmark ticket where half the plans did that, all 10 runs are now correct. Each step is recorded as a `PLAN_STEP` event. A model or reasoning effort configured for `plan` applies to it; `planner` sets one for this mode only.
+
 ### Security
 
 - The GitHub token is sent to `https://github.com/` only (before, to any host git contacted during a clone or push), and git may use HTTPS only, so a submodule URL cannot use `file://`, ssh or other transports.

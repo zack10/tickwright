@@ -97,6 +97,8 @@ export interface ToolOutcome {
   finish?: { status: "done" | "blocked"; summary: string };
   /** Set by verdict: the reviewer's decision on the diff. */
   verdict?: ReviewVerdict;
+  /** Set by submit_plan: the plan as the planner gave it. */
+  plan?: Record<string, unknown>;
 }
 
 export interface ReviewVerdict {
@@ -273,6 +275,14 @@ const ARGS = {
   }),
   skip_reproduction: z.object({ reason: z.string().trim().min(1) }),
   finish: z.object({ status: z.enum(["done", "blocked"]), summary: z.string().min(1) }),
+  submit_plan: z.object({
+    summary: z.string().trim().min(1),
+    expectedBehaviour: z.array(z.string()).min(1),
+    questions: z.array(z.string()).default([]),
+    filesToEdit: z.array(z.string()).default([]),
+    risk: z.enum(["low", "medium", "high"]),
+    testStrategy: z.array(z.string()).default([]),
+  }),
   verdict: z.object({
     sourceChanged: reviewCheck(REVIEW_CHECKS.sourceChanged.other),
     newCodeCalled: reviewCheck(REVIEW_CHECKS.newCodeCalled.other),
@@ -326,6 +336,38 @@ export const REVIEW_TOOLS: ToolDefinition[] = [
         summary: { type: "string", description: "What you checked and what you concluded" },
       },
       required: [...Object.keys(REVIEW_CHECKS), "issues", "summary"],
+    },
+  },
+];
+
+/**
+ * The planner's tools: reading the repository, then one plan (see planner
+ * prompts). executeTool refuses everything else when given this list.
+ */
+export const PLAN_TOOLS: ToolDefinition[] = [
+  ...SANDBOX_TOOLS.filter((tool) => READ_ONLY_TOOLS.has(tool.name)),
+  {
+    name: "submit_plan",
+    description: "End planning: give the plan for the person to approve. Call it once, after reading the code the ticket is about.",
+    parameters: {
+      type: "object",
+      properties: {
+        summary: { type: "string", description: "One or two sentences: what will change and why" },
+        expectedBehaviour: {
+          type: "array",
+          items: { type: "string" },
+          description: 'Concrete examples, each "given ..., the code now gives ...; after the change it gives ..." with specific results',
+        },
+        questions: {
+          type: "array",
+          items: { type: "string" },
+          description: 'Other readings of the ticket, each "if you meant ..., then given ... the result would be ... instead". Empty if none',
+        },
+        filesToEdit: { type: "array", items: { type: "string" }, description: "Relative paths" },
+        risk: { type: "string", enum: ["low", "medium", "high"] },
+        testStrategy: { type: "array", items: { type: "string" }, description: "Check names or commands" },
+      },
+      required: ["summary", "expectedBehaviour", "risk"],
     },
   },
 ];
@@ -582,6 +624,11 @@ export const executeTool = async (
           finish: { status: verdict.approved ? "done" : "blocked", summary: verdict.summary },
           verdict,
         };
+      }
+      case "submit_plan": {
+        const plan = parsed.data as z.infer<typeof ARGS.submit_plan>;
+        // finish ends the loop; the plan is what the caller keeps.
+        return { ...completed("Plan submitted."), finish: { status: "done", summary: plan.summary }, plan };
       }
       default: {
         const args = parsed.data as z.infer<typeof ARGS.finish>;

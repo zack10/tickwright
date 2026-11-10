@@ -140,6 +140,11 @@ export const config = {
   // from its image. 0 turns reuse off.
   executionSnapshotMaxAgeHours: parseNonNegativeInt(process.env.EXECUTION_SNAPSHOT_MAX_AGE_HOURS, 24),
   executionDiscoveryMaxAttempts: parseNonNegativeInt(process.env.EXECUTION_DISCOVERY_MAX_ATTEMPTS, 3),
+  // While setup, a devcontainer build or a check runs, a progress event is
+  // recorded this often (0 turns it off), and a step with no new output for
+  // the second value is reported as possibly hung (0 never).
+  executionProgressIntervalSeconds: parseNonNegativeInt(process.env.EXECUTION_PROGRESS_INTERVAL_SECONDS, 60),
+  executionHungAfterSeconds: parseNonNegativeInt(process.env.EXECUTION_HUNG_AFTER_SECONDS, 600),
   // A run does not start below this much free disk (after a sweep of what
   // ended runs left). 0 turns the check off.
   executionMinFreeDiskGb: parseNonNegativeInt(process.env.EXECUTION_MIN_FREE_DISK_GB, 10),

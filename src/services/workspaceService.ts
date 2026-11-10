@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { ChildProcess, execFile } from "node:child_process";
 import crypto from "node:crypto";
 import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
@@ -145,14 +145,94 @@ const dockerFailure = (error: unknown, secrets: string[] = []) => {
   );
 };
 
-/** `secrets` are passed by name (`-e NAME` in args) through our env, and masked in failures. */
-const execDocker = async (args: string[], secrets: Record<string, string> = {}, timeout = 300_000) => {
+/**
+ * What a long step (a devcontainer build, setup, a check before or after the
+ * change) reports while it runs, so a person can see a run is alive and what
+ * it is doing. `output` is the end of what it printed so far, secrets masked.
+ */
+export interface StepProgress {
+  step: "build" | "setup" | "baseline" | "check";
+  check?: string;
+  command: string;
+  elapsedSeconds: number;
+  silentSeconds: number;
+  possiblyHung: boolean;
+  output: string;
+}
+export type ProgressReporter = (progress: StepProgress) => Promise<void>;
+interface Progress {
+  report: ProgressReporter;
+  step: StepProgress["step"];
+  check?: string;
+  command: string[];
+}
+
+const PROGRESS_OUTPUT = 2000;
+// Kept longer than what is reported, so a secret (at most 4000 characters)
+// cut at the start of the buffer falls outside what is reported once masked.
+const PROGRESS_BUFFER = PROGRESS_OUTPUT + 8000;
+const mask = (text: string, secrets: string[]) =>
+  secrets.filter(Boolean).reduce((masked, secret) => masked.split(secret).join("***"), text);
+
+/**
+ * Awaits a command, reporting its progress every EXECUTION_PROGRESS_INTERVAL_SECONDS.
+ * Reports are written one at a time, and the last one before this returns:
+ * events are numbered in order, so a report still being written would clash
+ * with the step's next event.
+ */
+export const withProgress = async <T>(
+  running: Promise<T> & { child?: ChildProcess },
+  progress: Progress | undefined,
+  secrets: string[] = [],
+): Promise<T> => {
+  const interval = config.executionProgressIntervalSeconds * 1000;
+  if (!progress || !interval) return running;
+  const started = Date.now();
+  let lastOutput = started;
+  let output = "";
+  const take = (chunk: Buffer | string) => {
+    output = (output + chunk.toString()).slice(-PROGRESS_BUFFER);
+    lastOutput = Date.now();
+  };
+  running.child?.stdout?.on("data", take);
+  running.child?.stderr?.on("data", take);
+  let pending = Promise.resolve();
+  const timer = setInterval(() => {
+    const now = Date.now();
+    const silentSeconds = Math.round((now - lastOutput) / 1000);
+    const report: StepProgress = {
+      step: progress.step,
+      ...(progress.check ? { check: progress.check } : {}),
+      command: commandText(progress.command),
+      elapsedSeconds: Math.round((now - started) / 1000),
+      silentSeconds,
+      possiblyHung: config.executionHungAfterSeconds > 0 && silentSeconds >= config.executionHungAfterSeconds,
+      output: mask(output, secrets).slice(-PROGRESS_OUTPUT),
+    };
+    // A lost report must never fail the step it describes.
+    pending = pending.then(() => progress.report(report)).catch(() => undefined);
+  }, interval);
+  timer.unref();
   try {
-    return await exec("docker", args, {
-      timeout,
-      maxBuffer: 5_000_000,
-      env: { ...process.env, ...secrets },
-    });
+    return await running;
+  } finally {
+    clearInterval(timer);
+    await pending;
+  }
+};
+
+/** `secrets` are passed by name (`-e NAME` in args) through our env, and masked in failures. */
+const execDocker = async (args: string[], secrets: Record<string, string> = {}, timeout = 300_000, progress?: Progress) => {
+  try {
+    return await withProgress(
+      exec("docker", args, {
+        timeout,
+        maxBuffer: 5_000_000,
+        env: { ...process.env, ...secrets },
+      }),
+      progress,
+      Object.values(secrets),
+    );
   } catch (error) {
     throw dockerFailure(error, Object.values(secrets));
   }
@@ -268,6 +348,7 @@ export const buildEnvironmentImage = async (
   scope: string,
   build: DevcontainerBuild,
   timeoutMs = SETUP_TIMEOUT_MS,
+  report?: ProgressReporter,
 ) => {
   const root = workspacePath(id);
   // A link could make the build read a host file or folder.
@@ -275,13 +356,16 @@ export const buildEnvironmentImage = async (
     if (findSymlink(root, input)) throw new SetupFailedError(`${input} is a symlink, so the devcontainer was not built`);
   const built = `agent-build-tmp-${safeId(id).toLowerCase()}`;
   try {
-    await exec(
-      process.execPath,
-      [
-        DEVCONTAINER_CLI, "build", "--workspace-folder", root, "--config", path.join(root, build.config),
-        "--image-name", built, "--no-lockfile", "--oci-auth-hardening", "--log-format", "text",
-      ],
-      { timeout: timeoutMs, maxBuffer: 20_000_000, env: buildEnvironment() },
+    await withProgress(
+      exec(
+        process.execPath,
+        [
+          DEVCONTAINER_CLI, "build", "--workspace-folder", root, "--config", path.join(root, build.config),
+          "--image-name", built, "--no-lockfile", "--oci-auth-hardening", "--log-format", "text",
+        ],
+        { timeout: timeoutMs, maxBuffer: 20_000_000, env: buildEnvironment() },
+      ),
+      report && { report, step: "build", command: ["devcontainer", "build", build.config] },
     );
   } catch (error) {
     throw new SetupFailedError(`building ${build.config} failed: ${dockerFailure(error).message}`);
@@ -402,7 +486,7 @@ export const setupWorkspace = async (
   id: string,
   toolchain: Toolchain,
   checks: Array<{ name: string; command: string[] }>,
-  options: { cacheFor?: string; setupTimeoutMs?: number; secrets?: Record<string, string> } = {},
+  options: { cacheFor?: string; setupTimeoutMs?: number; secrets?: Record<string, string>; progress?: ProgressReporter } = {},
 ) => {
   const baseline: BaselineResult[] = [];
   let setupOutputs: string[] = [];
@@ -423,11 +507,12 @@ export const setupWorkspace = async (
   args.splice(args.indexOf("--rm"), 1, "-d", "--name", setupContainer(id));
   // Secrets go to the setup command only, as exec env, which `docker commit`
   // does not keep: the checks, the snapshot and the agent never have them.
-  const run = (command: string[], secrets: Record<string, string> = {}) =>
+  const run = (command: string[], secrets: Record<string, string> = {}, step?: Pick<Progress, "step" | "check">) =>
     execDocker(
       ["exec", ...Object.keys(secrets).flatMap((name) => ["-e", name]), setupContainer(id), ...command],
       secrets,
       options.setupTimeoutMs ?? SETUP_TIMEOUT_MS,
+      step && options.progress && { ...step, report: options.progress, command },
     );
   try {
     try {
@@ -435,7 +520,7 @@ export const setupWorkspace = async (
       await execDocker(args);
       // Setup keeps the bridge for package registries and joins the services' network too.
       if (services) await execDocker(["network", "connect", services, setupContainer(id)]);
-      if (toolchain.setup) await run(toolchain.setup, options.secrets);
+      if (toolchain.setup) await run(toolchain.setup, options.secrets, { step: "setup" });
     } catch (error) {
       throw new SetupFailedError((error as Error).message);
     }
@@ -449,7 +534,7 @@ export const setupWorkspace = async (
     }
     for (const { name, command } of checks)
       try {
-        const result = await run(command);
+        const result = await run(command, {}, { step: "baseline", check: name });
         baseline.push({ check: name, passed: true, output: `${result.stdout}\n${result.stderr}`.slice(-4000) });
       } catch (error) {
         baseline.push({ check: name, passed: false, output: (error as Error).message.slice(-4000) });
@@ -688,6 +773,7 @@ export const verifyWorkspace = async (
   toolchain: Toolchain,
   checks: { run: Array<{ name: string; command: string[] }>; unavailable: string[] },
   failingBefore: string[] = [],
+  report?: ProgressReporter,
 ) => {
   const results: CheckResult[] = checks.unavailable.map((script) => ({
     script,
@@ -706,6 +792,9 @@ export const verifyWorkspace = async (
             env: toolchain.env,
             services,
           }),
+          {},
+          undefined,
+          report && { report, step: "check", check: name, command },
         ),
       );
       results.push({

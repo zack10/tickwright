@@ -60,6 +60,7 @@ import {
   isTestFile,
   fsRepoFiles,
   resolveToolchain,
+  testCoverage,
   selectChecks,
 } from "../toolchain";
 import {
@@ -1042,6 +1043,16 @@ const createDiffArtifact = async (state: typeof ExecutionGraphState.State) => {
   );
   await fs.writeFile(artifactPath, diff, "utf8");
   const sha256 = hashSnapshot(diff);
+  // Tests as they are after the change, so a test the agent added counts.
+  const changed = await changes(state.executionId);
+  const deleted = new Set(changed.filter((change) => change.status === "D").map((change) => change.file));
+  const present = changed.filter((change) => !deleted.has(change.file)).map((change) => change.file);
+  const coverage = testCoverage(
+    requireToolchain(state),
+    [...new Set([...(await trackedFiles(state.executionId)), ...present])].filter((file) => !deleted.has(file)),
+    fsRepoFiles(workspacePath(state.executionId)),
+    present,
+  );
 
   await prisma.$transaction([
     prisma.taskAttempt.update({
@@ -1058,6 +1069,7 @@ const createDiffArtifact = async (state: typeof ExecutionGraphState.State) => {
         sha256,
         metadata: {
           ...state.verification,
+          testCoverage: coverage,
           ...(state.environmentProposal ? { environmentProposal: state.environmentProposal } : {}),
           ...(state.reviewSuggestions.length ? { reviewSuggestions: state.reviewSuggestions } : {}),
           ...(state.reviewObjections.length ? { reviewObjections: state.reviewObjections } : {}),

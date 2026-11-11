@@ -6,8 +6,18 @@ import { renderExecutionPrompt } from "../../prompts";
 import { NonRetryableError } from "../../utils/safeError";
 import { submitPlan } from "../executionService";
 import { ToolContext } from "../sandbox/tools";
-import { PlanVerification, describeEnvironment, fsRepoFiles, isTestFile, planVerification, resolveToolchain, selectChecks } from "../toolchain";
-import { cloneGithubWorkspace, removeWorkspace, workspacePath } from "../workspaceService";
+import {
+  PlanVerification,
+  TestCoverage,
+  describeEnvironment,
+  fsRepoFiles,
+  isTestFile,
+  planVerification,
+  resolveToolchain,
+  selectChecks,
+  testCoverage,
+} from "../toolchain";
+import { cloneGithubWorkspace, removeWorkspace, trackedFiles, workspacePath } from "../workspaceService";
 import { CallContext, askAgent, askAgentWithTools, executionTokensUsed, graphEvent, parseJsonRecord, resolveAgentCalls } from "./agentCalls";
 import { PLAN_MAX_TOKENS, runPlanner } from "./planner";
 import { collectRepoContext } from "./repoContext";
@@ -76,7 +86,7 @@ const positive = (value: unknown, fallback: number) =>
   typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
 
 export type PlanningOutcome =
-  | { status: "submitted"; plan: AgentPlan; version: number; verification: PlanVerification }
+  | { status: "submitted"; plan: AgentPlan; version: number; verification: PlanVerification; coverage: TestCoverage }
   | { status: "declined"; reason: string };
 
 /**
@@ -180,6 +190,7 @@ export const planExecution = async (executionId: string): Promise<PlanningOutcom
         })) ?? {})
       : parseJsonRecord(await askAgent(ctx, prompt));
     const plan = planFromReply(reply, workItem.title);
+    const coverage = testCoverage(toolchain, await trackedFiles(executionId), fsRepoFiles(root), plan.filesToEdit);
     const submitted = await submitPlan(executionId, {
       summary: plan.summary,
       acceptanceCriteria: plan.expectedBehaviour.length ? plan.expectedBehaviour : [workItem.description || workItem.title],
@@ -197,8 +208,9 @@ export const planExecution = async (executionId: string): Promise<PlanningOutcom
       promptVersion: prompt.version,
       verification,
       checks: checks.map((check) => check.name),
+      coverage,
     });
-    return { status: "submitted", plan, version: submitted.version, verification };
+    return { status: "submitted", plan, version: submitted.version, verification, coverage };
   } finally {
     // The run clones the pinned commit again; nothing waits on disk for a person.
     await removeWorkspace(executionId);

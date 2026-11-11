@@ -132,7 +132,7 @@ const plan = async (executionId: string) => {
     if (blocked.count) await notifyTracker(executionId, `${reason}\n\nEdit the ticket to start again.`);
     return;
   }
-  await notifyTracker(executionId, formatPlanComment(outcome.plan, outcome.version, outcome.verification));
+  await notifyTracker(executionId, formatPlanComment(outcome.plan, outcome.version, outcome.verification, outcome.coverage));
 };
 
 const leaseExpiry = () => new Date(Date.now() + config.executionLeaseMs);

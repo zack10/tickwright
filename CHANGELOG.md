@@ -31,6 +31,10 @@ Prompt files keep their own versions (`src/prompts/execution/*.vN.md`).
 - **`tool_loop` is the default mode.** With `EXECUTION_AGENT_MODE` unset, the agent now works with the sandbox tools instead of returning whole files in one call (`single_shot`). Set `EXECUTION_AGENT_MODE=single_shot` to keep the old behaviour, for example for an `LLM_PROVIDERS` profile without tool calling, which fails a `tool_loop` run with an error saying so. Deployments that already set the variable are unaffected.
 - **The plan is written from the code.** In `tool_loop` mode the plan step now reads the repository with the read-only tools (list, read, search) before it writes the plan, instead of getting the first 20,000 bytes of a few files. Each example now says what the code gives today, worked out from the code, and what it should give after the change ("now 1400; after the change 700"), so a ticket sentence describing the bug is no longer planned as the goal. On the benchmark ticket where half the plans did that, all 10 runs are now correct. Each step is recorded as a `PLAN_STEP` event. A model or reasoning effort configured for `plan` applies to it; `planner` sets one for this mode only.
 
+### Fixed
+
+- Two runs setting up at the same time no longer lose a freshly saved environment ("No such image: agent-env-…"), which cost a whole setup and could fail the run. Docker image changes (saving, tagging, removing) now happen one at a time within the app.
+
 ### Security
 
 - The GitHub token is sent to `https://github.com/` only (before, to any host git contacted during a clone or push), and git may use HTTPS only, so a submodule URL cannot use `file://`, ssh or other transports.

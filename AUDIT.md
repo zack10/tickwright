@@ -302,6 +302,15 @@ Fixed before Phase 0 of `docs/plans/AGENTIC_ROADMAP.md`, because each would skew
 - [ ] A worker checks it still holds the lease (heartbeat result) before each graph node and before Docker steps that create or remove the execution's containers and images, and stops if it lost it.
 - [ ] Test: a run whose lease was taken over stops without touching the new owner's containers.
 
+### - [ ] M16 — Parallel setups still lose their snapshot after M14
+**Status:** FIX WRITTEN, not yet confirmed live · **Found:** 2026-11-11
+**Where:** `src/services/workspaceService.ts` (`setupWorkspace`, `storeEnvironmentCache`, `removeEnvironmentSnapshot`, `buildEnvironmentImage`), `src/services/environmentSweep.ts`
+**Found:** reference stage 1 on `gpt-5.6-luna`, 2 runs in parallel (gson and go-zero, different repositories): gson's setup failed twice and go-zero's once with `No such image: agent-env-<id>:latest` right after a ~7-minute setup; the third consumer attempt got through. So M14's `rmi` by ID still races another run's `docker commit` on the containerd store, not only `image prune`.
+**Fix:**
+- [x] `withImageLock` runs every image change in the process (commit with the cache tag and cleanup after it, snapshot and build-image removal, the sweep's `rmi`) one at a time. Test: queued work runs in order, and a failed item doesn't block the next.
+- [ ] Confirm live: reference runs 2 at a time with no `No such image` failure.
+- [ ] Several worker processes on one Docker need a host-wide lock (Phase 8).
+
 ---
 
 ## Low

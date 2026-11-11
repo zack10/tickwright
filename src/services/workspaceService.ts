@@ -341,10 +341,25 @@ export const keepOutputOutOfDiffs = async <T>(id: string, work: () => Promise<T>
 const setupContainer = (id: string) => `agent-setup-${safeId(id).toLowerCase()}`;
 const snapshotImage = (id: string) => `agent-env-${safeId(id).toLowerCase()}`;
 
+let imageQueue: Promise<unknown> = Promise.resolve();
+/**
+ * Runs Docker image changes (commit, tag, rmi) one at a time. On Docker's
+ * containerd image store, removing an image while another run's `docker
+ * commit` is in progress makes the committed image vanish ("No such image"),
+ * which failed parallel setups. Never call it from inside `work`: it would
+ * wait for itself. shortcut: in-process only; several worker processes on
+ * one Docker need a host-wide lock (Phase 8).
+ */
+export const withImageLock = <T>(work: () => Promise<T>): Promise<T> => {
+  const next = imageQueue.then(work, work);
+  imageQueue = next.catch(() => undefined);
+  return next;
+};
+
 /** Deletes an execution's environment snapshot, if it has one. */
 export const removeEnvironmentSnapshot = async (id: string) => {
-  for (const args of [["rm", "-f", setupContainer(id)], ["rmi", "-f", snapshotImage(id)]])
-    await exec("docker", args).catch(() => undefined);
+  await exec("docker", ["rm", "-f", setupContainer(id)]).catch(() => undefined);
+  await withImageLock(() => exec("docker", ["rmi", "-f", snapshotImage(id)]).catch(() => undefined));
 };
 
 /** Starting the image or running the setup command failed; the message is its output. */
@@ -389,16 +404,18 @@ export const buildEnvironmentImage = async (
   } catch (error) {
     throw new SetupFailedError(`building ${build.config} failed: ${dockerFailure(error).message}`);
   }
-  try {
-    // Identical rebuilds get new IDs, so the tag is the image's content: the
-    // environment cache stays valid while that is unchanged.
-    const { stdout } = await execDocker(["image", "inspect", "--format", "{{json .RootFS.Layers}}{{json .Config}}", built]);
-    const image = `agent-build-${safeId(scope).toLowerCase()}:${crypto.createHash("sha256").update(stdout).digest("hex").slice(0, 32)}`;
-    await execDocker(["tag", built, image]);
-    return image;
-  } finally {
-    await exec("docker", ["rmi", built]).catch(() => undefined);
-  }
+  return withImageLock(async () => {
+    try {
+      // Identical rebuilds get new IDs, so the tag is the image's content: the
+      // environment cache stays valid while that is unchanged.
+      const { stdout } = await execDocker(["image", "inspect", "--format", "{{json .RootFS.Layers}}{{json .Config}}", built]);
+      const image = `agent-build-${safeId(scope).toLowerCase()}:${crypto.createHash("sha256").update(stdout).digest("hex").slice(0, 32)}`;
+      await execDocker(["tag", built, image]);
+      return image;
+    } finally {
+      await exec("docker", ["rmi", built]).catch(() => undefined);
+    }
+  });
 };
 
 const DEVCONTAINER_CLI = require.resolve("@devcontainers/cli/devcontainer.js");
@@ -568,19 +585,21 @@ export const setupWorkspace = async (
       } catch (error) {
         baseline.push({ check: name, passed: false, output: (error as Error).message.slice(-4000) });
       }
-    await execDocker([
-      "commit",
-      "--change",
-      `LABEL ${CACHE_LABEL}=${cache ? cacheRepository(cache) : "none"}`,
-      setupContainer(id),
-      snapshotImage(id),
-    ]);
+    await withImageLock(async () => {
+      await execDocker([
+        "commit",
+        "--change",
+        `LABEL ${CACHE_LABEL}=${cache ? cacheRepository(cache) : "none"}`,
+        setupContainer(id),
+        snapshotImage(id),
+      ]);
+      // Only a snapshot built from the plain image becomes the cache, so layers
+      // never pile up across runs; a stale cache is rebuilt the same way.
+      if (cache && !reuse) await storeEnvironmentCache(snapshotImage(id), cache);
+    });
   } finally {
     await exec("docker", ["rm", "-f", setupContainer(id)]).catch(() => undefined);
   }
-  // Only a snapshot built from the plain image becomes the cache, so layers
-  // never pile up across runs; a stale cache is rebuilt the same way.
-  if (cache && !reuse) await storeEnvironmentCache(snapshotImage(id), cache);
   // A fresh clone has no untracked files, so everything here came from setup.
   await excludeFromDiffs(id, await untrackedFiles(id, true));
   return { image: snapshotImage(id), baseline, setupOutputs, cache: (cache ? (reuse ? "reused" : "built") : "none") as CacheUse };
@@ -627,7 +646,7 @@ const isFreshImage = async (image: string, maxAgeHours: number) => {
   }
 };
 
-/** Tags the snapshot as the repository's cache and drops its older caches that nothing uses. */
+/** Tags the snapshot as the repository's cache and drops its older caches that nothing uses. Call it under withImageLock. */
 const storeEnvironmentCache = async (snapshot: string, cache: string) => {
   await execDocker(["tag", snapshot, cache]);
   const { stdout } = await exec("docker", ["images", cacheRepository(cache), "--format", "{{.Repository}}:{{.Tag}}"]);

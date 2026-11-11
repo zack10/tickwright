@@ -240,6 +240,13 @@ const runProject = async (fixtures, project, publish, ticket) => {
     // and discovery has to find out how the project is built and tested.
     await useEnvironment(fixtures, project.environment ?? {});
     await usePolicy(fixtures, { ...ORIGINAL_POLICY(fixtures), ...project.executionPolicy });
+    // The sandbox repository held another project before: discovery would first
+    // retry the environment that project's run stored. Runs of the same project keep it.
+    if (fixtures.lastProject !== project.id) {
+      const { data } = await api("PATCH", `/api/repositories/${fixtures.repository.id}`, { body: { environmentProposal: null }, expectStatus: 200 });
+      fixtures.repository = data;
+      fixtures.lastProject = project.id;
+    }
     log(`${project.id}: pushing ${files.size} files at ${instance.base.sha.slice(0, 8)}`);
     const baseSha = await pushProject(files, `reference: ${project.id} at ${instance.base.sha} (${id})`, fixtures.repo);
     cardId = await createCard(`[${id}] ${issue.title}`, issue.body ?? "", fixtures.label);

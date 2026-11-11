@@ -99,7 +99,7 @@ const dockerArgs = (
   network: boolean,
   withToken: boolean,
   command: string[],
-  options: { image?: string; env?: Record<string, string>; services?: string; limits?: SandboxLimits | null } = {},
+  options: { image?: string; env?: Record<string, string>; services?: string; limits?: SandboxLimits | null; secretNames?: string[] } = {},
 ) => [
   "run",
   "--rm",
@@ -109,6 +109,8 @@ const dockerArgs = (
   // `-e NAME` without a value makes docker read it from our process env.
   ...(withToken ? ["-e", "GITHUB_TOKEN"] : []),
   ...envArgs(options.env),
+  // Values come from our process env (execDocker's secrets), never the command line.
+  ...(options.secretNames ?? []).flatMap((name) => ["-e", name]),
   ...TRUST_WORKSPACE,
   ...workspaceMounts(root, !options.image),
   "-w",
@@ -495,7 +497,15 @@ export const setupWorkspace = async (
   id: string,
   toolchain: Toolchain,
   checks: Array<{ name: string; command: string[] }>,
-  options: { cacheFor?: string; setupTimeoutMs?: number; secrets?: Record<string, string>; progress?: ProgressReporter; limits?: SandboxLimits | null } = {},
+  options: {
+    cacheFor?: string;
+    setupTimeoutMs?: number;
+    secrets?: Record<string, string>;
+    /** For the baseline checks, as exec env: `docker commit` does not keep it. */
+    testSecrets?: Record<string, string>;
+    progress?: ProgressReporter;
+    limits?: SandboxLimits | null;
+  } = {},
 ) => {
   const baseline: BaselineResult[] = [];
   let setupOutputs: string[] = [];
@@ -544,8 +554,9 @@ export const setupWorkspace = async (
     }
     for (const { name, command } of checks)
       try {
-        const result = await run(command, {}, { step: "baseline", check: name });
-        baseline.push({ check: name, passed: true, output: `${result.stdout}\n${result.stderr}`.slice(-4000) });
+        const result = await run(command, options.testSecrets, { step: "baseline", check: name });
+        const output = mask(`${result.stdout}\n${result.stderr}`, Object.values(options.testSecrets ?? {}));
+        baseline.push({ check: name, passed: true, output: output.slice(-4000) });
       } catch (error) {
         baseline.push({ check: name, passed: false, output: (error as Error).message.slice(-4000) });
       }
@@ -785,6 +796,7 @@ export const verifyWorkspace = async (
   failingBefore: string[] = [],
   report?: ProgressReporter,
   limits?: SandboxLimits | null,
+  secrets: Record<string, string> = {},
 ) => {
   const results: CheckResult[] = checks.unavailable.map((script) => ({
     script,
@@ -803,8 +815,9 @@ export const verifyWorkspace = async (
             env: toolchain.env,
             services,
             limits,
+            secretNames: Object.keys(secrets),
           }),
-          {},
+          secrets,
           limits?.checkTimeoutSeconds ? limits.checkTimeoutSeconds * 1000 : undefined,
           report && { report, step: "check", check: name, command },
         ),
@@ -812,7 +825,7 @@ export const verifyWorkspace = async (
       results.push({
         script: name,
         passed: true,
-        output: `${result.stdout}\n${result.stderr}`.slice(-100_000),
+        output: mask(`${result.stdout}\n${result.stderr}`, Object.values(secrets)).slice(-100_000),
       });
     } catch (error) {
       const output = error instanceof Error ? error.message : String(error);
@@ -886,7 +899,12 @@ export const describeVerification = (verification: unknown) => {
  */
 const sandboxName = (id: string) => `agent-sandbox-${safeId(id)}`;
 
-export const startSandbox = async (id: string, toolchain: Toolchain, limits?: SandboxLimits | null) => {
+export const startSandbox = async (
+  id: string,
+  toolchain: Toolchain,
+  limits?: SandboxLimits | null,
+  secrets: Record<string, string> = {},
+) => {
   // A crashed earlier attempt may have left one behind.
   await stopSandbox(id);
   const services = await startServices(id, toolchain, limits);
@@ -898,8 +916,9 @@ export const startSandbox = async (id: string, toolchain: Toolchain, limits?: Sa
     ...limitArgs(limits),
     "--network",
     services ?? "none",
-    // `docker exec` inherits these, so every command sees the toolchain's caches.
+    // `docker exec` inherits these, so every command sees the toolchain's caches and the test secrets.
     ...envArgs(toolchain.env),
+    ...Object.keys(secrets).flatMap((name) => ["-e", name]),
     ...TRUST_WORKSPACE,
     ...workspaceMounts(workspacePath(id), false),
     "-w",
@@ -907,7 +926,7 @@ export const startSandbox = async (id: string, toolchain: Toolchain, limits?: Sa
     toolchain.image,
     "sleep",
     "infinity",
-  ]);
+  ], secrets);
 };
 
 export const stopSandbox = async (id: string) => {
@@ -934,6 +953,8 @@ export const execInSandbox = async (
   id: string,
   command: string[],
   timeoutMs: number,
+  /** Values masked in the output (the run's test secrets). */
+  secrets: string[] = [],
 ): Promise<SandboxResult> => {
   const seconds = Math.max(1, Math.ceil(timeoutMs / 1000));
   try {
@@ -942,7 +963,7 @@ export const execInSandbox = async (
       ["exec", sandboxName(id), "timeout", "-s", "KILL", String(seconds), ...command],
       { timeout: timeoutMs + 30_000, maxBuffer: 5_000_000 },
     );
-    return { exitCode: 0, timedOut: false, output: `${result.stdout}\n${result.stderr}` };
+    return { exitCode: 0, timedOut: false, output: mask(`${result.stdout}\n${result.stderr}`, secrets) };
   } catch (error) {
     const failure = error as { code?: unknown; stdout?: string; stderr?: string; killed?: boolean };
     // Docker itself failed (no daemon, container gone): not the command's result.
@@ -955,7 +976,7 @@ export const execInSandbox = async (
       exitCode: failure.code,
       // `timeout -s KILL` exits 137 when it had to kill the command.
       timedOut: failure.code === 137 || failure.killed === true,
-      output: `${failure.stdout ?? ""}\n${failure.stderr ?? ""}`,
+      output: mask(`${failure.stdout ?? ""}\n${failure.stderr ?? ""}`, secrets),
     };
   }
 };

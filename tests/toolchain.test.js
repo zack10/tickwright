@@ -491,6 +491,45 @@ test("the project's devcontainer is built with its features, and nothing reaches
   );
 });
 
+test("test secrets reach every check (baseline, sandbox, verification), never setup or the snapshot, and are masked", { skip: require("node:child_process").spawnSync("docker", ["version"]).status === 0 ? false : "Docker is not available" }, async (t) => {
+  const fs = require("node:fs");
+  const { execFileSync } = require("node:child_process");
+  const { execInSandbox, removeEnvironmentSnapshot, setupWorkspace, startSandbox, stopSandbox, verifyWorkspace, workspacePath } = require("../dist/services/workspaceService");
+  const id = `test-secrets-${process.pid}`;
+  fs.mkdirSync(workspacePath(id), { recursive: true });
+  execFileSync("git", ["init", "-q"], { cwd: workspacePath(id) });
+  t.after(async () => {
+    await stopSandbox(id);
+    await removeEnvironmentSnapshot(id);
+    fs.rmSync(workspacePath(id), { recursive: true, force: true });
+  });
+  const value = "test-secret-value-42";
+  const testSecrets = { PAYMENTS_TEST_KEY: value };
+  const sh = (script) => ["sh", "-c", script];
+  const check = { name: "test", command: sh(`test "$PAYMENTS_TEST_KEY" = ${value} && echo "key is $PAYMENTS_TEST_KEY"`) };
+  const toolchain = { image: "alpine:3.20", env: {}, setup: sh('test -z "$PAYMENTS_TEST_KEY"') };
+
+  const setup = await setupWorkspace(id, toolchain, [check], { testSecrets });
+  assert.deepEqual(setup.baseline.map(({ passed }) => passed), [true], setup.baseline[0]?.output);
+  assert.match(setup.baseline[0].output, /key is \*\*\*/);
+  assert.doesNotMatch(setup.baseline[0].output, new RegExp(value));
+  const snapshot = execFileSync("docker", ["image", "inspect", "--format", "{{json .Config.Env}}", setup.image], { encoding: "utf8" });
+  assert.doesNotMatch(snapshot, /PAYMENTS_TEST_KEY|test-secret-value-42/, "the snapshot does not keep it");
+
+  const built = { ...toolchain, image: setup.image, setup: null };
+  await startSandbox(id, built, null, testSecrets);
+  const inSandbox = await execInSandbox(id, check.command, 30_000, Object.values(testSecrets));
+  assert.equal(inSandbox.exitCode, 0, inSandbox.output);
+  assert.match(inSandbox.output, /key is \*\*\*/);
+
+  const verified = await verifyWorkspace(id, built, { run: [check], unavailable: [] }, [], undefined, null, testSecrets);
+  assert.equal(verified.passed, true, JSON.stringify(verified.results));
+  assert.match(verified.results[0].output, /key is \*\*\*/);
+  assert.doesNotMatch(verified.results[0].output, new RegExp(value));
+  const without = await verifyWorkspace(id, built, { run: [check], unavailable: [] });
+  assert.equal(without.passed, false, "a check without the secret does not see one");
+});
+
 test("setup secrets reach the setup command only, never the checks or the snapshot, and are masked", { skip: require("node:child_process").spawnSync("docker", ["version"]).status === 0 ? false : "Docker is not available" }, async (t) => {
   const fs = require("node:fs");
   const { execFileSync } = require("node:child_process");

@@ -6,7 +6,7 @@ const url = process.env.DATABASE_URL || "";
 const isAccelerate = url.startsWith("prisma");
 
 // Never returned unless a query selects it (services/setupSecrets.ts), so no response can carry it.
-const omit = { repository: { encryptedSetupSecrets: true } } as const;
+const omit = { repository: { encryptedSetupSecrets: true, encryptedTestSecrets: true } } as const;
 const prisma = isAccelerate
   ? new PrismaClient({ accelerateUrl: url, omit })
   : new PrismaClient({

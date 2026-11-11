@@ -330,6 +330,34 @@ test("the PR body says which checks ran, and when none did", () => {
   );
 });
 
+test("the plan and PR say when no test names the changed code", () => {
+  const { testCoverage, describeTestCoverage } = require("../dist/services/toolchain");
+  const { describeVerification } = require("../dist/services/workspaceService");
+  const { toolchain } = resolve({});
+  const files = {
+    "pkg/parse.go": "",
+    "pkg/parse_test.go": "package pkg",
+    "app/billing.py": "",
+    "app/report.py": "",
+    "tests/test_misc.py": "from app.billing import total",
+  };
+  const coverage = testCoverage(toolchain, Object.keys(files), repo(files), [
+    "pkg/parse.go",
+    "app/billing.py",
+    "app/report.py",
+    "tests/test_misc.py",
+  ]);
+  assert.deepEqual(coverage, { testFiles: 2, untested: ["app/report.py"] }, "named by path or contents; test files themselves are never untested");
+  assert.match(describeTestCoverage(coverage), /^\*\*No test names this file:\*\* app\/report\.py\./);
+  assert.equal(describeTestCoverage({ testFiles: 3, untested: [] }), "");
+  assert.equal(describeTestCoverage(undefined), "", "artifacts from before coverage");
+  assert.match(describeTestCoverage(testCoverage(toolchain, ["a.rs"], repo({}), ["a.rs"])), /^\*\*No tests:\*\*/);
+
+  const passed = { checksRun: 1, results: [{ script: "test", passed: true, output: "" }] };
+  assert.match(describeVerification({ ...passed, testCoverage: coverage }), /Checks passed: test\.\n\*\*No test names this file:\*\*/);
+  assert.doesNotMatch(describeVerification({ checksRun: 0, results: [], testCoverage: coverage }), /No test names/, "Unverified already says it");
+});
+
 test("verification does not block on a check that already failed before the change", { skip: require("node:child_process").spawnSync("docker", ["version"]).status === 0 ? false : "Docker is not available" }, async (t) => {
   const fs = require("node:fs");
   const { execFileSync } = require("node:child_process");

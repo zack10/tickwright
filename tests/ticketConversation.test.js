@@ -70,6 +70,8 @@ test("the plan comment shows the reading, the doubts and how to answer", () => {
   assert.doesNotMatch(formatPlanComment(bare, 1, "checks"), /Unverified|No checks/);
   assert.match(formatPlanComment(bare, 1, "none"), /\*\*Unverified:\*\*[^\n]*nothing will test the change[\s\S]*`\/approve`/);
   assert.match(formatPlanComment(bare, 1, "discovery"), /No checks are set for this repository yet/);
+  assert.match(formatPlanComment(bare, 1, "checks", { testFiles: 0, untested: [] }), /\*\*No tests:\*\*[\s\S]*`\/approve`/);
+  assert.doesNotMatch(formatPlanComment(bare, 1, "none", { testFiles: 0, untested: [] }), /No tests/, "Unverified already says it");
   assert.match(formatPublishComment(["a.go"], "Checks passed: test."), /Changed:\*\* a\.go[\s\S]*Checks passed[\s\S]*draft pull request/);
 });
 

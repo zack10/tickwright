@@ -407,6 +407,23 @@ test("verification does not block on a check that already failed before the chan
   assert.match(flaky.results[0].output, /First run failed:[\s\S]*Second run passed:[\s\S]*second/);
 });
 
+test("Docker image changes run one at a time, and a failed one does not block the next", async () => {
+  const { withImageLock } = require("../dist/services/workspaceService");
+  const order = [];
+  const step = (name, ms, fail) =>
+    withImageLock(async () => {
+      order.push(`${name} start`);
+      await new Promise((resolve) => setTimeout(resolve, ms));
+      order.push(`${name} end`);
+      if (fail) throw new Error(name);
+      return name;
+    });
+  const results = await Promise.allSettled([step("commit", 30), step("rmi", 1, true), step("tag", 1)]);
+  assert.deepEqual(order, ["commit start", "commit end", "rmi start", "rmi end", "tag start", "tag end"]);
+  assert.deepEqual(results.map((result) => result.status), ["fulfilled", "rejected", "fulfilled"]);
+  assert.equal(results[2].value, "tag");
+});
+
 test("the PR says which checks failed once and then passed", () => {
   const { describeVerification } = require("../dist/services/workspaceService");
   const text = describeVerification({

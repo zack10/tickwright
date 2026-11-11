@@ -5,7 +5,7 @@ import { ExecutionStatus } from "@prisma/client";
 import { config } from "../config";
 import prisma from "../db";
 import { NonRetryableError, describeError } from "../utils/safeError";
-import { isFresh, removeWorkspace } from "./workspaceService";
+import { isFresh, removeWorkspace, withImageLock } from "./workspaceService";
 
 /**
  * Removes what runs leave behind when their own cleanup was missed (the app
@@ -79,7 +79,7 @@ export const sweepEnvironments = async (lookups: SweepLookups = prismaLookups): 
     for (const id of ended) {
       await removeWorkspace(id);
       await removeWorkspace(`${id}-publish`);
-      await exec("docker", ["rmi", "-f", `agent-build-tmp-${id}`], { timeout: 60_000 }).catch(() => undefined);
+      await withImageLock(() => exec("docker", ["rmi", "-f", `agent-build-tmp-${id}`], { timeout: 60_000 }).catch(() => undefined));
       result.executions.push(id);
     }
   }
@@ -97,7 +97,7 @@ export const sweepEnvironments = async (lookups: SweepLookups = prismaLookups): 
     if (created && isFresh(created, config.executionSnapshotMaxAgeHours)) continue;
     // Without -f: an image a container still uses stays.
     try {
-      await exec("docker", ["rmi", image], { timeout: 60_000 });
+      await withImageLock(() => exec("docker", ["rmi", image], { timeout: 60_000 }));
       result.images.push(image);
     } catch {
       // In use, or already gone.

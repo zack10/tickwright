@@ -249,7 +249,9 @@ Both approvals must quote the `snapshotHash` of the pending approval, so a revie
 
 ### Deciding on the ticket
 
-The plan step reads the ticket and the repository at a pinned commit and posts the agent's plan on the ticket: what it understood as concrete examples ("given ..., the result is ..."), the readings it is unsure between, the files it expects to change and how it will check them. The run later clones the same commit and follows the approved plan.
+The plan step reads the ticket and the repository at a pinned commit and posts the agent's plan on the ticket: what it understood as concrete examples, the readings it is unsure between, the files it expects to change and how it will check them. In `tool_loop` mode it reads the code itself with the read-only tools (`list_files`, `read_file`, `search_code`, each step a `PLAN_STEP` event), and each example says what the code gives today and what it should give after the change ("now 1400; after the change 700"), so a ticket sentence describing the bug is not planned as the goal. In `single_shot` mode it gets a sample of the relevant files instead. The run later clones the same commit and follows the approved plan.
+
+When nothing will test the change (the repository has no checks), or the checks will only be proposed during the run, the plan comment says so before anyone approves.
 
 People decide by replying on the ticket, or through the API (a frontend is just another client of it):
 
@@ -487,7 +489,7 @@ erDiagram
 - Generated file writes reject `.git` paths and any path through a symlink.
 - Diff review rejects added secrets (GitHub, OpenAI, AWS, Google, Slack tokens, credentials in URLs).
 - Publishing never pushes the verification workspace: it clones fresh at the recorded base SHA, applies only the approved diff, and commits and pushes with git hooks disabled.
-- The GitHub token travels as an HTTP header from the container's environment. It never appears in `.git/config` or on the docker command line.
+- The GitHub token travels as an HTTP header from the container's environment, only to `https://github.com/`. It never appears in `.git/config` or on the docker command line. Git may use HTTPS only, so a submodule URL cannot use `file://`, ssh or other transports.
 - Only **draft** pull requests are created. Nothing is merged or deployed.
 
 **Outbound HTTP**
@@ -501,7 +503,7 @@ erDiagram
 There is no list of supported languages: any language, framework or platform works, the way it does for GitHub Copilot's coding agent or OpenAI Codex. Each repository has an environment (an image, a setup command and named checks), taken in this order:
 
 1. **The repository's configuration** (`verificationConfig.toolchain`, set with `POST` or `PATCH /api/repositories`).
-2. **The project's own devcontainer** (`.devcontainer/devcontainer.json` or `.devcontainer.json`): its `image`, `containerEnv`/`remoteEnv`, and its `onCreateCommand`, `updateContentCommand` and `postCreateCommand` as setup. Devcontainers that build a Dockerfile, use Docker Compose or add features aren't supported yet; what was skipped is reported.
+2. **The project's own devcontainer** (`.devcontainer/devcontainer.json` or `.devcontainer.json`): its `image`, `containerEnv`/`remoteEnv`, and its `onCreateCommand`, `updateContentCommand` and `postCreateCommand` as setup. A devcontainer that builds a Dockerfile, uses Docker Compose or adds features runs in the image the official Dev Container CLI builds from it (before setup, with network and without credentials); the other Compose services start beside the run as its `services`. A build that would read files outside the repository is refused and reported.
 3. **The default image**, `EXECUTION_DEFAULT_IMAGE` (`mcr.microsoft.com/devcontainers/universal:6.1.12`, GitHub Codespaces' default, Ubuntu 24.04 with the common languages installed: Java, Maven, Gradle, Python, Node, Go, .NET, PHP, Ruby). Pinned by digest; about 15 GB on disk, downloaded once per server. It has no Rust toolchain: a Rust repository needs its own image.
 
 We never write an environment into the user's project. What was used, and why, is recorded as a `GRAPH_TOOLCHAIN_RESOLVED` event.
@@ -527,6 +529,7 @@ It then becomes the repository's `verificationConfig.toolchain`, and every later
 }
 ```
 
+- The clone includes the repository's git submodules at the commit's revisions.
 - `setup` runs once after cloning, with network but never the GitHub token. Then each check runs once on the unmodified code, still with network, so whatever a tool only downloads when it really runs (test providers, plugins, modules) is there later. Those results are recorded as the baseline (`GRAPH_BASELINE_CHECKED`). Checks need no offline flags: later runs simply have no network.
 - `checks` run with no network (only the repository's `services`, if any), after the agent finishes, and decide whether the change passes. `scripts` picks which ones run; a name with no check is reported as "not available", not as a failure.
 - After that, the container is saved as a snapshot image (`docker commit`), and checks and the agent's sandbox run from it. Whatever setup installed outside the repository (`~/.m2`, `~/.cache/pip`, system packages) is kept without knowing any tool. The snapshot is deleted with the workspace.
@@ -536,6 +539,9 @@ It then becomes the repository's `verificationConfig.toolchain`, and every later
 - `services` are containers the checks need, such as a database or a cache: `"services": [{ "name": "db", "image": "postgres:16", "env": { "POSTGRES_PASSWORD": "test" }, "ready": ["pg_isready", "-U", "postgres"] }]` (up to 5). Each run starts its own on a private Docker network (`--internal`) shared only with its setup, checks and sandbox, which reach each one by `name` (here host `db`); nothing on that network reaches the internet. `ready` runs inside the service until it succeeds (within `readyTimeoutSeconds`, default 120) before anything uses it. They are removed, with their volumes, together with the workspace. Discovery is told about them but does not propose them; a person declares them.
 - `testFilePatterns` (regular expressions) replace the default conventions (`tests/`, `*.test.*`, `*_test.*`, `test_*`, `*Test.*`, ...). Existing tests may not be edited; new ones may.
 - `protectedPaths` default to CI and devcontainer files.
+- Secrets the setup or the checks need (a private registry token, a test-mode API key) are `setupSecrets` and `testSecrets` on the repository, not part of the toolchain; see [Security model](#security-model).
+- While a devcontainer build, setup or a check runs, the execution records a `GRAPH_STEP_PROGRESS` event about once a minute (`EXECUTION_PROGRESS_INTERVAL_SECONDS`, default 60) with the step, its command, the elapsed time and the end of its output (secrets masked). A step with no new output for `EXECUTION_HUNG_AFTER_SECONDS` (default 600) is marked as possibly hung.
+- On start and every hour, the app removes what ended runs left behind (snapshot, containers, network, clone), and environment caches and devcontainer builds older than `EXECUTION_SNAPSHOT_MAX_AGE_HOURS` for repositories with no run in progress. Only what its own database knows is touched. A run does not start with less than `EXECUTION_MIN_FREE_DISK_GB` (default 10) free after a sweep.
 
 ## Setting up the Trello → GitHub workflow
 
@@ -565,7 +571,7 @@ All routes are under `/api` and require the bearer token.
 | Skills | `POST/GET /skills`, `GET/PUT/DELETE /skills/:id`, `POST /skills/assign` |
 | Tasks | `POST /tasks` (202, `Idempotency-Key`), `GET /tasks`, `GET /tasks/:id` |
 | LLM | `GET /llm/providers`, `POST /llm/discover`, `GET /llm/models` (`X-Provider-Api-Key`), `GET /llm/usage`, `GET /llm/usage/today` (tokens used today against `LLM_DAILY_TOKEN_LIMIT`) |
-| Repositories | `POST/GET /repositories`, `PATCH /repositories/:id` (environment, policy), `POST /repositories/:id/environment/approve` (approve a discovered environment) |
+| Repositories | `POST/GET /repositories`, `PATCH /repositories/:id` (environment, policy and limits, `setupSecrets`, `testSecrets`), `POST /repositories/:id/environment/approve` (approve a discovered environment) |
 | Integrations | `POST/GET /integrations`, `POST /integrations/:id/sync` |
 | Work items | `GET /work-items`, `GET /work-items/:id` |
 | Executions | `POST/GET /executions`, `GET /executions/:id`, `POST /executions/:id/plans`, `POST /executions/:id/approvals/plan\|publish` |
@@ -587,6 +593,7 @@ Behaviour worth knowing:
 | LLM | `GEMINI_API_KEY`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `ANTHROPIC_API_KEY`, `LLM_PROVIDERS`, `LLM_DEFAULT_PROVIDER`, `LLM_DEFAULT_MODEL`, `LLM_DAILY_TOKEN_LIMIT`, `LLM_REQUEST_TIMEOUT_MS`, `LLM_MAX_OUTPUT_TOKENS`, `LLM_RATE_LIMIT_RETRIES`, `OPENAI_TOOLS_API` |
 | Task pipeline | `TASK_MAX_ATTEMPTS`, `TASK_RETRY_DELAY_MS`, `TASK_LEASE_MS`, `GENERATED_CODE_MAX_FILES`, `GENERATED_CODE_MAX_FILE_BYTES`, `STORE_RAW_LLM_OUTPUT` |
 | Execution pipeline | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `INTEGRATION_POLL_INTERVAL_MS`, `EXECUTION_LEASE_MS`, `EXECUTION_RUN_CONCURRENCY`, `EXECUTION_PLAN_CONCURRENCY`, `PLAN_MAX_VERSIONS`, `EXECUTION_AGENT_MODE`, `AGENT_MAX_STEPS`, `EXECUTION_MAX_TOKENS`, `EXECUTION_MAX_DURATION_SECONDS`, `WORKSPACE_ROOT`, `KEEP_WORKSPACES`, `ARTIFACT_ROOT` |
+| Repository environment | `EXECUTION_DEFAULT_IMAGE`, `EXECUTION_DISCOVERY_MAX_ATTEMPTS`, `EXECUTION_SNAPSHOT_MAX_AGE_HOURS`, `EXECUTION_MIN_FREE_DISK_GB`, `EXECUTION_PROGRESS_INTERVAL_SECONDS`, `EXECUTION_HUNG_AFTER_SECONDS` |
 | Messaging | `CONSUMER_MAX_ATTEMPTS`, `CONSUMER_RETRY_DELAY_MS` |
 | HTTP connector | `MCP_HTTP_ALLOWED_HOSTS`, `MCP_HTTP_ALLOW_PRIVATE_IPS`, `MCP_HTTP_TIMEOUT_MS`, `MCP_HTTP_MAX_RESPONSE_BYTES` |
 
@@ -695,7 +702,7 @@ npm run eval:coding -- --parallel 4       # 4 runs at once: E2E_GITHUB_EXTRA_REP
 
 It needs the execution suite's variables plus `E2E_GITHUB_TOKEN` (Contents read/write on the sandbox repo), the server and Docker on the same machine (it reads the diff artifact from disk), and **it rewrites the sandbox repo's `main`**. `npm test` includes `tests/codingScenarios.test.js`, which checks every scenario is fair in its grader image (so it needs Docker, and is skipped without it): the clean project passes everything, and each bug passes the repo's tests but fails its hidden test by an assertion. Each suite runs with the environment in its `suite.json`; `E2E_ENVIRONMENT` replaces it for every suite.
 
-The benchmark runs on `gpt-5.6-luna` (`E2E_LLM_MODEL` in `.env.e2e`). Its baseline (2026-11-07, every scenario 3 times): 50 correct fixes out of 54, 3 tickets correctly declined, no wrong fix shipped and 1 flagged by the reviewer, for $0.42. Every run is in the results log of `docs/plans/AGENTIC_ROADMAP.md`, with reports in `docs/testing/`.
+The benchmark runs on `gpt-5.6-luna` (`E2E_LLM_MODEL` in `.env.e2e`). Its latest baseline (2026-11-11, every scenario 3 times): 51 correct fixes out of 54, the impossible ticket (node/08) correctly declined all 3 times, and no wrong fix, for $0.36. Every run is in the results log of `docs/plans/AGENTIC_ROADMAP.md`, with reports in `docs/testing/`.
 
 ### Reference projects
 

@@ -389,6 +389,35 @@ test("verification does not block on a check that already failed before the chan
   const broken = await verifyWorkspace(id, toolchain, { run: [check("lint", "exit 2"), check("test", "true")], unavailable: [] }, ["test"]);
   assert.equal(broken.passed, false, "a check that passed before still blocks");
   assert.deepEqual(broken.results.map((result) => result.script), ["lint"]);
+
+  // Fails the first time only: the marker file survives between the two runs.
+  const flaky = await verifyWorkspace(
+    id,
+    toolchain,
+    { run: [check("test", "if [ -f .ran ]; then echo second; else touch .ran; echo first; exit 1; fi"), check("lint", "true")], unavailable: [] },
+  );
+  assert.equal(flaky.passed, true, "a check that passes when run again does not block");
+  assert.deepEqual(
+    flaky.results.map(({ script, passed, flaky }) => ({ script, passed, flaky })),
+    [
+      { script: "test", passed: true, flaky: true },
+      { script: "lint", passed: true, flaky: undefined },
+    ],
+  );
+  assert.match(flaky.results[0].output, /First run failed:[\s\S]*Second run passed:[\s\S]*second/);
+});
+
+test("the PR says which checks failed once and then passed", () => {
+  const { describeVerification } = require("../dist/services/workspaceService");
+  const text = describeVerification({
+    checksRun: 2,
+    results: [
+      { script: "test", passed: true, flaky: true, output: "" },
+      { script: "lint", passed: true, output: "" },
+    ],
+  });
+  assert.match(text, /^Checks passed: test, lint\.\n\*\*Failed once, then passed:\*\* test\. This check/);
+  assert.doesNotMatch(describeVerification({ checksRun: 1, results: [{ script: "test", passed: true, output: "" }] }), /Failed once/);
 });
 
 test("checks reach the run's services by name, and nothing else", { skip: require("node:child_process").spawnSync("docker", ["version"]).status === 0 ? false : "Docker is not available" }, async (t) => {

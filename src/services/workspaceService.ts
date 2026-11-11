@@ -786,6 +786,8 @@ export interface CheckResult {
   unavailable?: true;
   /** Failed on the unmodified code too, so its failure does not block the change. */
   failingBefore?: true;
+  /** Failed, then passed when run again: it does not block, and the approver is told. */
+  flaky?: true;
 }
 
 /**
@@ -795,7 +797,9 @@ export interface CheckResult {
  * that was already broken instead of refusing the change, and a person
  * decides. It is recorded, and the next check still runs. A configured check that doesn't exist is recorded as
  * unavailable and does not fail the verification: it says nothing about
- * the change.
+ * the change. Any other check that fails is run once more: passing then, it
+ * is recorded as flaky and does not block, since a random failure would
+ * otherwise read as a bad change; failing again, it blocks.
  */
 export const verifyWorkspace = async (
   id: string,
@@ -814,36 +818,41 @@ export const verifyWorkspace = async (
   }));
   let failed = false;
   const services = checks.run.length ? await startServices(id, toolchain, limits) : undefined;
+  const run = async (name: string, command: string[]) => {
+    const result = await keepOutputOutOfDiffs(id, () =>
+      execDocker(
+        dockerArgs(workspacePath(id), false, false, command, {
+          image: toolchain.image,
+          env: toolchain.env,
+          services,
+          limits,
+          secretNames: Object.keys(secrets),
+        }),
+        secrets,
+        limits?.checkTimeoutSeconds ? limits.checkTimeoutSeconds * 1000 : undefined,
+        report && { report, step: "check", check: name, command },
+      ),
+    );
+    return mask(`${result.stdout}\n${result.stderr}`, Object.values(secrets)).slice(-100_000);
+  };
+  const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
   for (const { name, command } of checks.run)
     try {
-      const result = await keepOutputOutOfDiffs(id, () =>
-        execDocker(
-          dockerArgs(workspacePath(id), false, false, command, {
-            image: toolchain.image,
-            env: toolchain.env,
-            services,
-            limits,
-            secretNames: Object.keys(secrets),
-          }),
-          secrets,
-          limits?.checkTimeoutSeconds ? limits.checkTimeoutSeconds * 1000 : undefined,
-          report && { report, step: "check", check: name, command },
-        ),
-      );
-      results.push({
-        script: name,
-        passed: true,
-        output: mask(`${result.stdout}\n${result.stderr}`, Object.values(secrets)).slice(-100_000),
-      });
+      results.push({ script: name, passed: true, output: await run(name, command) });
     } catch (error) {
-      const output = error instanceof Error ? error.message : String(error);
+      const output = message(error);
       if (failingBefore.includes(name)) {
         results.push({ script: name, passed: false, failingBefore: true, output });
         continue;
       }
-      results.push({ script: name, passed: false, output });
-      failed = true;
-      break;
+      try {
+        const again = await run(name, command);
+        results.push({ script: name, passed: true, flaky: true, output: `First run failed:\n${output.slice(-50_000)}\n\nSecond run passed:\n${again}` });
+      } catch (retryError) {
+        results.push({ script: name, passed: false, output: message(retryError) });
+        failed = true;
+        break;
+      }
     }
   return { passed: !failed, checksRun: checks.run.length, results };
 };
@@ -865,6 +874,14 @@ export const describeFailingBefore = (verification: unknown) => {
   return `**Already failing before this change:** ${names.join(", ")}. ${names.length > 1 ? "They" : "It"} failed on the unmodified code too, so ${names.length > 1 ? "they" : "it"} could not show whether this change breaks something ${names.length > 1 ? "they cover" : "it covers"}. Check the output before approving.`;
 };
 
+/** Checks that failed once and passed when run again, for whoever decides on it; "" when there are none. */
+export const describeFlaky = (verification: unknown) => {
+  const { results } = (verification ?? {}) as { results?: CheckResult[] };
+  const names = (results ?? []).filter((result) => result.flaky).map((result) => result.script);
+  if (!names.length) return "";
+  return `**Failed once, then passed:** ${names.join(", ")}. ${names.length > 1 ? "These checks" : "This check"} passed on the unmodified code and passed again on a second run, so the failure looks random. Check it isn't something this change made intermittent (timing, order, shared state) before approving.`;
+};
+
 /** What a verification proved, for the PR body: which checks passed, which already failed, and which did not exist. */
 export const describeVerification = (verification: unknown) => {
   const { checksRun, results } = (verification ?? {}) as {
@@ -876,6 +893,7 @@ export const describeVerification = (verification: unknown) => {
   const unavailable = (results ?? []).filter((result) => result.unavailable).map((result) => result.script);
   const objections = describeReviewObjections(verification);
   const failing = describeFailingBefore(verification);
+  const flaky = describeFlaky(verification);
   // Artifacts from before toolchains have results but no checksRun.
   const lines = [
     ...(objections ? [objections, ""] : []),
@@ -885,6 +903,7 @@ export const describeVerification = (verification: unknown) => {
         ? `Checks passed: ${passed.join(", ")}.`
         : "No check passed.",
     ...(failing ? [failing] : []),
+    ...(flaky ? [flaky] : []),
   ];
   const { testCoverage: coverage } = (verification ?? {}) as { testCoverage?: TestCoverage };
   // Unverified already says nothing was run.

@@ -17,7 +17,7 @@ export type ExecutionAgentMode = (typeof AGENT_MODES)[number];
 
 /** A typo must not silently fall back to the other mode. */
 const parseAgentMode = (value: string | undefined): ExecutionAgentMode => {
-  if (!value) return "single_shot";
+  if (!value) return "tool_loop";
   if ((AGENT_MODES as readonly string[]).includes(value))
     return value as ExecutionAgentMode;
   throw new Error(

@@ -571,7 +571,7 @@ All routes are under `/api` and require the bearer token.
 | Skills | `POST/GET /skills`, `GET/PUT/DELETE /skills/:id`, `POST /skills/assign` |
 | Tasks | `POST /tasks` (202, `Idempotency-Key`), `GET /tasks`, `GET /tasks/:id` |
 | LLM | `GET /llm/providers`, `POST /llm/discover`, `GET /llm/models` (`X-Provider-Api-Key`), `GET /llm/usage`, `GET /llm/usage/today` (tokens used today against `LLM_DAILY_TOKEN_LIMIT`) |
-| Repositories | `POST/GET /repositories`, `PATCH /repositories/:id` (environment, policy and limits, `setupSecrets`, `testSecrets`), `POST /repositories/:id/environment/approve` (approve a discovered environment) |
+| Repositories | `POST/GET /repositories`, `PATCH /repositories/:id` (environment, policy and limits, `setupSecrets`, `testSecrets`, `environmentProposal: null` to discard a discovered environment), `POST /repositories/:id/environment/approve` (approve a discovered environment) |
 | Integrations | `POST/GET /integrations`, `POST /integrations/:id/sync` |
 | Work items | `GET /work-items`, `GET /work-items/:id` |
 | Executions | `POST/GET /executions`, `GET /executions/:id`, `POST /executions/:id/plans`, `POST /executions/:id/approvals/plan\|publish` |

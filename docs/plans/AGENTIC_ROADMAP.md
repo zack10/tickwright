@@ -98,13 +98,15 @@ Run so far (instances from Multi-SWE-bench, `tests/e2e/reference-projects/projec
 
 | Project | Stack | Environment | Latest result | Open limitation |
 | --- | --- | --- | --- | --- |
-| `java/gson-1555` | Java, Maven (JDK 11) | written once by a person | correct (2026-10-31) | discovery can't pick an older JDK on its own |
-| `go/go-zero-1969` | Go modules | discovery | correct, draft PR #7 (2026-11-01) | |
-| `js/dayjs-589` | JavaScript, npm, Jest | discovery | correct twice (2026-11-02) | |
-| `rust/fd-590` | Rust, Cargo | discovery | wrong fix (2026-11-02) | 30, diagnosis pending |
-| `c/jq-2821` | C, autotools | discovery | wrong fix (2026-11-02) | ambiguous issue, diagnosis pending |
-| `ts/darkreader-6747` | TypeScript, npm | discovery | wrong fix (2026-11-02) | issue refers to another; out of the diagnosis: the fix must change existing tests (limitation 31) |
-| `cpp/catch2-2723` | C++, CMake | discovery | grader checked (2026-11-05), agent not run yet; replaces `catch2-2187`, which could not be graded | |
+| `java/gson-1555` | Java, Maven (JDK 11) | written once by a person | `gpt-5.6-luna`, 1 run: correct (2026-11-11); x10 pending | discovery can't pick an older JDK on its own |
+| `go/go-zero-1969` | Go modules | discovery | `gpt-5.6-luna`, 1 run: correct (2026-11-11); x10 pending | |
+| `js/dayjs-589` | JavaScript, npm, Jest | discovery | `gpt-5.6-luna`, 1 run: blocked, discovery ran out of tries (2026-11-11; its first try was another project's stored environment, an eval bug since fixed); before: correct twice on `gpt-5-mini` | a run without a working environment blocks instead of being marked Unverified |
+| `rust/fd-590` | Rust, Cargo | discovery | `gpt-5.6-luna`, 1 run, original ticket: wrong fix (2026-11-11); clarified ticket on `gpt-5-mini`: 9/10 (2026-11-05); Luna x10 pending | 30 |
+| `c/jq-2821` | C, autotools | discovery | `gpt-5.6-luna`, clarified ticket: 9/10 correct, 1 wrong (2026-11-07) | 30 (the wrong fix broke behaviour the ticket keeps) |
+| `ts/darkreader-6747` | TypeScript, npm | discovery | `gpt-5.6-luna`, 1 run: wrong fix (2026-11-11), as expected | the fix must change existing tests (limitation 31) |
+| `cpp/catch2-2723` | C++, CMake | discovery | `gpt-5.6-luna`, 1 run: wrong fix after 3 attempts, reviewer approved (2026-11-11); x10 pending | |
+
+Stage 1 on `gpt-5.6-luna` (2026-11-11, one run each, reports [1](../testing/reference-2026-11-11.md), [2](../testing/reference-2026-11-11-2.md), $0.45): one run is a smoke check, not a result. Until 2026-11-11 every project's discovery first retried the environment the previous project stored on the shared sandbox repository; the eval now discards it when the project changes.
 
 ## Why: what the project does not teach yet
 

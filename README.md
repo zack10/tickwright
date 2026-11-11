@@ -251,7 +251,7 @@ Both approvals must quote the `snapshotHash` of the pending approval, so a revie
 
 The plan step reads the ticket and the repository at a pinned commit and posts the agent's plan on the ticket: what it understood as concrete examples, the readings it is unsure between, the files it expects to change and how it will check them. In `tool_loop` mode it reads the code itself with the read-only tools (`list_files`, `read_file`, `search_code`, each step a `PLAN_STEP` event), and each example says what the code gives today and what it should give after the change ("now 1400; after the change 700"), so a ticket sentence describing the bug is not planned as the goal. In `single_shot` mode it gets a sample of the relevant files instead. The run later clones the same commit and follows the approved plan.
 
-When nothing will test the change (the repository has no checks), or the checks will only be proposed during the run, the plan comment says so before anyone approves.
+When nothing will test the change (the repository has no checks), or the checks will only be proposed during the run, the plan comment says so before anyone approves. When the checks exist but may not exercise the change, the plan comment, the change comment and the draft PR say so too: the repository has no test files, or no test names a file to change (or changed) by its path or contents. That is a name match, not real coverage, but it tells the approver when a passing check means little.
 
 People decide by replying on the ticket, or through the API (a frontend is just another client of it):
 

@@ -471,7 +471,7 @@ Known limits of the design: budgets are checked before each call, so a started c
 - [ ] Large repositories (limitation 21): partial clone (`--filter=blob:none`, shallow where possible) from a cached mirror per repository, `search_code` backed by `git grep` or ripgrep in the sandbox, a paged file tree, and focusing on the touched subproject
 - [ ] Model coverage (limitation 22): run the benchmark and the reference projects on at least one stronger model, and allow the model to be chosen per repository or task type
 - [ ] Reference projects: build the matrix in [Reference projects](#reference-projects), with hidden tests and a setup check like `npm run eval:coding -- --check`; run it to finish this phase
-- [ ] README: where the environment comes from, discovery and approval, how to set it per repository
+- [x] README: where the environment comes from, discovery and approval, how to set it per repository (brought up to date with the Phase 4 work 2026-11-11, PR #15)
 
 **Done when:** the benchmark passes in at least three languages with no drop on the Node scenarios, a scenario whose tests need a database passes, an e2e execution opens a draft PR on a non-Node repository, and the reference projects have been run with every failure recorded as a limitation.
 

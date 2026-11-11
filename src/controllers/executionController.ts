@@ -13,7 +13,7 @@ import {
   submitPlan,
 } from "../services/executionService";
 import { syncIntegrationConnection } from "../services/ingestionService";
-import { sealSetupSecrets } from "../services/setupSecrets";
+import { sealSetupSecrets, sealTestSecrets } from "../services/setupSecrets";
 import {
   redactIntegration,
   sealIntegrationConfig,
@@ -44,20 +44,25 @@ export const createRepository = asyncHandler(
     res.status(201).json(repository);
   },
 );
-/** Sets a repository's environment, policy or setup secrets; later executions use them. */
+/** Sets a repository's environment, policy, setup or test secrets; later executions use them. */
 export const updateRepository = asyncHandler(
   async (req: Request, res: Response) => {
-    const { verificationConfig, executionPolicy, setupSecrets } = req.body;
+    const { verificationConfig, executionPolicy, setupSecrets, testSecrets } = req.body;
     const repository = await prisma.repository.update({
       where: { id: req.params.id },
       data: {
         verificationConfig,
         executionPolicy,
         ...(setupSecrets !== undefined ? { encryptedSetupSecrets: sealSetupSecrets(setupSecrets) } : {}),
+        ...(testSecrets !== undefined ? { encryptedTestSecrets: sealTestSecrets(testSecrets) } : {}),
       },
     });
     // Names only, so a person can see what is set; values never leave.
-    res.json(setupSecrets !== undefined ? { ...repository, setupSecretNames: Object.keys(setupSecrets ?? {}) } : repository);
+    res.json({
+      ...repository,
+      ...(setupSecrets !== undefined ? { setupSecretNames: Object.keys(setupSecrets ?? {}) } : {}),
+      ...(testSecrets !== undefined ? { testSecretNames: Object.keys(testSecrets ?? {}) } : {}),
+    });
   },
 );
 /**

@@ -72,7 +72,7 @@ import {
 } from "../toolchain/discovery";
 import { AgentStep, AgentStopReason, attemptAllowance, describeAttempt, runAgentLoop } from "./agentLoop";
 import { reviewDiffSafety } from "./diffReview";
-import { setupSecretsOf, setupSecretsOfExecution } from "../setupSecrets";
+import { secretValuesOfExecution, setupSecretsOf, testSecretsOf } from "../setupSecrets";
 import { ensureDiskSpace } from "../environmentSweep";
 import { fileActionsError } from "./outputFormat";
 import { RepoContext, collectRepoContext } from "./repoContext";
@@ -240,7 +240,7 @@ const reportProgress = (executionId: string): ProgressReporter => (progress) =>
 
 const prepareEnvironment = async (
   executionId: string,
-  repository: Omit<Repository, "encryptedSetupSecrets">,
+  repository: Omit<Repository, "encryptedSetupSecrets" | "encryptedTestSecrets">,
   resolution: ToolchainResolution,
   ask: (prompt: RenderedPrompt) => Promise<string>,
 ): Promise<{ toolchain: Toolchain; setup: SetupResult; environmentProposal?: ProposedEnvironment }> => {
@@ -252,6 +252,7 @@ const prepareEnvironment = async (
   const setupOptions = {
     cacheFor: repository.id,
     secrets: await setupSecretsOf(repository.id),
+    testSecrets: await testSecretsOf(repository.id),
     progress,
     limits,
     ...(timeout ? { setupTimeoutMs: timeout * 1000 } : {}),
@@ -666,7 +667,12 @@ const agentLoop = async (state: GraphState) => {
         : undefined,
   };
   const steps: AgentStep[] = [];
-  await startSandbox(state.executionId, toolchain, execution.repository.executionPolicy as RepositoryPolicy | null);
+  await startSandbox(
+    state.executionId,
+    toolchain,
+    execution.repository.executionPolicy as RepositoryPolicy | null,
+    await testSecretsOf(execution.repository.id),
+  );
   let outcome: Awaited<ReturnType<typeof runAgentLoop>>;
   try {
     outcome = await runAgentLoop(
@@ -826,6 +832,7 @@ const verifyChange = async (state: typeof ExecutionGraphState.State) => {
     Object.keys(state.failingBefore),
     reportProgress(state.executionId),
     execution.repository.executionPolicy as RepositoryPolicy | null,
+    await testSecretsOf(execution.repository.id),
   );
 
   if (!verification.passed) {
@@ -937,7 +944,7 @@ const reviewDiff = async (state: typeof ExecutionGraphState.State) => {
 
   const diff = await gitDiff(state.executionId);
   const files = await changedFiles(state.executionId);
-  const deterministicReview = reviewDiffSafety(diff, files, Object.values(await setupSecretsOfExecution(state.executionId)));
+  const deterministicReview = reviewDiffSafety(diff, files, await secretValuesOfExecution(state.executionId));
   if (!deterministicReview.passed) {
     const feedback = deterministicReview.issues.join("\n");
     await prisma.taskAttempt.update({

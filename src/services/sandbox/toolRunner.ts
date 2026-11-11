@@ -3,6 +3,7 @@ import prisma from "../../db";
 import { RepositoryPolicy } from "../agentGraph/repoPolicy";
 import { ToolCall, ToolDefinition } from "../llm/types";
 import { Toolchain, isTestFile, selectChecks } from "../toolchain";
+import { testSecretsOf } from "../setupSecrets";
 import { changedFiles, execInSandbox, keepOutputOutOfDiffs, trackedFiles, workspacePath } from "../workspaceService";
 import { CHECK_TIMEOUT_MS, ToolContext, ToolOutcome, ToolStatus, executeTool } from "./tools";
 
@@ -81,12 +82,14 @@ export const runRecordedTool = async (
 /** The tool context for an execution, from its repository's settings and toolchain. */
 export const executionToolContext = async (
   executionId: string,
-  repository: { executionPolicy: unknown; verificationConfig: unknown },
+  repository: { id: string; executionPolicy: unknown; verificationConfig: unknown },
   toolchain: Toolchain,
   failingBefore: Record<string, string> = {},
 ): Promise<ToolContext> => {
   const policy = repository.executionPolicy as RepositoryPolicy | null;
   const checks = selectChecks(toolchain, repository.verificationConfig).run;
+  // The sandbox has them as env; only masking needs the values here.
+  const secrets = Object.values(await testSecretsOf(repository.id));
   const baseFiles = new Set(await trackedFiles(executionId));
   // An attempt that continues from kept changes already passed the gate.
   const newTest = (await changedFiles(executionId)).some((file) => isTestFile(toolchain, file) && !baseFiles.has(file));
@@ -98,10 +101,10 @@ export const executionToolContext = async (
       const check = checks.find((candidate) => candidate.name === name);
       if (!check) throw new Error(`Unknown check "${name}"`);
       // What the check writes (build output, caches) is not the agent's change.
-      return keepOutputOutOfDiffs(executionId, () => execInSandbox(executionId, check.command, (policy?.checkTimeoutSeconds ?? CHECK_TIMEOUT_MS / 1000) * 1000));
+      return keepOutputOutOfDiffs(executionId, () => execInSandbox(executionId, check.command, (policy?.checkTimeoutSeconds ?? CHECK_TIMEOUT_MS / 1000) * 1000, secrets));
     },
     // What the agent's commands write is its change: visible in the diff and policed there.
-    runCommand: (command, timeoutMs) => execInSandbox(executionId, ["sh", "-c", command], timeoutMs),
+    runCommand: (command, timeoutMs) => execInSandbox(executionId, ["sh", "-c", command], timeoutMs, secrets),
     isTestFile: (file) => isTestFile(toolchain, file),
     isBaseFile: (file) => baseFiles.has(file),
     reproduction: { shown: newTest, newTest },

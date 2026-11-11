@@ -250,6 +250,8 @@ model Repository {
   environmentProposal  Json?
   /// Encrypted { NAME: value } given to the setup command only (registry credentials). Omitted from queries by default (db.ts).
   encryptedSetupSecrets String?
+  /// Encrypted { NAME: value } given to the checks as environment variables (test-grade values). Omitted from queries by default (db.ts).
+  encryptedTestSecrets String?
   active               Boolean     @default(true)
   executions           Execution[]
   createdAt            DateTime    @default(now())

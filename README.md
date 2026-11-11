@@ -480,6 +480,7 @@ erDiagram
 - Agent API keys (`config.apiKey`, and those in `config.reviewer` and `config.models`) and integration credentials are encrypted at rest (`ENCRYPTION_KEY`) and redacted from API responses.
 - Logged errors omit query strings and headers (`describeError()`), so provider keys and tokens are not written to logs.
 - Raw LLM output is not stored unless `STORE_RAW_LLM_OUTPUT=true`.
+- A repository's secrets are set with `PATCH /api/repositories/:id` as `{ NAME: value }` (up to 20; `null` removes them), stored encrypted, and never returned (the response lists their names). `setupSecrets` (a private registry token) go to the setup command only. `testSecrets` go to every check (setup's baseline run, the agent's sandbox and verification) as environment variables. The agent can read those, so use test-grade values only. Neither kind is kept in the environment snapshot, both are masked in check output, and a change that contains one is rejected.
 
 **Repository execution**
 - Verification runs in the repository's image with `--network none` and CPU/memory/PID limits. Only the setup step has network, and it never gets the GitHub token.

@@ -5,15 +5,15 @@ import { validate } from '../middleware/validate';
 import { TOOL_OUTPUT_CEILINGS } from '../services/sandbox/tools';
 import { verificationConfigSchema } from '../services/toolchain';
 
-// Setup secrets: environment variables for the setup command (e.g. a private registry token).
-const setupSecretsSchema = z
+// Setup secrets (for the setup command, e.g. a private registry token) and test secrets (for the checks): environment variables.
+const secretsSchema = z
   .record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/), z.string().min(1).max(4000))
-  .refine((secrets) => Object.keys(secrets).length <= 20, 'at most 20 setup secrets');
+  .refine((secrets) => Object.keys(secrets).length <= 20, 'at most 20 secrets');
 const router = Router();
 const uuid = z.string().uuid();
 const executionPolicySchema = z.object({ maxChangedFiles: z.number().int().min(1).max(1000).default(20), sandboxCpus: z.number().min(0.5).max(64).optional(), sandboxMemoryMb: z.number().int().min(512).max(262144).optional(), sandboxMaxProcesses: z.number().int().min(64).max(32768).optional(), checkTimeoutSeconds: z.number().int().min(30).max(7200).optional(), maxFileBytes: z.number().int().min(1000).max(50_000_000).optional(), protectedPaths: z.array(z.string()).optional(), maxToolOutputChars: z.number().int().min(1000).max(TOOL_OUTPUT_CEILINGS.maxOutputChars).optional(), maxReadLines: z.number().int().min(50).max(TOOL_OUTPUT_CEILINGS.maxReadLines).optional(), setupTimeoutSeconds: z.number().int().min(60).max(7200).optional(), maxAgentSteps: z.number().int().min(5).max(200).optional(), maxRunSeconds: z.number().int().min(300).max(14400).optional() });
 router.post('/repositories', validate(z.object({ body: z.object({ projectId: uuid, owner: z.string().regex(/^[a-zA-Z0-9_.-]+$/), name: z.string().regex(/^[a-zA-Z0-9_.-]+$/), defaultBranch: z.string().regex(/^[a-zA-Z0-9_./-]+$/).default('main'), githubInstallationId: z.string().min(1), verificationConfig: verificationConfigSchema.default({}), executionPolicy: executionPolicySchema.default({}) }) })), createRepository);
-router.patch('/repositories/:id', validate(z.object({ params: z.object({ id: uuid }), body: z.object({ verificationConfig: verificationConfigSchema.optional(), executionPolicy: executionPolicySchema.optional(), setupSecrets: setupSecretsSchema.nullable().optional() }).strict().refine((body) => Object.keys(body).length > 0, 'nothing to update') })), updateRepository);
+router.patch('/repositories/:id', validate(z.object({ params: z.object({ id: uuid }), body: z.object({ verificationConfig: verificationConfigSchema.optional(), executionPolicy: executionPolicySchema.optional(), setupSecrets: secretsSchema.nullable().optional(), testSecrets: secretsSchema.nullable().optional() }).strict().refine((body) => Object.keys(body).length > 0, 'nothing to update') })), updateRepository);
 router.post('/repositories/:id/environment/approve', validate(z.object({ params: z.object({ id: uuid }), body: z.object({ proposalHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict() })), approveEnvironment);
 router.get('/repositories', listRepositories);
 router.post('/integrations', validate(z.object({ body: z.object({ projectId: uuid, type: z.enum(['TRELLO', 'GITHUB']), name: z.string().min(1), config: z.record(z.unknown()).refine((config) => config.approvers === undefined || (Array.isArray(config.approvers) && config.approvers.every((approver) => typeof approver === 'string' && approver.trim() !== '')), { message: 'approvers must be a list of tracker user names or ids', path: ['approvers'] }) }) })), createIntegration);

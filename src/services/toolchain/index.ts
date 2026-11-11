@@ -197,6 +197,39 @@ export const commandText = (command: string[]) =>
 export const isTestFile = (toolchain: Toolchain, file: string) =>
   toolchain.testFilePatterns.some((pattern) => new RegExp(pattern).test(file));
 
+/** How many test files the repository has, and which of the given files no test names. */
+export interface TestCoverage {
+  testFiles: number;
+  untested: string[];
+}
+
+/**
+ * A rough, language-neutral sign of what the checks exercise: a test "names"
+ * a file when its path or contents contain the file's base name (Go's
+ * `bar_test.go`, Python's `import bar`, Java's `BarTest`). It is not real
+ * coverage; it tells the approver when a passing check says little.
+ */
+export const testCoverage = (toolchain: Toolchain, repoFiles: string[], read: ReadRepoFile, files: string[]): TestCoverage => {
+  const tests = repoFiles.filter((file) => isTestFile(toolchain, file));
+  const texts = tests.map((file) => `${file}\n${read(file) ?? ""}`);
+  const untested = files.filter((file) => {
+    if (isTestFile(toolchain, file)) return false;
+    const stem = path.posix.basename(file).replace(/\.[^.]*$/, "");
+    return !texts.some((text) => text.includes(stem));
+  });
+  return { testFiles: tests.length, untested };
+};
+
+/** The coverage note for whoever approves the plan or the change; "" when there is nothing to warn about. */
+export const describeTestCoverage = (coverage: TestCoverage | undefined) =>
+  !coverage
+    ? ""
+    : !coverage.testFiles
+      ? "**No tests:** this repository has no test files, so the checks passing will not show the change works; you will have to check it yourself."
+      : coverage.untested.length
+        ? `**No test names ${coverage.untested.length > 1 ? "these files" : "this file"}:** ${coverage.untested.join(", ")}. The checks may not run that code, so passing them says little about it.`
+        : "";
+
 /** What the agent is told about the environment: where commands run and what checks the change. */
 export const describeEnvironment = (
   toolchain: Toolchain,

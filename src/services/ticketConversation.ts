@@ -3,7 +3,7 @@ import prisma from "../db";
 import { IssueTrackerAdapter, TrackerComment } from "../integrations/types";
 import { describeError } from "../utils/safeError";
 import type { AgentPlan } from "./agentGraph/planning";
-import type { PlanVerification } from "./toolchain";
+import { PlanVerification, TestCoverage, describeTestCoverage } from "./toolchain";
 import { decideApproval, requestPlanRevision } from "./executionService";
 
 /**
@@ -29,7 +29,12 @@ const VERIFICATION_NOTES: Record<PlanVerification, string> = {
   none: "**Unverified:** this repository has no checks, so nothing will test the change; you will have to check it yourself.",
 };
 
-export const formatPlanComment = (plan: AgentPlan, version: number, verification: PlanVerification = "checks") =>
+export const formatPlanComment = (
+  plan: AgentPlan,
+  version: number,
+  verification: PlanVerification = "checks",
+  coverage?: TestCoverage,
+) =>
   [
     `**Plan${version > 1 ? ` (version ${version})` : ""}:** ${plan.summary}`,
     plan.expectedBehaviour.length
@@ -41,6 +46,8 @@ export const formatPlanComment = (plan: AgentPlan, version: number, verification
     plan.filesToEdit.length ? `**Files I expect to change:** ${plan.filesToEdit.join(", ")}` : "",
     plan.testStrategy.length ? ["**How I'll check it:**", ...plan.testStrategy.map((step) => `- ${step}`)].join("\n") : "",
     VERIFICATION_NOTES[verification],
+    // With no checks at all the note above already says nothing will test it.
+    verification === "none" ? "" : describeTestCoverage(coverage),
     COMMANDS,
   ]
     .filter(Boolean)

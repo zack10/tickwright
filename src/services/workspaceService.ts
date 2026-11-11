@@ -7,7 +7,15 @@ import { promisify } from "node:util";
 import { config } from "../config";
 import { findSymlink } from "../utils/safePath";
 import type { SandboxLimits } from "./agentGraph/repoPolicy";
-import { DevcontainerBuild, SANDBOX_ROOT, ServiceContainer, Toolchain, commandText } from "./toolchain";
+import {
+  DevcontainerBuild,
+  SANDBOX_ROOT,
+  ServiceContainer,
+  TestCoverage,
+  Toolchain,
+  commandText,
+  describeTestCoverage,
+} from "./toolchain";
 
 const exec = promisify(execFile);
 const safeId = (id: string) => {
@@ -878,6 +886,10 @@ export const describeVerification = (verification: unknown) => {
         : "No check passed.",
     ...(failing ? [failing] : []),
   ];
+  const { testCoverage: coverage } = (verification ?? {}) as { testCoverage?: TestCoverage };
+  // Unverified already says nothing was run.
+  const coverageNote = checksRun ?? ran.length ? describeTestCoverage(coverage) : "";
+  if (coverageNote) lines.push(coverageNote);
   if (unavailable.length) lines.push(`Not available in this repository: ${unavailable.join(", ")}.`);
   const { environmentProposal: proposal } = (verification ?? {}) as {
     environmentProposal?: { repositoryId: string; hash: string; checks: Record<string, string[]> };

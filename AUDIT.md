@@ -302,14 +302,20 @@ Fixed before Phase 0 of `docs/plans/AGENTIC_ROADMAP.md`, because each would skew
 - [ ] A worker checks it still holds the lease (heartbeat result) before each graph node and before Docker steps that create or remove the execution's containers and images, and stops if it lost it.
 - [ ] Test: a run whose lease was taken over stops without touching the new owner's containers.
 
-### - [ ] M16 — Parallel setups still lose their snapshot after M14
-**Status:** FIX WRITTEN, not yet confirmed live · **Found:** 2026-11-11
+### - [ ] M16 — Setups still lose their snapshot after M14
+**Status:** REOPENED 2026-11-12: also happens with a single run, cause not found · **Found:** 2026-11-11
 **Where:** `src/services/workspaceService.ts` (`setupWorkspace`, `storeEnvironmentCache`, `removeEnvironmentSnapshot`, `buildEnvironmentImage`), `src/services/environmentSweep.ts`
 **Found:** reference stage 1 on `gpt-5.6-luna`, 2 runs in parallel (gson and go-zero, different repositories): gson's setup failed twice and go-zero's once with `No such image: agent-env-<id>:latest` right after a ~7-minute setup; the third consumer attempt got through. So M14's `rmi` by ID still races another run's `docker commit` on the containerd store, not only `image prune`.
 **Fix:**
 - [x] `withImageLock` runs every image change in the process (commit with the cache tag and cleanup after it, snapshot and build-image removal, the sweep's `rmi`) one at a time. Test: queued work runs in order, and a failed item doesn't block the next.
 - [ ] Confirm live: reference runs 2 at a time with no `No such image` failure.
 - [ ] Several worker processes on one Docker need a host-wide lock (Phase 8).
+
+**Reopened 2026-11-12:** a single reference run (gson, feature ticket, production at 3d20ad5 with the lock) failed all 3 consumer attempts with `No such image: agent-env-<id>:latest` right after setup's `docker commit` (execution `bf2a44e2`, report `docs/testing/reference-2026-11-12.md`). No other run was going, so the lock can't be what's missing here.
+- Ruled out: `storeEnvironmentCache`'s cleanup deleting the new snapshot (reproduced its steps on a small image; the snapshot stays, the dangling filter finds nothing). Docker on that machine reports the `overlayfs` (containerd) store.
+- Suspected, not proven: Docker under memory pressure. The laptop had 0.6 GB of 15.7 GB free, WSL stopped responding twice, and a test `docker commit` of the gson environment ran over 5 minutes. Stage 1's gson run, with the same environment and more free memory, got through on its third attempt.
+- [ ] Find the cause: rerun with enough free memory (or on a larger machine) and record `docker events` for the image from commit to the failing `docker run`. If the image is created and then deleted, find which call deletes it; if it is never created, check whether `docker commit` returns success without writing it.
+- [ ] Whatever the cause, a snapshot that is missing right after setup should fail the attempt with a clear message instead of a bare `No such image`, and retrying should not repeat a long setup that will fail the same way.
 
 ---
 

@@ -28,14 +28,11 @@
     },
     "environment": {
       "toolchain": {
-        "env": {
-          "JAVA_HOME": "/usr/lib/jvm/java-11-openjdk-amd64",
-          "DEBIAN_FRONTEND": "noninteractive"
-        },
+        "image": "maven:3.9.9-eclipse-temurin-11@sha256:8d3b35643e52d707b16a3e9b52698be1b75c2b45beb5d0e37d35e881f0a18ced",
         "setup": [
           "sh",
           "-c",
-          "apt-get update -qq && apt-get install -y -qq openjdk-11-jdk-headless && mvn -B -q -f gson install -Dmaven.test.failure.ignore=true"
+          "mvn -B -q -f gson install -Dmaven.test.failure.ignore=true"
         ],
         "checks": {
           "test": [

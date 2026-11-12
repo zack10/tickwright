@@ -505,6 +505,8 @@ Known limits of the design: budgets are checked before each call, so a started c
 
 **Goal:** the agent handles the work teams actually ticket, not only bug fixes. Covers limitations 8, 9 and 19 (writing missing tests).
 
+**First look (2026-11-12, one run, not a measurement):** a small feature ticket on gson (`tests/e2e/reference-projects/tickets/java__gson-1555.feature.md`: add `isEmpty()` to `JsonArray` and `JsonObject`) on `gpt-5.6-luna` with today's bug-fix prompts. The plan treated it as a feature (its examples still read "now no `isEmpty()`; after the change true"). The run took 1 attempt, 15 calls, $0.016 and 4 minutes. It added both methods and a test file for each, and a hidden test written by hand (including null elements and members) passes with all of gson's existing tests. A reviewer would object to two things: an invented `Copyright (C) 2024 Google Inc.` header with the licence cut short in the new test files, and new test files where the ticket asked for tests next to the existing ones. The reference eval grades the project's original bug, so it reported this run as a wrong fix; a feature scenario needs its own hidden tests, as this phase's benchmark task says.
+
 ### Tasks
 
 - [ ] Task types: bug fix, feature, refactor, dependency upgrade, migration, test/documentation work; detected from the ticket or set by a label, recorded on the execution

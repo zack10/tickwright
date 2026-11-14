@@ -559,7 +559,7 @@ const noteReproduction = (ctx: ToolContext, result: SandboxResult, command?: str
     return "\n[A run that times out shows nothing about the ticket: your test probably hangs, for example on a server, connection or timer it leaves open. Make the test finish, then run it again.]";
   ctx.reproduction.shown = true;
   if (command) ctx.reproduction.command = command;
-  return `\n[The failing test shows the problem; you can now change the code. Make sure it fails for the reason the ticket describes, then fix the wrong value where it comes from, not only in the code your test calls.${command ? " This command is run again to verify your change, so it must exit 0 once the change is right." : ""}]`;
+  return `\n[The failing test shows the problem; you can now change the code. Make sure it fails for the reason the ticket describes, then fix the wrong value where it comes from, not only in the code your test calls.${command ? " This command is run again, on its own in a new container, to verify your change: it must exit 0 once the change is right, and build whatever it needs itself." : ""}]`;
 };
 
 /**
@@ -579,7 +579,7 @@ const unconfirmedTest = (ctx: ToolContext) => {
     return "";
   }
   state.asked = true;
-  return `Not finished: the command that runs your new test has not passed since your change, and it is run again to verify the change:\n${state.command.slice(0, 500)}\nRun it again and see it pass. If that command cannot pass on a correct change (it does not build or run the test the way the project does, the shell rejects it, or it exits non-zero when the test behaves as expected), run your test with one command that exits 0 only when the test passes, through the project's own build and test commands where it has them. The last command you run before calling finish again must be that command and must pass: it is the one verification runs. If the change cannot be made to pass, call finish with status blocked.`;
+  return `Not finished: the command that runs your new test has not passed since your change, and it is run again to verify the change:\n${state.command.slice(0, 500)}\nRun it again and see it pass. If that command cannot pass on a correct change (it does not build or run the test the way the project does, the shell rejects it, or it exits non-zero when the test behaves as expected), run your test with one command that exits 0 only when the test passes, through the project's own build and test commands where it has them. The last command you run before calling finish again must be that command and must pass: it is the one verification runs. Verification runs it on its own in a new container, after the project's checks: only the repository's files are still there, so anything your earlier commands left elsewhere (for example a program built in /tmp) is gone. The command must build what it needs itself. If the change cannot be made to pass, call finish with status blocked.`;
 };
 
 const runCheck = async (ctx: ToolContext, args: z.infer<typeof ARGS.run_check>) => {

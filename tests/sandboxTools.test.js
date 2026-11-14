@@ -407,13 +407,15 @@ test("finish waits until the agent's test command has passed; a command that can
   ctx.runCommand = async (command) => ({ exitCode: command === "broken" ? 1 : 0, timedOut: false, output: "" });
   const done = { status: "done", summary: "s" };
   await run(ctx, "edit_file", { path: "tests/add.test.js", oldText: "", newText: "x\n" });
-  assert.match((await run(ctx, "run_command", { command: "broken" })).output, /run again to verify your change/);
+  assert.match((await run(ctx, "run_command", { command: "broken" })).output, /run again, on its own in a new container/);
   await run(ctx, "run_command", { command: "ls" });
 
   const refused = await run(ctx, "finish", done);
   assert.equal(refused.status, "FAILED");
   assert.equal(refused.finish, undefined, "the loop goes on");
   assert.match(refused.output, /has not passed since your change[\s\S]*broken/);
+  // catch2-2723: the replacement ran a program an earlier command had built in /tmp, gone in verification.
+  assert.match(refused.output, /must build what it needs itself/);
   // A passing command from before the refusal is not taken: the agent did not know yet.
   await run(ctx, "run_command", { command: "broken" });
   assert.equal((await run(ctx, "finish", done)).status, "FAILED", "the last command must pass");

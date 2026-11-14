@@ -4,7 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { PLAN_TOOLS, REVIEW_TOOLS, SANDBOX_TOOLS, agentTestCheck, executeTool } = require("../dist/services/sandbox/tools");
+const { PLAN_TOOLS, REVIEW_TOOLS, SANDBOX_TOOLS, agentTestCheck, describeReproduction, executeTool } = require("../dist/services/sandbox/tools");
 const { runPlanner } = require("../dist/services/agentGraph/planner");
 const { json, runRecordedTool } = require("../dist/services/sandbox/toolRunner");
 const { fsRepoFiles, isTestFile, resolveToolchain } = require("../dist/services/toolchain");
@@ -399,6 +399,41 @@ test("the command whose failure showed the problem becomes a check verification 
   await run(ctx, "run_command", { command: "exit 4" });
   assert.equal(ctx.reproduction.command, "exit 3");
   assert.equal(agentTestCheck({}), undefined);
+});
+
+test("finish waits until the agent's test command has passed; a command that cannot pass is replaced (limitation 34)", async (t) => {
+  const { ctx } = workspace(t, { reproduction: { shown: false, newTest: false } });
+  // "broken" never passes (built outside the project's build); the others do.
+  ctx.runCommand = async (command) => ({ exitCode: command === "broken" ? 1 : 0, timedOut: false, output: "" });
+  const done = { status: "done", summary: "s" };
+  await run(ctx, "edit_file", { path: "tests/add.test.js", oldText: "", newText: "x\n" });
+  assert.match((await run(ctx, "run_command", { command: "broken" })).output, /run again to verify your change/);
+  await run(ctx, "run_command", { command: "ls" });
+
+  const refused = await run(ctx, "finish", done);
+  assert.equal(refused.status, "FAILED");
+  assert.equal(refused.finish, undefined, "the loop goes on");
+  assert.match(refused.output, /has not passed since your change[\s\S]*broken/);
+  // A passing command from before the refusal is not taken: the agent did not know yet.
+  await run(ctx, "run_command", { command: "broken" });
+  assert.equal((await run(ctx, "finish", done)).status, "FAILED", "the last command must pass");
+  assert.equal((await run(ctx, "finish", { status: "blocked", summary: "s" })).finish.status, "blocked", "blocked is never refused");
+
+  await run(ctx, "run_command", { command: "project test runner" });
+  assert.equal((await run(ctx, "finish", done)).finish.status, "done");
+  assert.equal(agentTestCheck(ctx.reproduction).command[2], "project test runner");
+  assert.match(describeReproduction(ctx.reproduction, true), /never passed afterwards \(broken\).*\(project test runner\)/);
+
+  // The usual case: the same command passes after the fix, and nothing is replaced.
+  const usual = workspace(t, { reproduction: { shown: false, newTest: false } }).ctx;
+  let fixed = false;
+  usual.runCommand = async () => ({ exitCode: fixed ? 0 : 1, timedOut: false, output: "" });
+  await run(usual, "edit_file", { path: "tests/add.test.js", oldText: "", newText: "x\n" });
+  await run(usual, "run_command", { command: "t" });
+  fixed = true;
+  await run(usual, "run_command", { command: "t" });
+  assert.equal((await run(usual, "finish", done)).finish.status, "done");
+  assert.equal(describeReproduction(usual.reproduction, true), "A new test failed before the code changed.");
 });
 
 test("the planner reads a long file to its end, then submits one plan; it cannot edit", async (t) => {

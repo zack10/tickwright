@@ -60,8 +60,16 @@ export interface Reproduction {
   newTest: boolean;
   /** The agent's reason for not showing the problem with a test. */
   skipped?: string;
-  /** The run_command command whose failure showed the problem; verification runs it again. */
+  /** The run_command command that runs the agent's test; verification runs it again. */
   command?: string;
+  /** `command` passed the last time the agent ran it; finish(done) waits for this. */
+  confirmed?: boolean;
+  /** finish was refused once, so the agent knows its last passing command is taken instead. */
+  asked?: boolean;
+  /** The latest run_command, when it passed. */
+  lastPassed?: string;
+  /** The command that showed the problem, when it never passed and another took its place. */
+  replaced?: string;
 }
 
 /**
@@ -82,7 +90,9 @@ export const agentTestCheck = (reproduction: Pick<Reproduction, "command">) =>
 export const describeReproduction = (reproduction: Reproduction, codeChanged: boolean) =>
   reproduction.skipped
     ? `Skipped by the agent: ${reproduction.skipped}`
-    : reproduction.shown
+    : reproduction.replaced
+      ? `A new test failed before the code changed, but the command that showed it never passed afterwards (${reproduction.replaced.slice(0, 200)}). The agent confirmed its change with another command, which verification ran again (${(reproduction.command ?? "").slice(0, 200)}). Check that this command really runs the new test.`
+      : reproduction.shown
       ? "A new test failed before the code changed."
       : codeChanged
         ? "Not shown: code outside test files changed without a new test failing first."
@@ -549,7 +559,27 @@ const noteReproduction = (ctx: ToolContext, result: SandboxResult, command?: str
     return "\n[A run that times out shows nothing about the ticket: your test probably hangs, for example on a server, connection or timer it leaves open. Make the test finish, then run it again.]";
   ctx.reproduction.shown = true;
   if (command) ctx.reproduction.command = command;
-  return "\n[The failing test shows the problem; you can now change the code. Make sure it fails for the reason the ticket describes, then fix the wrong value where it comes from, not only in the code your test calls.]";
+  return `\n[The failing test shows the problem; you can now change the code. Make sure it fails for the reason the ticket describes, then fix the wrong value where it comes from, not only in the code your test calls.${command ? " This command is run again to verify your change, so it must exit 0 once the change is right." : ""}]`;
+};
+
+/**
+ * The agent's test command is replayed by verification, so finish(done) waits
+ * until the agent has seen it pass. A command that can never pass (built
+ * outside the project's build, a shell error, a test meant to report failures:
+ * catch2-2723) blocked correct fixes; after one refusal the agent's last
+ * passing command takes its place, and the reviewer is told.
+ */
+const unconfirmedTest = (ctx: ToolContext) => {
+  const state = ctx.reproduction;
+  if (!state.command || state.confirmed) return "";
+  if (state.asked && state.lastPassed) {
+    state.replaced = state.command;
+    state.command = state.lastPassed;
+    state.confirmed = true;
+    return "";
+  }
+  state.asked = true;
+  return `Not finished: the command that runs your new test has not passed since your change, and it is run again to verify the change:\n${state.command.slice(0, 500)}\nRun it again and see it pass. If that command cannot pass on a correct change (it does not build or run the test the way the project does, the shell rejects it, or it exits non-zero when the test behaves as expected), run your test with one command that exits 0 only when the test passes, through the project's own build and test commands where it has them. The last command you run before calling finish again must be that command and must pass: it is the one verification runs. If the change cannot be made to pass, call finish with status blocked.`;
 };
 
 const runCheck = async (ctx: ToolContext, args: z.infer<typeof ARGS.run_check>) => {
@@ -582,6 +612,9 @@ const runCommand = async (ctx: ToolContext, args: z.infer<typeof ARGS.run_comman
   const timeoutMs = (args.timeoutSeconds ?? most) * 1000;
   const result = await ctx.runCommand(args.command, timeoutMs);
   const note = noteReproduction(ctx, result, args.command);
+  const passed = result.exitCode === 0 && !result.timedOut;
+  ctx.reproduction.lastPassed = passed ? args.command : undefined;
+  if (args.command === ctx.reproduction.command) ctx.reproduction.confirmed = passed;
   return completed(cap(ctx, `$ ${args.command}\n${verdict(result, timeoutMs)}\n${result.output.trim()}`, "ends") + note);
 };
 
@@ -632,6 +665,8 @@ export const executeTool = async (
       }
       default: {
         const args = parsed.data as z.infer<typeof ARGS.finish>;
+        const refusal = args.status === "done" ? unconfirmedTest(ctx) : "";
+        if (refusal) return failed(refusal);
         return { ...completed(`Finished (${args.status}).`), finish: args };
       }
     }

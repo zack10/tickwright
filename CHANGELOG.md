@@ -35,6 +35,7 @@ Prompt files keep their own versions (`src/prompts/execution/*.vN.md`).
 
 ### Fixed
 
+- A broken test command of the agent's own no longer blocks a correct change in verification. The agent cannot finish until the command that runs its new test has passed; if that command can never pass (built outside the project's build, a shell error, a test meant to report failures), the agent is told, runs the test another way, and that command is the one verification runs again. The reviewer is told when the command was replaced.
 - Two runs setting up at the same time no longer lose a freshly saved environment ("No such image: agent-env-…"), which cost a whole setup and could fail the run. Docker image changes (saving, tagging, removing) now happen one at a time within the app.
 
 ### Security

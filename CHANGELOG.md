@@ -35,6 +35,7 @@ Prompt files keep their own versions (`src/prompts/execution/*.vN.md`).
 
 ### Fixed
 
+- The agent can now add its test to a project that lists its tests in a file under the test folder (for example `tests/CMakeLists.txt`). An existing test file may gain lines; the lines it had cannot be changed or removed, and the file cannot be deleted. Before, any change to such a file was refused, so the new test was never built by the project's own checks.
 - A broken test command of the agent's own no longer blocks a correct change in verification. The agent cannot finish until the command that runs its new test has passed; if that command can never pass (built outside the project's build, a shell error, a test meant to report failures), the agent is told, runs the test another way, and that command is the one verification runs again. The agent is also told that the command runs on its own in a new container and must build what it needs itself. The reviewer is told when the command was replaced.
 - Two runs setting up at the same time no longer lose a freshly saved environment ("No such image: agent-env-…"), which cost a whole setup and could fail the run. Docker image changes (saving, tagging, removing) now happen one at a time within the app.
 

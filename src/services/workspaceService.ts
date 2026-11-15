@@ -750,6 +750,10 @@ export const changes = async (id: string): Promise<FileChange[]> => {
   return result;
 };
 
+/** A tracked file's content at the checked-out commit. */
+export const baseFileContent = async (id: string, file: string) =>
+  (await runDocker(id, [...SAFE_GIT_ARGS, "show", `HEAD:${file}`])).stdout;
+
 /** Files in the checked-out commit, whatever the index or working tree hold now. */
 export const trackedFiles = async (id: string) =>
   (await runDocker(id, [...SAFE_GIT_ARGS, "ls-tree", "-r", "-z", "--name-only", "HEAD"])).stdout

@@ -79,10 +79,32 @@ export const checkRepositoryPolicy = (
 export const checkExistingTests = (
   changes: Array<{ status: string; file: string }>,
   isTestFile: (file: string) => boolean,
+  addsOnly: (file: string) => boolean = () => false,
 ): string | undefined => {
-  const touched = changes.filter((change) => change.status !== "A" && isTestFile(change.file));
+  const touched = changes.filter(
+    (change) => change.status !== "A" && isTestFile(change.file) && !(change.status === "M" && addsOnly(change.file)),
+  );
   if (!touched.length) return undefined;
   const describe = (change: { status: string; file: string }) =>
     `${change.file} (${change.status === "D" ? "deleted" : "modified"})`;
-  return `Repository policy rejected the change. Existing test files must not be changed or deleted: ${touched.map(describe).join(", ")}. Restore them and add new test files instead.`;
+  return `Repository policy rejected the change. Existing test files may gain lines, but the lines they have must not be changed or removed, and the files must not be deleted: ${touched.map(describe).join(", ")}. Restore those lines and put new tests in new lines or new files.`;
+};
+
+/**
+ * True when `next` keeps every line of `base`, in order: lines were only
+ * added. A project that lists its tests in a file under the test folder
+ * (catch2's tests/CMakeLists.txt) needs a line added there for a new test to
+ * be built at all; adding lines cannot change what an existing test checks
+ * the way editing or removing them can.
+ */
+export const onlyAddsLines = (base: string, next: string) => {
+  const kept = base.split(/\r?\n/);
+  if (kept[kept.length - 1] === "") kept.pop();
+  const lines = next.split(/\r?\n/);
+  let from = 0;
+  for (const line of kept) {
+    from = lines.indexOf(line, from) + 1;
+    if (!from) return false;
+  }
+  return true;
 };

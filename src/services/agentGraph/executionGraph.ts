@@ -34,8 +34,10 @@ import {
   runRecordedTool,
 } from "../sandbox/toolRunner";
 import {
+  baseFileContent,
   changedFiles,
   changes,
+  runDocker,
   cloneGithubWorkspace,
   gitDiff,
   ProgressReporter,
@@ -78,7 +80,7 @@ import { ensureDiskSpace } from "../environmentSweep";
 import { fileActionsError } from "./outputFormat";
 import { RepoContext, collectRepoContext } from "./repoContext";
 import { describeApprovedPlan } from "./planning";
-import { RepositoryPolicy, checkExistingTests, checkRepositoryPolicy } from "./repoPolicy";
+import { RepositoryPolicy, checkExistingTests, checkRepositoryPolicy, onlyAddsLines } from "./repoPolicy";
 
 const MAX_ATTEMPTS = 3;
 const DEFAULT_ATTEMPT_SHARE = 0.5;
@@ -779,12 +781,19 @@ const enforceRepositoryPolicy = async (
   const toolchain = requireToolchain(state);
   const diff = await changes(state.executionId);
   const files = diff.map((change) => change.file);
+  // An existing test file may gain lines (a new test added to the project's list); nothing else.
+  const extended = new Set<string>();
+  for (const change of diff)
+    if (change.status === "M" && isTestFile(toolchain, change.file)) {
+      const now = (await runDocker(state.executionId, ["cat", "--", change.file])).stdout;
+      if (onlyAddsLines(await baseFileContent(state.executionId, change.file), now)) extended.add(change.file);
+    }
   const violation =
     checkRepositoryPolicy(
       files,
       execution.repository.executionPolicy as RepositoryPolicy | null,
       toolchain.protectedPaths,
-    ) ?? checkExistingTests(diff, (file) => isTestFile(toolchain, file));
+    ) ?? checkExistingTests(diff, (file) => isTestFile(toolchain, file), (file) => extended.has(file));
 
   if (violation) {
     if (!state.attemptId) throw new Error("Execution graph is missing attempt");

@@ -66,6 +66,7 @@ src/
   utils/                    crypto, safePath, safeError (describeError, NonRetryableError), codeWriter, llmUtils, agentConfig
 prisma/                     schema.prisma and committed migrations
 scripts/copy-prompts.js     copies prompts into dist/ at build time
+scripts/trace.js            npm run trace: one execution's steps, tool calls and edits, read from the database
 tests/
   *.test.js                 unit tests, CommonJS, node:test, run against dist/
   e2e/                      suites and evals that call a RUNNING server
@@ -118,6 +119,7 @@ npm run eval:coding -- --runs 3 --parallel 4            # the "x3" benchmark: pa
 npm run eval:coding -- --scenario node/07-large-file-shipping --runs 10
 npm run eval:reference -- cpp/catch2-2723 --runs 10     # one real project: paid
 npm run eval:reviewer           # reviewer alone on stored diffs (--model X to compare)
+npm run trace -- <execution id> [--follow]   # free: every step, model reply, tool call, command and edit of one execution, from the production database (no id: executions in progress)
 ```
 
 Facts about testing that are easy to get wrong:

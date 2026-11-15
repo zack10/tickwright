@@ -14,6 +14,7 @@ const {
 } = require("../dist/services/agentGraph/repoContext");
 const {
   checkExistingTests,
+  onlyAddsLines,
   checkRepositoryPolicy,
 } = require("../dist/services/agentGraph/repoPolicy");
 const {
@@ -148,7 +149,7 @@ test("implement replies without usable FILE blocks are rejected with a specific 
   assert.equal(check(good), undefined);
 });
 
-test("existing tests may not be modified or deleted by any means; new tests may be added", () => {
+test("existing tests may not be modified or deleted by any means; new tests and added lines are allowed", () => {
   const isTest = (file) => file.startsWith("tests/");
   assert.equal(
     checkExistingTests(
@@ -170,5 +171,19 @@ test("existing tests may not be modified or deleted by any means; new tests may 
     isTest,
   );
   assert.match(violation, /tests\/test_a\.py \(modified\), tests\/test_b\.py \(deleted\), tests\/test_c\.py \(modified\)/);
-  assert.match(violation, /add new test files instead/);
+
+  // Limitation 36 (catch2): the project's list of tests is a file under tests/; a line added there is allowed.
+  const list = { status: "M", file: "tests/CMakeLists.txt" };
+  assert.equal(checkExistingTests([list], isTest, (file) => file === "tests/CMakeLists.txt"), undefined);
+  const deleted = checkExistingTests([list, { status: "D", file: "tests/test_b.py" }], isTest, () => true);
+  assert.match(deleted, /deleted: tests\/test_b\.py \(deleted\)\./, "a deleted file never counts as lines added");
+
+  const base = "set(TESTS\r\n  a.cpp\r\n  b.cpp\r\n)\r\n";
+  assert.equal(onlyAddsLines(base, "set(TESTS\n  a.cpp\n  new.cpp\n  b.cpp\n)\n# more\n"), true, "line endings do not matter");
+  assert.equal(onlyAddsLines(base, "set(TESTS\n  a.cpp\n)\n"), false, "a removed line");
+  assert.equal(onlyAddsLines(base, "set(TESTS\n  a.cpp\n  b.cpp new.cpp\n)\n"), false, "a changed line");
+  assert.equal(onlyAddsLines(base, "set(TESTS\n  b.cpp\n  a.cpp\n)\n"), false, "reordered lines");
+  assert.equal(onlyAddsLines("a\na\n", "a\nb\n"), false, "a repeated line must be kept as often");
+  assert.equal(onlyAddsLines("", "anything\n"), true);
+  assert.match(violation, /put new tests in new lines or new files/);
 });

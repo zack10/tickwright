@@ -4,7 +4,7 @@ import { RepositoryPolicy } from "../agentGraph/repoPolicy";
 import { ToolCall, ToolDefinition } from "../llm/types";
 import { Toolchain, isTestFile, selectChecks } from "../toolchain";
 import { testSecretsOf } from "../setupSecrets";
-import { changedFiles, execInSandbox, keepOutputOutOfDiffs, trackedFiles, workspacePath } from "../workspaceService";
+import { baseFileContent, changedFiles, execInSandbox, keepOutputOutOfDiffs, trackedFiles, workspacePath } from "../workspaceService";
 import { CHECK_TIMEOUT_MS, ToolContext, ToolOutcome, ToolStatus, executeTool } from "./tools";
 
 // Stored output is capped; the full output already went to the model.
@@ -107,6 +107,7 @@ export const executionToolContext = async (
     runCommand: (command, timeoutMs) => execInSandbox(executionId, ["sh", "-c", command], timeoutMs, secrets),
     isTestFile: (file) => isTestFile(toolchain, file),
     isBaseFile: (file) => baseFiles.has(file),
+    baseContent: (file) => baseFileContent(executionId, file),
     reproduction: { shown: newTest, newTest },
     limits: {
       maxOutputChars: policy?.maxToolOutputChars,

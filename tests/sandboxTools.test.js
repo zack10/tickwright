@@ -136,6 +136,16 @@ test("protected paths and existing tests are denied; new test files are allowed"
   assert.equal(existing.status, "DENIED");
   assert.match(existing.output, /existing test file/);
   assert.equal(fs.readFileSync(path.join(root, "tests/math.test.js"), "utf8"), "// existing test\n");
+  // Limitation 36: lines may be added (a new test in the project's list of tests), measured against the base commit.
+  ctx.baseContent = async () => "// existing test\n";
+  const added = await run(ctx, "edit_file", { path: "tests/math.test.js", oldText: "// existing test", newText: "// existing test\n// added" });
+  assert.equal(added.status, "COMPLETED");
+  const fixed = await run(ctx, "edit_file", { path: "tests/math.test.js", oldText: "// added", newText: "// added, corrected" });
+  assert.equal(fixed.status, "COMPLETED", "the agent may still change lines it added itself");
+  const changed = await run(ctx, "edit_file", { path: "tests/math.test.js", oldText: "// existing test", newText: "// weakened" });
+  assert.equal(changed.status, "DENIED");
+  assert.match(changed.output, /lines it had before your change cannot be changed or removed/);
+  assert.equal(fs.readFileSync(path.join(root, "tests/math.test.js"), "utf8"), "// existing test\n// added, corrected\n");
 
   const created = await run(ctx, "edit_file", { path: "tests/add.regression.test.js", oldText: "", newText: "// new\n" });
   assert.equal(created.status, "COMPLETED");

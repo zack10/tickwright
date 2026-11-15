@@ -1,5 +1,4 @@
-import { Prisma } from "@prisma/client";
-import prisma from "../../db";
+import prisma, { json } from "../../db";
 import { RepositoryPolicy } from "../agentGraph/repoPolicy";
 import { ToolCall, ToolDefinition } from "../llm/types";
 import { Toolchain, isTestFile, selectChecks } from "../toolchain";
@@ -25,11 +24,7 @@ export interface ToolCallRecorder {
   ): Promise<void>;
 }
 
-/** Postgres jsonb rejects \u0000, which model arguments and tool output can contain. */
-export const json = (value: unknown) =>
-  JSON.parse(
-    JSON.stringify(value, (_key, item) => (typeof item === "string" ? item.replaceAll("\u0000", "\uFFFD") : item)),
-  ) as Prisma.InputJsonValue;
+export { json };
 
 export const prismaToolCallRecorder = (attemptId: string): ToolCallRecorder => ({
   async create({ name, input, policy }) {

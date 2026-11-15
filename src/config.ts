@@ -124,6 +124,9 @@ export const config = {
     process.env.LLM_DAILY_TOKEN_LIMIT,
     2_000_000,
   ),
+  // Days each model call's request and reply are kept (LlmCall); 0 records none.
+  // About 1.3 MB per execution on average in production (2026-11-15).
+  llmCallRetentionDays: parseNonNegativeInt(process.env.LLM_CALL_RETENTION_DAYS, 7),
   // Budget given to each new execution (stored on it, so changing these
   // affects only executions created afterwards).
   executionMaxTokens: parsePositiveInt(process.env.EXECUTION_MAX_TOKENS, 200_000),

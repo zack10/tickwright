@@ -34,7 +34,15 @@ const query = (sql) =>
 
 const rows = (select) => `select row_to_json(x) from (${select}) x;`;
 
-const load = async (id, afterSequence) => {
+/** Model calls from LlmCall; none on a database whose migration has not run yet, so the rest still prints. */
+const loadCalls = (id, since) =>
+  query(rows(`select id, try, purpose, operation, "reasoningEffort", "systemInstructions", "inputMessages", "outputMessages", "errorType", error, "durationMs", "startedAt"
+    from "LlmCall" where "executionId" = '${id}' and "startedAt" >= '${since}' order by "startedAt", try`)).catch((error) => {
+    if (/relation "LlmCall" does not exist/.test(error.message)) return [];
+    throw error;
+  });
+
+const load = async (id, afterSequence, callsSince = "1970-01-01T00:00:00Z") => {
   const [execution] = await query(rows(`
     select e.id, e.status, e."createdAt", e."lastError", w.title, r.owner || '/' || r.name as repository
     from "Execution" e join "WorkItem" w on w.id = e."workItemId" join "Repository" r on r.id = e."repositoryId"
@@ -42,12 +50,13 @@ const load = async (id, afterSequence) => {
   if (!execution) throw new Error(`no execution ${id}`);
   // Through the plan: an attempt has no execution id, and time windows mix executions that run at once.
   const ofExecution = `join "PlanTask" pt on pt.id = a."planTaskId" join "Plan" p on p.id = pt."planId" where p."executionId" = '${id}'`;
-  const [events, toolCalls, attempts] = await Promise.all([
+  const [events, toolCalls, attempts, modelCalls] = await Promise.all([
     query(rows(`select sequence, type, payload, "createdAt" from "ExecutionEvent" where "executionId" = '${id}' and sequence > ${afterSequence} order by sequence`)),
     query(rows(`select t.id, t."attemptId", t.name, t.status, t.input, t.output from "ToolCall" t join "TaskAttempt" a on a.id = t."attemptId" ${ofExecution} order by t."createdAt", t.id`)),
     query(rows(`select a.id, a.number, a.status, a.error from "TaskAttempt" a ${ofExecution}`)),
+    loadCalls(id, callsSince),
   ]);
-  return { execution, events, toolCalls, attempts };
+  return { execution, events, toolCalls, attempts, modelCalls };
 };
 
 const indent = (text, prefix = "    ") => String(text ?? "").replace(/\r/g, "").split("\n").map((line) => prefix + line).join("\n");
@@ -98,7 +107,35 @@ const FORMAT = {
 };
 
 /** State kept across calls of render, so --follow prints each step once. */
-const createTrace = () => ({ used: new Set(), announced: new Set() });
+const createTrace = () => ({ used: new Set(), announced: new Set(), printedCalls: new Set(), sent: new Map(), fullReply: false });
+
+const contentOf = (message) => (typeof message.content === "string" ? message.content : JSON.stringify(message.content));
+
+/**
+ * One model call: what was new in its request, then its reply in full or its
+ * error. Tool results are left out of the request: the tool calls print them.
+ * Each request repeats the conversation, so only messages past the previous
+ * call of the same purpose are new; after compaction shortened it, the last one.
+ */
+const renderModelCall = (trace, call) => {
+  const messages = Array.isArray(call.inputMessages) ? call.inputMessages : [];
+  const before = trace.sent.get(call.purpose);
+  const lines = [`  ⇢ model call ${call.purpose}${call.try > 1 ? `, try ${call.try}` : ""}${call.reasoningEffort ? `, effort ${call.reasoningEffort}` : ""}, ${call.durationMs} ms`];
+  if (before === undefined && call.systemInstructions) lines.push(indent(call.systemInstructions, "    system │ "));
+  const fresh = before === undefined ? messages : before <= messages.length ? messages.slice(before) : messages.slice(-1);
+  for (const message of fresh)
+    if (message.role !== "tool" && message.role !== "assistant") lines.push(indent(contentOf(message), `    ${message.role} │ `));
+  trace.sent.set(call.purpose, messages.length);
+  const [reply] = Array.isArray(call.outputMessages) ? call.outputMessages : [];
+  if (call.error) lines.push(`  ⇠ FAILED (${call.errorType}): ${call.error}`);
+  else if (reply) {
+    const named = (reply.toolCalls ?? []).map((toolCall) => toolCall.name);
+    lines.push(`  ⇠ reply${reply.finishReason ? ` (${reply.finishReason})` : ""}${named.length ? `, calls ${named.join(", ")}` : ""}`);
+    if (reply.content) lines.push(indent(reply.content, "  │ "));
+  }
+  trace.fullReply = !call.error && Boolean(reply);
+  return lines.join("\n");
+};
 
 /**
  * Turns events (in sequence order) and the execution's tool calls into text.
@@ -106,8 +143,16 @@ const createTrace = () => ({ used: new Set(), announced: new Set() });
  * reply first and then its calls, matched in order within the attempt; a
  * call whose name does not line up falls back to the event's preview.
  */
-const render = (trace, { events, toolCalls, attempts = [] }) => {
+const render = (trace, { events, toolCalls, attempts = [], modelCalls = [] }) => {
   const out = [];
+  // A model call comes before the event that reports it: print the calls that started before each event.
+  const callsUntil = (at) => {
+    for (const call of modelCalls) {
+      if (trace.printedCalls.has(call.id) || (at && new Date(call.startedAt) > new Date(at))) continue;
+      trace.printedCalls.add(call.id);
+      out.push(renderModelCall(trace, call));
+    }
+  };
   const attemptNumber = new Map(attempts.map((a) => [a.id, a.number]));
   const nextCall = (attemptId, name) => {
     const row = toolCalls.find((call) => call.attemptId === attemptId && !trace.used.has(call.id));
@@ -116,13 +161,15 @@ const render = (trace, { events, toolCalls, attempts = [] }) => {
     return row;
   };
   for (const { type, payload: p, createdAt } of events) {
+    callsUntil(createdAt);
     const at = `[${time(createdAt)}]`;
     if (type === "GRAPH_ATTEMPT_STARTED") {
       out.push(`\n${at} ===== attempt ${p.attemptNumber} started (prompts: ${JSON.stringify(p.promptVersions ?? {})})`);
     } else if (type === "PLAN_STEP" || type === "GRAPH_AGENT_STEP" || type === "GRAPH_REVIEW_STEP") {
       const who = type === "PLAN_STEP" ? "planner" : type === "GRAPH_REVIEW_STEP" ? "reviewer" : `agent, attempt ${p.attemptNumber ?? attemptNumber.get(p.attemptId) ?? "?"}`;
       out.push(`\n${at} --- ${who}, step ${p.step}${tokens(p.usage)}`);
-      if (p.text) out.push(indent(p.text, "  │ ") + (p.text.length >= 2000 ? "\n  │ [reply cut at 2,000 characters in the stored event]" : ""));
+      // The recorded call already printed the reply uncut.
+      if (p.text && !trace.fullReply) out.push(indent(p.text, "  │ ") + (p.text.length >= 2000 ? "\n  │ [reply cut at 2,000 characters in the stored event]" : ""));
       for (const preview of p.toolCalls ?? []) {
         const row = p.attemptId ? nextCall(p.attemptId, preview.name) : undefined;
         out.push(renderCall(row ?? preview, Boolean(row)));
@@ -136,7 +183,10 @@ const render = (trace, { events, toolCalls, attempts = [] }) => {
     } else {
       out.push(`${at} ${FORMAT[type] ? FORMAT[type](p) : `${type} ${JSON.stringify(p)}`}`);
     }
+    // A reply printed in full covers the next event only; it may have printed in the previous --follow poll.
+    trace.fullReply = false;
   }
+  callsUntil();
   // Calls still running have no step event yet; say so once.
   for (const call of toolCalls) {
     if (call.status !== "REQUESTED" || trace.used.has(call.id) || trace.announced.has(call.id)) continue;
@@ -162,9 +212,10 @@ const main = async () => {
   if (!UUID.test(id)) throw new Error(`not an execution id: ${id}`);
   const trace = createTrace();
   let after = 0;
+  let callsSince = "1970-01-01T00:00:00Z";
   let header = false;
   for (;;) {
-    const data = await load(id, after);
+    const data = await load(id, after, callsSince);
     if (!header) {
       console.log(`Execution ${id}\nTicket: ${data.execution.title}\nRepository: ${data.execution.repository}`);
       header = true;
@@ -172,6 +223,8 @@ const main = async () => {
     const text = render(trace, data);
     if (text) console.log(text);
     after = data.events.at(-1)?.sequence ?? after;
+    // ">=" in the query, and render skips calls it printed, so a call in the same millisecond is not lost.
+    callsSince = data.modelCalls.at(-1)?.startedAt ?? callsSince;
     if (!follow || ENDED.has(data.execution.status)) {
       console.log(`\nStatus: ${data.execution.status}${data.execution.lastError ? `\n${indent(data.execution.lastError)}` : ""}`);
       return;

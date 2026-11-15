@@ -52,3 +52,32 @@ test("a call still running is announced once, and a step already printed is not 
   assert.match(render(trace, { events: finished, toolCalls: [done] }), /\$ make\n {4}built/);
   assert.equal(render(trace, { events: [], toolCalls: [done] }), "", "later polls with no new events print nothing");
 });
+
+test("a recorded model call prints the new part of its request and its reply uncut, before the step that reports it", () => {
+  const long = "x".repeat(2500);
+  const call = (id, startedAt, inputMessages, reply, extra = {}) => ({
+    id, try: 1, purpose: "agent.v2", operation: "chat", systemInstructions: "You work in a checked-out repository.",
+    inputMessages, outputMessages: reply && [{ role: "assistant", content: reply, toolCalls: [{ name: "read_file" }], finishReason: "tool_use" }],
+    durationMs: 812, startedAt, ...extra,
+  });
+  const first = [{ role: "user", content: "Fix the ticket." }];
+  const second = [...first, { role: "assistant", content: "" }, { role: "tool", content: "file body" }, { role: "user", content: "Two steps left." }];
+  const modelCalls = [
+    call("c1", "2026-11-15T01:40:10.000", first, long),
+    call("c2", "2026-11-15T01:40:11.000", second, null, { error: "HTTP 500: overloaded", errorType: "500" }),
+  ];
+  const events = [step("GRAPH_AGENT_STEP", { attemptId: "a1", step: 1, text: long.slice(0, 2000), toolCalls: [] })];
+  events[0].createdAt = "2026-11-15T01:40:10.500";
+  const text = render(createTrace(), { events, toolCalls: [], modelCalls });
+
+  assert.ok(text.indexOf("⇢ model call agent.v2, 812 ms") < text.indexOf("--- agent"), "the call prints before its step");
+  assert.match(text, /system │ You work in a checked-out repository\./);
+  assert.match(text, /user │ Fix the ticket\./);
+  assert.ok(text.includes(long), "the reply is printed uncut");
+  assert.doesNotMatch(text, /reply cut at 2,000/, "the step's cut copy is not printed again");
+  assert.equal(text.match(/system │/g).length, 1, "the system prompt prints once per purpose");
+  assert.equal(text.match(/Fix the ticket/g).length, 1, "a later call shows only its new messages");
+  assert.match(text, /user │ Two steps left\./);
+  assert.doesNotMatch(text, /file body/, "tool results are shown by the tool calls, not repeated");
+  assert.match(text, /⇠ FAILED \(500\): HTTP 500: overloaded/);
+});

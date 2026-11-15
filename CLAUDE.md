@@ -59,14 +59,14 @@ src/
       index.ts              resolves a repository's environment and checks; test-file patterns
       discovery.ts          a model proposes an environment, it is proven, a person approves it once
       devcontainer.ts, compose.ts   read the project's own environment definition
-    llm/                    LLMService, provider registry (LLM_PROVIDERS profiles), retry, usage ledger
+    llm/                    LLMService, provider registry (LLM_PROVIDERS profiles), retry, usage ledger and the record of every call's request and reply (LlmCall)
       providers/            AnthropicProvider, GeminiProvider, OpenAICompatibleProvider
     connectors/, mcpService.ts   allowlisted HTTP connector; not a full MCP transport
     agentRunner.ts, taskQueueService.ts, promptBuilder.ts, projectService.ts   the task pipeline
   utils/                    crypto, safePath, safeError (describeError, NonRetryableError), codeWriter, llmUtils, agentConfig
 prisma/                     schema.prisma and committed migrations
 scripts/copy-prompts.js     copies prompts into dist/ at build time
-scripts/trace.js            npm run trace: one execution's steps, tool calls and edits, read from the database
+scripts/trace.js            npm run trace: one execution's steps, model calls (LlmCall), tool calls and edits, read from the database
 tests/
   *.test.js                 unit tests, CommonJS, node:test, run against dist/
   e2e/                      suites and evals that call a RUNNING server

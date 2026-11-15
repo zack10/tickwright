@@ -390,6 +390,36 @@ model LlmUsage {
   @@index([executionId])
 }
 
+// One try of one model call: the request as sent (without credentials) and
+// the reply or error. Kept LLM_CALL_RETENTION_DAYS; LlmUsage, the cost ledger,
+// is kept for good. Column names are taken from the OpenTelemetry GenAI
+// conventions; the messages are the app's own provider-neutral shape.
+model LlmCall {
+  id                 String   @id @default(uuid())
+  // The call's LlmUsage row (written once a try succeeds); the same for every try of one call.
+  usageId            String
+  try                Int
+  operation          String
+  provider           String
+  model              String
+  purpose            String
+  executionId        String?
+  taskId             String?
+  reasoningEffort    String?
+  systemInstructions String?
+  inputMessages      Json
+  toolDefinitions    Json?
+  outputMessages     Json?
+  errorType          String?
+  error              String?
+  durationMs         Int
+  startedAt          DateTime
+  createdAt          DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([executionId, startedAt])
+}
+
 model ToolCall {
   id          String         @id @default(uuid())
   attempt     TaskAttempt    @relation(fields: [attemptId], references: [id], onDelete: Cascade)

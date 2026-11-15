@@ -116,7 +116,9 @@ export const config = {
   // single_shot: one implement call per attempt; tool_loop: the agent loop.
   executionAgentMode: parseAgentMode(process.env.EXECUTION_AGENT_MODE),
   // Model calls per attempt in tool_loop mode (an execution's budget.maxSteps wins).
-  agentMaxSteps: parsePositiveInt(process.env.AGENT_MAX_STEPS, 30),
+  // A safety net only: the token budget and the run's time are what end a run.
+  // At 60, catch2 attempts were cut off a few steps from done (2026-11-15).
+  agentMaxSteps: parsePositiveInt(process.env.AGENT_MAX_STEPS, 150),
   // Tokens all model calls together may use per UTC day; 0 switches it off.
   llmDailyTokenLimit: parseNonNegativeInt(
     process.env.LLM_DAILY_TOKEN_LIMIT,

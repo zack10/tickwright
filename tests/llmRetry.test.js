@@ -34,6 +34,7 @@ test("retry delay honours Retry-After, then Gemini RetryInfo, then backs off (ca
 
 test("withLLMRetry retries retryable failures up to the limit, then rethrows", async () => {
   const waits = [];
+  const lines = [];
   let calls = 0;
   const result = await withLLMRetry(
     async () => {
@@ -41,11 +42,14 @@ test("withLLMRetry retries retryable failures up to the limit, then rethrows", a
       if (calls < 3) throw httpError(429);
       return "ok";
     },
-    { retries: 3, wait: async (ms) => waits.push(ms) },
+    { retries: 3, wait: async (ms) => waits.push(ms), label: "LLM openai/x (plan)", log: (line) => lines.push(line) },
   );
   assert.equal(result, "ok");
   assert.equal(calls, 3);
   assert.deepEqual(waits, [10_000, 20_000]);
+  // Every retry leaves a line: which call, which try, how long it took, how long until the next.
+  assert.equal(lines.length, 2);
+  assert.match(lines[1], /^LLM openai\/x \(plan\): try 2 failed after \d+ ms, retrying in 20000 ms: /);
 
   calls = 0;
   await assert.rejects(

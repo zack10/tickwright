@@ -177,7 +177,7 @@ export const SANDBOX_TOOLS: ToolDefinition[] = [
       type: "object",
       properties: {
         query: { type: "string", description: "Text to look for" },
-        path: { type: "string", description: 'Directory to search; default "."' },
+        path: { type: "string", description: 'Directory or file to search; default "."' },
       },
       required: ["query"],
     },
@@ -491,11 +491,14 @@ const readFile = (ctx: ToolContext, args: z.infer<typeof ARGS.read_file>) => {
 const searchCode = (ctx: ToolContext, args: z.infer<typeof ARGS.search_code>) => {
   const target = checkPath(ctx, args.path || ".");
   if (typeof target === "string") return denied(target);
-  if (!fs.existsSync(target.fullPath) || !fs.statSync(target.fullPath).isDirectory())
-    return failed(`"${args.path}" is not a directory.`);
+  if (!fs.existsSync(target.fullPath)) return failed(`"${args.path}" does not exist.`);
+  // A file is searched on its own: refusing one cost 89 steps in one catch2 batch (2026-11-15).
+  const files = fs.statSync(target.fullPath).isFile()
+    ? [target.relativePath]
+    : walk(ctx, target.relativePath || ".", Number.MAX_SAFE_INTEGER).files;
   const query = args.query.toLowerCase();
   const matches: string[] = [];
-  for (const file of walk(ctx, target.relativePath || ".", Number.MAX_SAFE_INTEGER).files) {
+  for (const file of files) {
     const fullPath = path.join(ctx.root, file);
     if (fs.statSync(fullPath).size > MAX_SEARCH_FILE_BYTES) continue;
     const buffer = fs.readFileSync(fullPath);

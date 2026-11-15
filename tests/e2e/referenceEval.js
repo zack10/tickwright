@@ -144,7 +144,8 @@ const pushProject = async (files, message, repo) => {
 
 /**
  * Grades a diff as the benchmark does: in its image, without network, the
- * diff and then the instance's test patch applied, the tests run, and every
+ * diff and then the instance's test patch applied (over the base version of
+ * the files that patch changes), the tests run, and every
  * FAIL_TO_PASS and PASS_TO_PASS test class must pass. Results come from the
  * JUnit XML reports the test run leaves behind, or from the test log when
  * the project sets grader.resultPattern (a regex with name and status groups).
@@ -158,6 +159,9 @@ const gradeDiff = async (project, instance, diff) => {
       `cd ${workdir}`,
       `git checkout -q --force ${instance.base.sha}`,
       "[ ! -s /patch/agent.diff ] || git apply --whitespace=nowarn /patch/agent.diff || { echo GRADE_APPLY_FAILED; exit 0; }",
+      // The files the hidden test changes go back to the base first, as the benchmark's own grader does:
+      // an agent that added its test to one of them made the patch fail to apply (catch2 run 4, 2026-11-15).
+      `git apply --numstat ${testPatch} | cut -f3 | while read -r f; do git checkout -q ${instance.base.sha} -- "$f" 2>/dev/null || rm -f "$f"; done`,
       `git apply --whitespace=nowarn ${testPatch} || { echo GRADE_TEST_PATCH_FAILED; exit 0; }`,
       `${test.map((part) => `'${part}'`).join(" ")} > /tmp/test.log 2>&1; echo GRADE_EXIT=$?`,
       // One line per test suite report: its opening tag carries the name and the counts.

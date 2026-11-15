@@ -161,6 +161,8 @@ test("search_code finds plain text case-insensitively and caps matches", async (
   assert.equal(found.output, "src/math.js:1: function add(a, b) {");
   assert.match((await run(ctx, "search_code", { query: "(unclosed[" })).output, /No matches/, "the query is text, not a regex");
   assert.match((await run(ctx, "search_code", { query: "ignored" })).output, /No matches/, "node_modules is skipped");
+  assert.equal((await run(ctx, "search_code", { query: "function add", path: "src/math.js" })).output, found.output, "a file can be searched on its own");
+  assert.match((await run(ctx, "search_code", { query: "add", path: "src/missing.js" })).output, /does not exist/);
 
   fs.writeFileSync(path.join(root, "many.txt"), "needle\n".repeat(150));
   assert.match((await run(ctx, "search_code", { query: "needle" })).output, /stopped at 100 matches/);

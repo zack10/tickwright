@@ -126,16 +126,26 @@ export const retryDelayMs = (error: unknown, attempt: number, random = Math.rand
  */
 export const withLLMRetry = async <T>(
   call: () => Promise<T>,
-  { retries, wait = sleep }: { retries: number; wait?: (ms: number) => Promise<unknown> },
+  {
+    retries,
+    wait = sleep,
+    label = "LLM call",
+    log = console.warn,
+  }: { retries: number; wait?: (ms: number) => Promise<unknown>; label?: string; log?: (line: string) => void },
 ): Promise<T> => {
   let flagged = 0;
   for (let attempt = 0; ; attempt++) {
+    const started = Date.now();
+    // A retry used to leave no trace: a 2-minute stall had to be worked out from timestamps (2026-11-15).
+    const retrying = (error: unknown, delay: number) =>
+      log(`${label}: try ${attempt + 1} failed after ${Date.now() - started} ms, retrying in ${delay} ms: ${describeError(error)}`);
     try {
       return await call();
     } catch (error) {
       if (!axios.isAxiosError(error)) throw error;
       if (isFlaggedRequest(error) && flagged < FLAGGED_RETRIES) {
         flagged++;
+        retrying(error, FLAGGED_DELAY_MS);
         await wait(FLAGGED_DELAY_MS);
         continue;
       }
@@ -148,7 +158,9 @@ export const withLLMRetry = async <T>(
           `LLM quota exhausted; provider asks to retry in ${Math.round(hinted / 1000)}s: ${describeError(error)}`,
         );
       if (attempt >= retries) throw error;
-      await wait(retryDelayMs(error, attempt));
+      const delay = retryDelayMs(error, attempt);
+      retrying(error, delay);
+      await wait(delay);
     }
   }
 };

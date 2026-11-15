@@ -345,7 +345,7 @@ flowchart TD
   - Check and command output is capped at 10,000 characters with the start and the end kept, and `read_file` returns up to 400 lines per call. A repository can set `executionPolicy.maxToolOutputChars` (1,000-20,000) and `executionPolicy.maxReadLines` (50-400).
   - Setup may run for 15 minutes; a repository can set `executionPolicy.setupTimeoutSeconds` (60-7,200).
   - Each container of a run gets 2 CPUs, 2 GB of memory and 256 processes, a check or agent command may run for 5 minutes, and the agent may write files up to 500 KB; a repository can set `executionPolicy.sandboxCpus` (0.5-64), `sandboxMemoryMb` (512-262,144), `sandboxMaxProcesses` (64-32,768), `checkTimeoutSeconds` (30-7,200) and `maxFileBytes` (1,000-50,000,000).
-  - The agent gets 30 model calls per attempt and a run 30 minutes; a repository can set `executionPolicy.maxAgentSteps` (5-200) and `executionPolicy.maxRunSeconds` (300-14,400).
+  - A run is limited by its token budget (`EXECUTION_MAX_TOKENS`) and by time, 30 minutes; the 150 model calls per attempt are only a safety net; a repository can set `executionPolicy.maxAgentSteps` (5-200) and `executionPolicy.maxRunSeconds` (300-14,400).
 
 In both modes, policy, verification and review run afterwards, independently of what the agent reports.
 

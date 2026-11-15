@@ -5,6 +5,7 @@ import { ExecutionStatus } from "@prisma/client";
 import { config } from "../config";
 import prisma from "../db";
 import { NonRetryableError, describeError } from "../utils/safeError";
+import { pruneLlmCalls } from "./llm/usageLedger";
 import { isFresh, removeWorkspace, withImageLock } from "./workspaceService";
 
 /**
@@ -116,12 +117,18 @@ const sweepOnce = () => {
 };
 
 const sweepAndLog = () =>
-  sweepOnce()
-    .then(({ executions, images }) => {
-      if (executions.length || images.length)
-        console.log(`Environment sweep removed ${executions.length} ended run(s) and ${images.length} image(s)`);
-    })
-    .catch((error) => console.error(`Environment sweep failed: ${describeError(error)}`));
+  Promise.all([
+    sweepOnce()
+      .then(({ executions, images }) => {
+        if (executions.length || images.length)
+          console.log(`Environment sweep removed ${executions.length} ended run(s) and ${images.length} image(s)`);
+      })
+      .catch((error) => console.error(`Environment sweep failed: ${describeError(error)}`)),
+    // Hourly with the sweep: recorded model calls past LLM_CALL_RETENTION_DAYS.
+    pruneLlmCalls()
+      .then((count) => count && console.log(`Removed ${count} recorded model call(s) past LLM_CALL_RETENTION_DAYS`))
+      .catch((error) => console.error(`Removing old model calls failed: ${describeError(error)}`)),
+  ]);
 
 let timer: NodeJS.Timeout | null = null;
 export const startEnvironmentSweep = () => {

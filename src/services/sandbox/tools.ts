@@ -3,7 +3,7 @@ import path from "node:path";
 import { z } from "zod";
 import { config } from "../../config";
 import { findSymlink, isGitPath, resolveInsideRoot } from "../../utils/safePath";
-import { isProtectedPath } from "../agentGraph/repoPolicy";
+import { isProtectedPath, onlyAddsLines } from "../agentGraph/repoPolicy";
 import { ToolDefinition } from "../llm/types";
 import { SandboxResult } from "../workspaceService";
 
@@ -28,6 +28,8 @@ export interface ToolContext {
   isTestFile: (file: string) => boolean;
   /** Whether a file is tracked at the base commit; new files are not "existing" tests. */
   isBaseFile: (file: string) => boolean;
+  /** A tracked file's content at the base commit; the file as it is now where unset. */
+  baseContent?: (file: string) => Promise<string>;
   /** Whether the problem was shown before code changed; updated by the tools. */
   reproduction: Reproduction;
   /** The repository's output limits; TOOL_OUTPUT_DEFAULTS where unset. */
@@ -175,7 +177,7 @@ export const SANDBOX_TOOLS: ToolDefinition[] = [
       type: "object",
       properties: {
         query: { type: "string", description: "Text to look for" },
-        path: { type: "string", description: 'Directory to search; default "."' },
+        path: { type: "string", description: 'Directory or file to search; default "."' },
       },
       required: ["query"],
     },
@@ -183,7 +185,7 @@ export const SANDBOX_TOOLS: ToolDefinition[] = [
   {
     name: "edit_file",
     description:
-      "Replace one exact piece of text in a file. oldText must appear exactly once; include enough surrounding lines to make it unique. To create a new file, pass an empty oldText. Existing test files and protected paths cannot be changed; add new test files instead. Files other than tests can be changed only after a new test you wrote has failed in run_check or run_command, or after skip_reproduction.",
+      "Replace one exact piece of text in a file. oldText must appear exactly once; include enough surrounding lines to make it unique. To create a new file, pass an empty oldText. Protected paths cannot be changed. An existing test file can only gain lines (for example to add a new test to the project's list of tests); the lines it has cannot be changed or removed, so put new tests in new test files or new lines. Files other than tests can be changed only after a new test you wrote has failed in run_check or run_command, or after skip_reproduction.",
     parameters: {
       type: "object",
       properties: {
@@ -207,7 +209,7 @@ export const SANDBOX_TOOLS: ToolDefinition[] = [
   {
     name: "run_command",
     description:
-      "Run a shell command in the repository's sandbox and see its output and exit code: build, run tests or a single test, use the language's tools, inspect the environment. The working directory is the repository root; there is no network, and dependencies are already installed. Files the command changes are part of your change, and the same rules apply to them: existing test files and protected files must not change. .git is read-only.",
+      "Run a shell command in the repository's sandbox and see its output and exit code: build, run tests or a single test, use the language's tools, inspect the environment. The working directory is the repository root; there is no network, and dependencies are already installed. Files the command changes are part of your change, and the same rules apply to them: protected files must not change, and existing test files may only gain lines. .git is read-only.",
     parameters: {
       type: "object",
       properties: {
@@ -489,11 +491,14 @@ const readFile = (ctx: ToolContext, args: z.infer<typeof ARGS.read_file>) => {
 const searchCode = (ctx: ToolContext, args: z.infer<typeof ARGS.search_code>) => {
   const target = checkPath(ctx, args.path || ".");
   if (typeof target === "string") return denied(target);
-  if (!fs.existsSync(target.fullPath) || !fs.statSync(target.fullPath).isDirectory())
-    return failed(`"${args.path}" is not a directory.`);
+  if (!fs.existsSync(target.fullPath)) return failed(`"${args.path}" does not exist.`);
+  // A file is searched on its own: refusing one cost 89 steps in one catch2 batch (2026-11-15).
+  const files = fs.statSync(target.fullPath).isFile()
+    ? [target.relativePath]
+    : walk(ctx, target.relativePath || ".", Number.MAX_SAFE_INTEGER).files;
   const query = args.query.toLowerCase();
   const matches: string[] = [];
-  for (const file of walk(ctx, target.relativePath || ".", Number.MAX_SAFE_INTEGER).files) {
+  for (const file of files) {
     const fullPath = path.join(ctx.root, file);
     if (fs.statSync(fullPath).size > MAX_SEARCH_FILE_BYTES) continue;
     const buffer = fs.readFileSync(fullPath);
@@ -509,7 +514,7 @@ const searchCode = (ctx: ToolContext, args: z.infer<typeof ARGS.search_code>) =>
   return completed(cap(ctx, matches.join("\n") || `No matches for "${args.query}".`));
 };
 
-const editFile = (ctx: ToolContext, args: z.infer<typeof ARGS.edit_file>) => {
+const editFile = async (ctx: ToolContext, args: z.infer<typeof ARGS.edit_file>) => {
   const target = checkPath(ctx, args.path);
   if (typeof target === "string") return denied(target);
   const file = target.relativePath;
@@ -518,8 +523,6 @@ const editFile = (ctx: ToolContext, args: z.infer<typeof ARGS.edit_file>) => {
   const exists = fs.existsSync(target.fullPath);
   if (exists && !fs.statSync(target.fullPath).isFile()) return failed(`"${file}" is not a file.`);
   const testFile = ctx.isTestFile(file);
-  if (exists && testFile && ctx.isBaseFile(file))
-    return denied(`"${file}" is an existing test file and cannot be changed. Add new tests in a new file instead.`);
   if (!testFile && !ctx.reproduction.shown && !ctx.reproduction.skipped)
     return denied(
       "Show the problem before changing code: add a test in a new test file that calls the existing code the ticket is about and expects what the ticket asks for, then run it with run_check or run_command and see it fail. If no test can show this change (for example documentation or configuration only), call skip_reproduction with the reason. If the ticket should not be done at all, call finish with status blocked and the reason.",
@@ -541,6 +544,13 @@ const editFile = (ctx: ToolContext, args: z.infer<typeof ARGS.edit_file>) => {
     if (occurrences > 1)
       return failed(`oldText appears ${occurrences} times in "${file}"; include more surrounding lines so it is unique.`);
     content = current.replace(oldText, () => newText);
+  }
+  if (exists && testFile && ctx.isBaseFile(file)) {
+    const base = ctx.baseContent ? await ctx.baseContent(file) : fs.readFileSync(target.fullPath, "utf8");
+    if (!onlyAddsLines(base, content))
+      return denied(
+        `"${file}" is an existing test file: you may add lines to it (for example to add your new test to the project's list of tests), but the lines it had before your change cannot be changed or removed. Put new tests in new lines or in a new file.`,
+      );
   }
   const maxFileBytes = ctx.limits?.maxFileBytes ?? config.generatedCodeMaxFileBytes;
   if (Buffer.byteLength(content, "utf8") > maxFileBytes)
@@ -641,7 +651,7 @@ export const executeTool = async (
       case "search_code":
         return searchCode(ctx, parsed.data as z.infer<typeof ARGS.search_code>);
       case "edit_file":
-        return editFile(ctx, parsed.data as z.infer<typeof ARGS.edit_file>);
+        return await editFile(ctx, parsed.data as z.infer<typeof ARGS.edit_file>);
       case "run_check":
         return await runCheck(ctx, parsed.data as z.infer<typeof ARGS.run_check>);
       case "run_command":

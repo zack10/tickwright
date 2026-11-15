@@ -23,7 +23,7 @@
     },
     "executionPolicy": {
       "setupTimeoutSeconds": 2700,
-      "maxAgentSteps": 60,
+      "maxAgentSteps": 150,
       "maxRunSeconds": 5400
     },
     "environment": {
@@ -74,7 +74,7 @@
     },
     "executionPolicy": {
       "setupTimeoutSeconds": 2700,
-      "maxAgentSteps": 60,
+      "maxAgentSteps": 150,
       "maxRunSeconds": 5400
     }
   },
@@ -99,7 +99,7 @@
     },
     "executionPolicy": {
       "setupTimeoutSeconds": 2700,
-      "maxAgentSteps": 60,
+      "maxAgentSteps": 150,
       "maxRunSeconds": 5400
     }
   },
@@ -124,7 +124,7 @@
     },
     "executionPolicy": {
       "setupTimeoutSeconds": 2700,
-      "maxAgentSteps": 60,
+      "maxAgentSteps": 150,
       "maxRunSeconds": 5400
     }
   },
@@ -149,7 +149,7 @@
     },
     "executionPolicy": {
       "setupTimeoutSeconds": 2700,
-      "maxAgentSteps": 60,
+      "maxAgentSteps": 150,
       "maxRunSeconds": 5400
     }
   },
@@ -174,7 +174,7 @@
     },
     "executionPolicy": {
       "setupTimeoutSeconds": 2700,
-      "maxAgentSteps": 60,
+      "maxAgentSteps": 150,
       "maxRunSeconds": 5400
     }
   },
@@ -199,7 +199,7 @@
     },
     "executionPolicy": {
       "setupTimeoutSeconds": 2700,
-      "maxAgentSteps": 60,
+      "maxAgentSteps": 150,
       "maxRunSeconds": 5400
     }
   }

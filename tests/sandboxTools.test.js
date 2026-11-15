@@ -136,6 +136,16 @@ test("protected paths and existing tests are denied; new test files are allowed"
   assert.equal(existing.status, "DENIED");
   assert.match(existing.output, /existing test file/);
   assert.equal(fs.readFileSync(path.join(root, "tests/math.test.js"), "utf8"), "// existing test\n");
+  // Limitation 36: lines may be added (a new test in the project's list of tests), measured against the base commit.
+  ctx.baseContent = async () => "// existing test\n";
+  const added = await run(ctx, "edit_file", { path: "tests/math.test.js", oldText: "// existing test", newText: "// existing test\n// added" });
+  assert.equal(added.status, "COMPLETED");
+  const fixed = await run(ctx, "edit_file", { path: "tests/math.test.js", oldText: "// added", newText: "// added, corrected" });
+  assert.equal(fixed.status, "COMPLETED", "the agent may still change lines it added itself");
+  const changed = await run(ctx, "edit_file", { path: "tests/math.test.js", oldText: "// existing test", newText: "// weakened" });
+  assert.equal(changed.status, "DENIED");
+  assert.match(changed.output, /lines it had before your change cannot be changed or removed/);
+  assert.equal(fs.readFileSync(path.join(root, "tests/math.test.js"), "utf8"), "// existing test\n// added, corrected\n");
 
   const created = await run(ctx, "edit_file", { path: "tests/add.regression.test.js", oldText: "", newText: "// new\n" });
   assert.equal(created.status, "COMPLETED");
@@ -151,6 +161,8 @@ test("search_code finds plain text case-insensitively and caps matches", async (
   assert.equal(found.output, "src/math.js:1: function add(a, b) {");
   assert.match((await run(ctx, "search_code", { query: "(unclosed[" })).output, /No matches/, "the query is text, not a regex");
   assert.match((await run(ctx, "search_code", { query: "ignored" })).output, /No matches/, "node_modules is skipped");
+  assert.equal((await run(ctx, "search_code", { query: "function add", path: "src/math.js" })).output, found.output, "a file can be searched on its own");
+  assert.match((await run(ctx, "search_code", { query: "add", path: "src/missing.js" })).output, /does not exist/);
 
   fs.writeFileSync(path.join(root, "many.txt"), "needle\n".repeat(150));
   assert.match((await run(ctx, "search_code", { query: "needle" })).output, /stopped at 100 matches/);

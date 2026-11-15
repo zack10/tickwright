@@ -53,7 +53,38 @@ Phase numbers are names: code comments, `CLAUDE.md` and the limitation rows refe
 | 9 | **Phase 11: MCP**, **Phase 13: collaborating agents and memory** | Each adds a new source of errors and of untrusted input; they come after the single agent is measured and reliable |
 | 10 | **Phase 14: other platforms and running the app** | Needed for whole kinds of project (mobile, desktop, UI bugs), but it is the largest build and helps none of the projects that already run |
 
-Two things move against the phase numbers: Phase 7 comes before Phases 5 and 6, and Phase 12 comes before Phase 11 and only if it is still needed. A step starts when the one before it has met its "Done when", except step 5, which can start at any time.
+Two things move against the phase numbers: Phase 7 comes before Phases 5 and 6, and Phase 12 comes before Phase 11 and only if it is still needed. A step starts when the one before it has passed its gate (below), except step 5, which can start at any time.
+
+### Finishing a phase: the gate (decided 2026-11-15)
+
+Nothing guarantees a solid agent. A gate at the end of every phase means we always know how solid it is, and never build on something unproven. A phase's "Done when" says what must exist; the gate says how well it must work. From Phase 4 on, a phase is finished only when all five hold:
+
+1. **A numeric bar, fixed before the work starts.** Default: on every ticket, at least 7 of 10 runs correct and at most 1 wrong; on every project, at least 80% of all its runs correct; over the whole gate, at most 3% of runs a wrong fix shipped. A phase may set a stricter bar. The bar can be changed only before a gate run starts, never after seeing its result.
+2. **Enough tickets to trust the number.** At least three tickets per reference project the phase covers, 10 runs each. One ticket measures that ticket.
+3. **Tickets the agent was never tuned on.** One further ticket per project is held out: it is run only at the gate, and nobody reads its runs while the phase is being built. Once a held-out ticket fails and is diagnosed it joins the ordinary set and a new one replaces it.
+4. **No regression anywhere.** The gate reruns every project of every earlier phase, and the coding benchmark x3. A phase cannot pass by breaking an older one.
+5. **A short spell of real use.** At least five real tickets on a repository we work on ourselves, each recorded as merged as it was, merged after edits, or rejected, with the reason. At least three of five merged, and none rejected for a wrong change the reviewer and the checks let through.
+
+How a gate is run:
+
+- **One run of the gate decides.** A project that misses the bar is diagnosed from the recorded runs, the cause is fixed or recorded, and only that project is run again. A second miss on the same project is not patched a third time: the cause becomes a limitation row with its evidence, and the phase either waits for it or passes without it under the next rule.
+- **Not waiting for perfect.** A project may miss the bar and the phase still pass when the cause is a limitation that belongs to a later phase (as `ts/darkreader-6747` and limitation 31 do today). The row names the project, the matrix shows it as a known failure, and the later phase's gate must clear it.
+- **Budget stated first.** A gate is a paid run like any other: model, number of runs, expected cost, dollar cap and stop rule are agreed before it starts. On the current model a run has cost between $0.03 and $0.20, so a gate over six projects with four tickets each (240 runs) is roughly $10 to $45, plus the benchmark.
+- **Every blocked or wrong run gets a cause.** The gate's report lists each failed run with one cause from a short fixed list (environment, the agent's own test, step limit, wrong change, reviewer, infrastructure, ticket). Priorities for the next phase come from those counts, not from the run that was looked at last.
+
+### Recommendations (2026-11-15)
+
+Advice written while the catch2 results of 2026-11-13 to 15 were fresh. These are recommendations, not decisions: each is adopted by turning it into a task or a limitation row.
+
+1. **Separate the agent from the model, once, early.** Every number so far is on one inexpensive model. Run the Phase 4 gate's ordinary tickets on one stronger model as well (limitation 22). If the stronger model clears a project the cheap one fails, the remaining work on that project is prompt and model choice, not tooling, and several planned tasks may not be needed. Estimate the cost first; it will be several times the cheap run.
+2. **Use the stronger model where a mistake costs most.** Planning and review are a few calls per run and decide whether a wrong change ships; the tool loop is most of the tokens. A stronger model for the planner and the reviewer, and the cheap one for the loop, may buy most of the quality for a small part of the price. The code already allows a model per kind of call (the agent's `config.models`, keyed by prompt name, `agentCalls.ts`), so this is configuration; measure it at a gate.
+3. **Make `finish` a rehearsal of verification.** Three fixes in a row (limitation 34, its follow-up, limitation 36) moved the same failure: the agent's test passes in its sandbox and fails in verification's new container (files left in `/tmp`, a build folder configured differently). Wording does not close this. When the agent calls `finish`, run its test command the way verification will, in a new container after the project's checks, and return that result to the agent while it can still act. One mechanism replaces the growing list of things the agent is told to remember.
+4. **Measure where the steps go before changing the tools** (limitation 38). The recorded tool calls of the step-limit runs already say whether the cost is repeated reads, failed searches or rebuilding. An hour with that data decides between a better search tool, a task list and a higher limit; guessing means three agent changes and three paid evaluations.
+5. **Track cost per correct change, not only the pass rate.** On catch2 the changes of 2026-11-14 roughly doubled the correct runs and also doubled the cost of each run. Both numbers belong in every report and in the results log, so a change that buys quality at four times the price is seen as one.
+6. **Count what the two approvals catch.** How often a plan needs a revision, and how often a person rejects a change the reviewer approved, are the real measures of how much work the agent saves. Both are already in the database (plan revisions, approval decisions); add them to the gate's report.
+7. **Fix the evaluation tools before the first gate.** Found on 2026-11-14: there is no way to cancel an execution, so a stopped evaluation leaves its last run going and spending; a stopped evaluation writes no report, so two batches exist only as logs; one dayjs grader test depends on the clock and fails on unmodified code about once in a thousand runs; one test of the gson project fails under a non-English host locale. A gate of 240 runs will hit each of these.
+8. **Keep the single agent until it is reliable.** Roles, memory, MCP and collaborating agents each add a source of error and of untrusted text. The order of work already puts them last; the reason to hold that line is that every failure found so far was in one agent using eight tools, and none would have been fixed by adding a second agent.
+9. **Decide in advance what "good enough to use" means for us.** The gate says when a phase is finished. Whether the agent is worth running on our own tickets is a different question with a simpler answer: use it on real tickets from step 5 of the gate onward, and keep using it while most of its changes are merged with little rework.
 
 ## Known limitations (audit 2026-10-26)
 
@@ -513,6 +544,8 @@ Known limits of the design: budgets are checked before each call, so a started c
 - [x] README: where the environment comes from, discovery and approval, how to set it per repository (brought up to date with the Phase 4 work 2026-11-11, PR #15)
 
 **Done when:** the benchmark passes in at least three languages with no drop on the Node scenarios, a scenario whose tests need a database passes, an e2e execution opens a draft PR on a non-Node repository, and the reference projects have been run with every failure recorded as a limitation.
+
+**Gate for this phase** (see [Finishing a phase: the gate](#finishing-a-phase-the-gate-decided-2026-11-15)): the six reference projects that run today (`java/gson-1555`, `go/go-zero-1969`, `js/dayjs-589`, `rust/fd-590`, `c/jq-2821`, `cpp/catch2-2723`), each with two more tickets and one held-out ticket taken from the same dataset, at the default bar. `ts/darkreader-6747` stays a known failure under limitation 31 (Phase 6). Before the gate can be run: the extra tickets are added and each is proven valid in its grader image (limitation 40), the evaluation tools are fixed (recommendation 7), and limitations 35, 37 and 38 are closed or shown not to be what fails. Where the phase stood on 2026-11-15, one ticket per project: gson, go-zero and dayjs at 10 of 10, jq 9 of 10, fd 7 of 10, catch2 6 of 9 (limitation 34's row; later batches are recorded in rows 34 and 36).
 
 ---
 

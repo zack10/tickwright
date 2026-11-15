@@ -22,6 +22,10 @@ import {
 
 dotenv.config();
 
+/** Names a call in the retry log: which model, what for, which execution. */
+const callLabel = (providerKey: string, model: string, context?: UsageContext) =>
+  `LLM ${providerKey}/${model}${context ? ` (${context.purpose}${context.executionId ? `, execution ${context.executionId}` : ""})` : ""}`;
+
 /**
  * Main LLM Service handling provider discovery and routing
  */
@@ -131,7 +135,7 @@ export class LLMService {
     await this.checkDailyLimit();
     const result = await withLLMRetry(
       () => provider.generateContent(model, prompt, apiKey),
-      { retries: config.llmRateLimitRetries },
+      { retries: config.llmRateLimitRetries, label: callLabel(providerKey, model, context) },
     );
     await this.record(providerKey, model, result.usage, context);
     return result.text;
@@ -158,7 +162,7 @@ export class LLMService {
     await this.checkDailyLimit();
     const turn = await withLLMRetry(
       () => provider.generateWithTools(model, request, apiKey),
-      { retries: config.llmRateLimitRetries },
+      { retries: config.llmRateLimitRetries, label: callLabel(providerKey, model, context) },
     );
     await this.record(providerKey, model, turn.usage, context);
     return turn;

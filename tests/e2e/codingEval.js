@@ -428,6 +428,11 @@ const main = async () => {
         while (next < jobs.length) {
           const index = next++;
           results[index] = await runScenario(fixtures, jobs[index].scenario, jobs[index].run);
+          // Run once more: a slow model reply cost two ungraded runs of 54 (2026-11-15). A second failure stands.
+          if (results[index].outcome === "infra_failure") {
+            log(`${jobs[index].scenario.id} run ${jobs[index].run}: running again after the infrastructure failure`);
+            results[index] = await runScenario(fixtures, jobs[index].scenario, jobs[index].run);
+          }
         }
       }),
     );

@@ -78,7 +78,7 @@ tests/
     reference-projects/     projects.json and tickets/
 docs/
   plans/AGENTIC_ROADMAP.md  the plan of record: phases, Known limitations table, reference projects, results log
-  testing/                  eval reports (coding-eval-*.md, reference-*.md), written by the evals
+  testing/                  eval reports (coding-eval-*.md, reference-*.md), written by the evals; TESTING_PRACTICES.md: which test to run for which change
   guides/, specs/, history/ reference and past phases; may be out of date
 AUDIT.md                    live fix tracker from the code audit (items like M16)
 CHANGELOG.md                Keep a Changelog; every code PR adds a line

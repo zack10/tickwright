@@ -20,7 +20,7 @@ import {
 import { cloneGithubWorkspace, removeWorkspace, trackedFiles, workspacePath } from "../workspaceService";
 import { CallContext, askAgent, askAgentWithTools, executionTokensUsed, graphEvent, parseJsonRecord, resolveAgentCalls } from "./agentCalls";
 import { PLAN_MAX_TOKENS, runPlanner } from "./planner";
-import { collectRepoContext } from "./repoContext";
+import { collectRepoContext, instructionsOf } from "./repoContext";
 import { RepositoryPolicy } from "./repoPolicy";
 
 /** The agent's plan as the person approves it and the run follows it. */
@@ -129,7 +129,7 @@ export const planExecution = async (executionId: string): Promise<PlanningOutcom
     const root = workspacePath(executionId);
     const { toolchain } = resolveToolchain(fsRepoFiles(root), repository.verificationConfig);
     const ticket = `${workItem.title}\n${workItem.description ?? ""}`;
-    const repoContext = await collectRepoContext(root, ticket, toolchain);
+    const repoContext = await collectRepoContext(root, ticket, toolchain, instructionsOf(repository));
     const checks = selectChecks(toolchain, repository.verificationConfig).run;
     const environment = describeEnvironment(toolchain, checks, config.executionAgentMode === "tool_loop");
     const verification = planVerification(toolchain, repository.verificationConfig, config.executionDiscoveryMaxAttempts);
@@ -154,7 +154,7 @@ export const planExecution = async (executionId: string): Promise<PlanningOutcom
     // With tools the planner reads the code itself; without, it gets a sample of it (each file cut short).
     const withTools = config.executionAgentMode === "tool_loop";
     const prompt = withTools
-      ? renderExecutionPrompt("planner", { ticket, environment, repoOverview: repoContext.overview, revisions })
+      ? renderExecutionPrompt("planner", { ticket, environment, repoOverview: repoContext.overview, revisions, instructions: repoContext.instructions })
       : renderExecutionPrompt("plan", { ticket, environment, repoContext: repoContext.summary, revisions });
     const policy = repository.executionPolicy as RepositoryPolicy | null;
     const noSandbox = async (): Promise<never> => {

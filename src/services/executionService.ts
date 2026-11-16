@@ -31,6 +31,46 @@ const event = async (
   });
 };
 
+const ENDED: ExecutionStatus[] = ["COMPLETED", "BLOCKED", "FAILED", "CANCELED"];
+
+/**
+ * Ends an execution in any state that is not already final. A running step
+ * notices it (isCanceled) and stops; what the run left behind is removed by
+ * the environment sweep. An eval stopped by hand left runs spending on the
+ * server with nobody grading them (2026-11-16).
+ */
+export const cancelExecution = async (executionId: string, actor: string, reason?: string) =>
+  prisma.$transaction(async (tx) => {
+    const execution = await tx.execution.findUnique({ where: { id: executionId } });
+    if (!execution) throw AppError.notFound("Execution not found");
+    const moved = await tx.execution.updateMany({
+      where: { id: executionId, status: { notIn: ENDED } },
+      data: {
+        status: "CANCELED",
+        lastError: `Canceled: ${reason ?? "No reason supplied"}`,
+        completedAt: new Date(),
+        leaseUntil: null,
+      },
+    });
+    if (moved.count !== 1) throw AppError.conflict(`Execution has already ended (${execution.status})`);
+    await tx.approval.updateMany({
+      where: { executionId, status: "PENDING" },
+      data: { status: "REJECTED", actor, comment: "Execution canceled", decidedAt: new Date() },
+    });
+    await event(tx, executionId, "EXECUTION_CANCELED", { from: execution.status, actor, reason: reason ?? null }, execution.correlationId);
+    return tx.execution.findUniqueOrThrow({ where: { id: executionId } });
+  });
+
+export const isCanceled = async (executionId: string) =>
+  (await prisma.execution.count({ where: { id: executionId, status: "CANCELED" } })) > 0;
+
+/** Thrown inside a run when its execution was canceled: the run stops and is not retried. */
+export class ExecutionCanceledError extends Error {
+  constructor(executionId: string) {
+    super(`Execution ${executionId} was canceled`);
+  }
+}
+
 export const createExecution = async (input: {
   projectId: string;
   workItemId: string;
@@ -148,10 +188,12 @@ export const submitPlan = async (
     await tx.approval.create({
       data: { executionId, type: "PLAN", snapshotHash },
     });
-    await tx.execution.update({
-      where: { id: executionId },
+    // Conditional: a cancel while the plan was being written wins.
+    const moved = await tx.execution.updateMany({
+      where: { id: executionId, status: { in: ["INGESTED", "PLANNING"] } },
       data: { status: "AWAITING_PLAN_APPROVAL" },
     });
+    if (moved.count !== 1) throw new ExecutionCanceledError(executionId);
     await event(
       tx,
       executionId,

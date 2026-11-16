@@ -69,6 +69,7 @@ const service = z
 export const verificationConfigSchema = z
   .object({
     scripts: z.array(z.string().regex(/^[a-zA-Z0-9:_-]+$/)).min(1).optional(),
+    instructionFiles: z.array(z.string().min(1).max(500)).max(10).optional(),
     toolchain: z
       .object({
         language: z.string().min(1).max(100).optional(),

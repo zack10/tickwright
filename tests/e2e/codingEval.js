@@ -246,6 +246,8 @@ const runScenario = async (fixtures, scenario, runNumber) => {
       result.note = (execution.lastError ?? "").replace(/\s+/g, " ").slice(0, 200);
     } else {
       result.note = `${execution.status}: ${(execution.lastError ?? "").replace(/\s+/g, " ").slice(0, 200)}`;
+      // A person canceled it (POST /api/executions/:id/cancel): not an infrastructure failure to run again.
+      if (execution.status === "CANCELED") result.canceled = true;
     }
   } catch (error) {
     result.outcome = "infra_failure";
@@ -428,6 +430,12 @@ const main = async () => {
         while (next < jobs.length) {
           const index = next++;
           results[index] = await runScenario(fixtures, jobs[index].scenario, jobs[index].run);
+          // Canceled by a person: stop the batch instead of starting the next run (a cancel test was rerun, 2026-11-16).
+          if (results[index].canceled) {
+            log(`${jobs[index].scenario.id} run ${jobs[index].run}: canceled; no further runs start`);
+            next = jobs.length;
+            break;
+          }
           // Run once more: a slow model reply cost two ungraded runs of 54 (2026-11-15). A second failure stands.
           if (results[index].outcome === "infra_failure") {
             log(`${jobs[index].scenario.id} run ${jobs[index].run}: running again after the infrastructure failure`);
@@ -449,7 +457,7 @@ const main = async () => {
     }
   }
 
-  const report = writeReport(results, {
+  const report = writeReport(results.filter(Boolean), { // runs after a cancel never started
     // Local calendar date (the "sv" locale formats as YYYY-MM-DD).
     date: new Date().toLocaleDateString("sv"),
     commit: commit.trim(),

@@ -339,8 +339,9 @@ test("the agent prompt gets the environment and keeps ticket text out of the sys
     internalPlan: "plan",
     repoOverview: "Repository file tree sample:\nsrc/a.js",
     lastFailure: "None",
+    instructions: "None are configured for this repository.",
   });
-  assert.equal(prompt.version, "agent.v6");
+  assert.equal(prompt.version, "agent.v7");
   assert.match(prompt.user, /Repository overview:\nRepository file tree sample/);
   assert.match(prompt.user, /Repository environment:\nImage: example\/image:1\nChecks:\n- test: make test/);
   assert.match(prompt.system, /run_command/);

@@ -13,7 +13,7 @@ import { commentOnWorkItem } from "./ingestionService";
 import { NonRetryableError, describeError } from "../utils/safeError";
 import { discardExecutionRun, runExecutionGraph } from "./agentGraph/executionGraph";
 import { planExecution } from "./agentGraph/planning";
-import { hashSnapshot } from "./executionService";
+import { ExecutionCanceledError, hashSnapshot } from "./executionService";
 import { formatPlanComment, formatPublishComment } from "./ticketConversation";
 import rabbitMQService from "./rabbitMQService";
 import { describeVerification, publishApprovedDiff } from "./workspaceService";
@@ -121,7 +121,14 @@ const plan = async (executionId: string) => {
       where: { id: executionId, status: "INGESTED" },
       data: { status: "PLANNING" },
     });
-  const outcome = await planExecution(executionId);
+  let outcome: Awaited<ReturnType<typeof planExecution>>;
+  try {
+    outcome = await planExecution(executionId);
+  } catch (error) {
+    // Canceled while planning: nothing to retry or tell the tracker.
+    if (error instanceof ExecutionCanceledError) return;
+    throw error;
+  }
   if (outcome.status === "declined") {
     // Stopped before anyone is asked: there is nothing to approve.
     const reason = `The agent declined the ticket: ${outcome.reason}`;
@@ -174,6 +181,11 @@ const run = async (executionId: string) => {
   try {
     await runExecutionGraph(executionId);
   } catch (error) {
+    // Canceled: the run stopped on purpose; the sweep removes its containers.
+    if (error instanceof ExecutionCanceledError) {
+      await discardExecutionRun(executionId);
+      return;
+    }
     // Release the claim so the bounded consumer retry can run it again.
     await prisma.execution.updateMany({
       where: { id: executionId, status: { in: RUN_STATES } },

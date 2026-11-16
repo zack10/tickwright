@@ -702,6 +702,29 @@ No phase owned a front end. The decision:
 - **Four screens, in this order:** the approval queue with the exact diff, the checks that ran and the reviewer's objections; the run timeline (what the trace prints, for someone who did not build it); repository setup (connect a repository, approve its environment, enter secrets), which is done by API calls today; cost per ticket and per repository.
 - **Same repository, its own folder** (`web/`) with its own `package.json`, CI job and image. The API still changes in Phases 6, 7 and 8, and an endpoint and the screen that uses it should land in one pull request; the request shapes (`src/schemas/`) are shared as types so a mismatch fails the build. It only calls the HTTP API and holds no rule of its own: every rule stays in the backend, where it is tested. It moves to its own repository only when another person or team owns it, it needs its own release schedule, or one part is opened and the other is not.
 
+**How it should look and work (2026-11-16).** It is a review tool, so each screen follows a product reviewers already know, not a generic admin dashboard:
+
+| Screen | Modelled on | What it must show |
+| --- | --- | --- |
+| Approval queue | A pull request inbox | One list: ticket, repository, what is waiting (plan or change) and for how long |
+| Plan approval | A document with a conversation beside it | The plan on the left (summary, each example of expected behaviour marked "from the ticket" or "added by the agent", open questions, files, how it will be checked) and the conversation with the agent on the right. A reply revises the plan to a new version; versions can be compared; the approve button names the version |
+| Change approval | A code host's "files changed" page | The file list, the diff, and a panel with the checks that ran, the reviewer's findings (suggestions kept apart from objections), the run's attempts, duration and cost, and the decision |
+| Run timeline | A CI run page | Steps with status and duration; the selected step's model reply, tool calls and output, collapsed by default |
+| Repository setup | An "import project" wizard | Connect the repository, review the proposed environment, enter secrets |
+| Cost | A usage page | One table by repository and ticket, one chart over time |
+
+Rules for every screen:
+
+- **What was not verified is at the top of an approval screen**, never in a tooltip: "Unverified", untested code, checks proposed and not approved, examples the agent added itself.
+- **The conversation in the app and the one on the ticket are the same conversation.** Both end in the same functions (`decideApproval`, `requestPlanRevision`, as `ticketConversation.ts` already does for the ticket), and a message written in one place appears in the other. The app adds no second way to decide.
+- **One main action per screen.** Approve is prominent and names exactly what is approved (the plan's version, the diff's snapshot); reject asks for a reason, as `/reject <reason>` does.
+- **Dense, like a code host**, not cards and wide margins. Added and removed lines differ by a sign as well as by colour.
+- **Light and dark themes from the first screen**, following the system setting, with a switch.
+- **Every screen links back** to the ticket and to the draft pull request.
+- Built from a plain component kit whose code we own and an existing diff component; no template that brings its own backend, sign-in or state layer.
+
+Mockups (2026-11-16, clickable, on one canvas: <https://claude.ai/artifact/3X2SZ1hv9zBcpF6J6sRMvB>; private to the owner until shared from the page): **Change approval**, light theme only, and **Plan conversation**, light and dark. Both use the benchmark ticket `go/01-truncate-utf8`; the plan conversation replays the mistake of limitation 48 (the planner's invented `Truncate("café", 4)` example) being caught by a person before the run. The diff of `truncate.go` and the run's figures are real; the test file, the reviewer's sentences and the agent's replies are written for the mockup. They show layout and flow, not a final look. Still to draw: the approval queue, the run timeline, repository setup and cost. Open choice in the plan screen: the plan as a document beside the conversation (drawn), or one conversation column with the plans inside it.
+
 Not decided: whether the first users outside are teams or single developers (for single developers a terminal tool is worth more and the web app can wait longer), and whether a team would rather approve from its chat tool. Both are asked of the first pilot team before any screen is built.
 
 ### Tasks

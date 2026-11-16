@@ -690,6 +690,8 @@ Then the gate is run as written below. **Real tickets (point 5 of the gate) star
 
 **Goal:** several agents work on different tickets at the same time, safely, without interfering with each other or exhausting shared limits.
 
+What already makes this safe: each execution has its own workspace folder, Docker container, diff artifact and branch (`agent/<executionId>`), and leases plus atomic claims stop two workers from running the same execution. What's missing is a way to turn concurrency on, limits to keep it under control, and proof that it works.
+
 ### The front end (decided 2026-11-16)
 
 No phase owned a front end. The decision:
@@ -701,8 +703,6 @@ No phase owned a front end. The decision:
 - **Same repository, its own folder** (`web/`) with its own `package.json`, CI job and image. The API still changes in Phases 6, 7 and 8, and an endpoint and the screen that uses it should land in one pull request; the request shapes (`src/schemas/`) are shared as types so a mismatch fails the build. It only calls the HTTP API and holds no rule of its own: every rule stays in the backend, where it is tested. It moves to its own repository only when another person or team owns it, it needs its own release schedule, or one part is opened and the other is not.
 
 Not decided: whether the first users outside are teams or single developers (for single developers a terminal tool is worth more and the web app can wait longer), and whether a team would rather approve from its chat tool. Both are asked of the first pilot team before any screen is built.
-
-What already makes this safe: each execution has its own workspace folder, Docker container, diff artifact and branch (`agent/<executionId>`), and leases plus atomic claims stop two workers from running the same execution. What's missing is a way to turn concurrency on, limits to keep it under control, and proof that it works.
 
 ### Tasks
 

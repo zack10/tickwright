@@ -45,7 +45,10 @@ export interface DiscoveryAttempt {
 }
 
 export interface DiscoveryResult<P extends ProofResult> {
+  /** The checks passed, or the model judged the failures the project's own. */
   proven: boolean;
+  /** Not proven, but setup worked and every check ran: this proposal is used, its failures counted as already failing. */
+  unconfirmed?: true;
   proposal?: EnvironmentProposal;
   rationale: string;
   /** The proof of the proposal that works: its setup is the run's setup. */
@@ -141,9 +144,16 @@ const describeProof = (proof: ProofResult) =>
         ...proof.baseline.map((result) =>
           result.passed
             ? `- ${result.check}: passed`
-            : `- ${result.check}: failed\n${result.output.slice(-3000)}`,
+            : `- ${result.check}: failed\n${result.output.slice(-10_000)}`,
         ),
       ].join("\n");
+
+// A check ran unless the shell could not start it (126, 127) or it was killed: a failing test then says nothing about the environment.
+const ran = (result: ProofResult["baseline"][number]) => {
+  const code = /^docker run failed \(exit code (\d+)\)/.exec(result.output)?.[1];
+  return result.passed || (code !== undefined && code !== "126" && code !== "127");
+};
+export const checksRan = (proof: ProofResult) => !proof.setupError && proof.baseline.length > 0 && proof.baseline.every(ran);
 
 export const discoverEnvironment = async <P extends ProofResult>(
   input: { fixed: FixedEnvironment; stored?: EnvironmentProposal; storedRationale?: string; maxAttempts: number },
@@ -165,7 +175,13 @@ export const discoverEnvironment = async <P extends ProofResult>(
   let lastAttempt = "None.";
   const fromStored = Boolean(input.stored);
   // Proposals already proved and found wanting: proving one again would fail the same way.
+  // The language label changes nothing that runs (dayjs bd2a1554 re-proved its first proposal under a new label).
   const failed = new Set<string>();
+  const triedKey = (tried: EnvironmentProposal) => hashProposal({ ...tried, language: undefined });
+  // The first proposal whose checks all ran; used if none is proven. The model's doubt is a reason to try again, not to stop:
+  // go-zero-1783 c1700e98 was blocked after its first proposal ran every test and only 3 assertions failed.
+  let fallback: { proposal: EnvironmentProposal; rationale: string; proof: P } | undefined;
+  let lastProof: P | undefined;
 
   const ask = async () => {
     const reply = parseDiscoveryReply(await deps.ask(lastAttempt), input.fixed);
@@ -188,14 +204,15 @@ export const discoverEnvironment = async <P extends ProofResult>(
       }
       ({ proposal, rationale } = reply);
     }
-    if (failed.has(hashProposal(proposal))) {
+    if (failed.has(triedKey(proposal))) {
       attempts.push({ proposal, outcome: "invalid", detail: "the same proposal as one that already failed" });
       lastAttempt = `${lastAttempt}\n\nYou then proposed exactly this environment again. It already failed as shown above: propose a different one.`;
       proposal = null;
       continue;
     }
-    failed.add(hashProposal(proposal));
-    const proof = await deps.prove(proposal);
+    failed.add(triedKey(proposal));
+    const proof = (lastProof = await deps.prove(proposal));
+    if (!fallback && checksRan(proof)) fallback = { proposal, rationale, proof };
     const tried = `${describeProposal(proposal, input.fixed)}\n\n${describeProof(proof)}`;
     if (proof.setupError) {
       // The first line says how it failed (exit code, killed by timeout); the end, where.
@@ -219,13 +236,41 @@ export const discoverEnvironment = async <P extends ProofResult>(
     attempts.push({
       proposal,
       outcome: "checks_failed",
-      detail: proof.baseline.filter((result) => !result.passed).map((result) => result.check).join(", "),
+      // Each failure's output (bounded by setupWorkspace), so the record outlives the model-call log.
+      detail: proof.baseline
+        .filter((result) => !result.passed)
+        .map((result) => `${result.check}:\n${result.output}`)
+        .join("\n\n"),
     });
     proposal = "error" in reply ? null : reply.proposal;
     if (!("error" in reply)) rationale = reply.rationale;
   }
+  if (fallback) {
+    // A later proof replaced the workspace's snapshot: set the fallback up again (no model call).
+    const proof = fallback.proof === lastProof ? fallback.proof : await deps.prove(fallback.proposal);
+    if (checksRan(proof))
+      return { proven: false, unconfirmed: true, proposal: fallback.proposal, rationale: fallback.rationale, proof, attempts, fromStored };
+  }
   return { proven: false, rationale, attempts, fromStored };
 };
+
+const oneLine = (text: string, max: number) => {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > max ? `...${flat.slice(-max)}` : flat;
+};
+
+/** Why a run stops when discovery proved nothing; the ticket comment shows its first 1500 characters. */
+export const describeNoEnvironment = (attempts: DiscoveryAttempt[]) =>
+  [
+    `No working environment was found for this repository, so no change could be checked. Discovery made ${attempts.length} attempt(s):`,
+    ...attempts.map((attempt, index) => {
+      const setup = attempt.proposal?.setup ? ` (setup: ${oneLine(commandText(attempt.proposal.setup), 150)})` : "";
+      // A docker failure's stderr says why; its stdout (a coverage table, build logs) usually does not.
+      const stderr = [...attempt.detail.matchAll(/stderr:\n([\s\S]*?)\nstdout:/g)].map((match) => match[1]).filter((text) => text !== "(empty)");
+      return `${index + 1}. ${attempt.outcome}${setup}: ${oneLine(stderr.join(" | ") || attempt.detail, 200)}`;
+    }),
+    "Configure the repository's environment and checks, or add a devcontainer to the project, then run it again.",
+  ].join("\n");
 
 // What discovery reads: what the project says about how it is built and
 // tested. Instruction files and CI configuration first, then the other files

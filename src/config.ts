@@ -140,7 +140,7 @@ export const config = {
   executionDefaultImage:
     process.env.EXECUTION_DEFAULT_IMAGE || DEFAULT_EXECUTION_IMAGE,
   // Environments discovery may try (setup + baseline each) before a run
-  // falls back to the default image. 0 turns discovery off.
+  // stops as blocked. 0 turns discovery off (the run goes on without checks).
   // A repository's environment snapshot is reused for this long, then rebuilt
   // from its image. 0 turns reuse off.
   executionSnapshotMaxAgeHours: parseNonNegativeInt(process.env.EXECUTION_SNAPSHOT_MAX_AGE_HOURS, 24),

@@ -45,6 +45,96 @@
     }
   },
   {
+    "id": "java/gson-1391",
+    "language": "Java",
+    "source": {
+      "dataset": "ByteDance-Seed/Multi-SWE-bench",
+      "file": "java/google__gson_dataset.jsonl",
+      "number": 1391
+    },
+    "grader": {
+      "image": "mswebench/google_m_gson:pr-1391",
+      "workdir": "/home/gson",
+      "testPatch": "/home/test.patch",
+      "test": [
+        "mvn",
+        "-o",
+        "-B",
+        "clean",
+        "test",
+        "-DfailIfNoTests=false",
+        "-Dmaven.test.failure.ignore=true"
+      ]
+    },
+    "executionPolicy": {
+      "setupTimeoutSeconds": 2700,
+      "maxAgentSteps": 150,
+      "maxRunSeconds": 5400
+    },
+    "environment": {
+      "toolchain": {
+        "image": "maven:3.9.9-eclipse-temurin-11@sha256:8d3b35643e52d707b16a3e9b52698be1b75c2b45beb5d0e37d35e881f0a18ced",
+        "setup": [
+          "sh",
+          "-c",
+          "mvn -B -q -f gson install -Dmaven.test.failure.ignore=true"
+        ],
+        "checks": {
+          "test": [
+            "sh",
+            "-c",
+            "mvn -o -B -f gson test"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "id": "java/gson-1093",
+    "language": "Java",
+    "source": {
+      "dataset": "ByteDance-Seed/Multi-SWE-bench",
+      "file": "java/google__gson_dataset.jsonl",
+      "number": 1093
+    },
+    "grader": {
+      "image": "mswebench/google_m_gson:pr-1093",
+      "workdir": "/home/gson",
+      "testPatch": "/home/test.patch",
+      "test": [
+        "mvn",
+        "-o",
+        "-B",
+        "clean",
+        "test",
+        "-DfailIfNoTests=false",
+        "-Dmaven.test.failure.ignore=true"
+      ]
+    },
+    "executionPolicy": {
+      "setupTimeoutSeconds": 2700,
+      "maxAgentSteps": 150,
+      "maxRunSeconds": 5400
+    },
+    "environment": {
+      "toolchain": {
+        "image": "maven:3.9.9-eclipse-temurin-11@sha256:8d3b35643e52d707b16a3e9b52698be1b75c2b45beb5d0e37d35e881f0a18ced",
+        "setup": [
+          "sh",
+          "-c",
+          "mvn -B -q -f gson install -Dmaven.test.failure.ignore=true"
+        ],
+        "checks": {
+          "test": [
+            "sh",
+            "-c",
+            "mvn -o -B -f gson test"
+          ]
+        }
+      }
+    }
+  },
+  {
     "id": "go/go-zero-1969",
     "language": "Go",
     "source": {
@@ -54,6 +144,74 @@
     },
     "grader": {
       "image": "mswebench/zeromicro_m_go-zero:pr-1969",
+      "workdir": "/home/go-zero",
+      "testPatch": "/home/test.patch",
+      "test": [
+        "go",
+        "test",
+        "-v",
+        "-count=1",
+        "-p",
+        "1",
+        "./..."
+      ],
+      "resultPattern": "^\\s*--- (?<status>PASS|FAIL|SKIP): (?<name>\\S+)",
+      "skipReason": "need a network interface; the grader runs with --network none",
+      "skip": [
+        "TestInternalIp",
+        "TestFigureOutListenOn"
+      ]
+    },
+    "executionPolicy": {
+      "setupTimeoutSeconds": 2700,
+      "maxAgentSteps": 150,
+      "maxRunSeconds": 5400
+    }
+  },
+  {
+    "id": "go/go-zero-2537",
+    "language": "Go",
+    "source": {
+      "dataset": "ByteDance-Seed/Multi-SWE-bench",
+      "file": "go/zeromicro__go-zero_dataset.jsonl",
+      "number": 2537
+    },
+    "grader": {
+      "image": "mswebench/zeromicro_m_go-zero:pr-2537",
+      "workdir": "/home/go-zero",
+      "testPatch": "/home/test.patch",
+      "test": [
+        "go",
+        "test",
+        "-v",
+        "-count=1",
+        "-p",
+        "1",
+        "./..."
+      ],
+      "resultPattern": "^\\s*--- (?<status>PASS|FAIL|SKIP): (?<name>\\S+)",
+      "skipReason": "need a network interface; the grader runs with --network none",
+      "skip": [
+        "TestInternalIp",
+        "TestFigureOutListenOn"
+      ]
+    },
+    "executionPolicy": {
+      "setupTimeoutSeconds": 2700,
+      "maxAgentSteps": 150,
+      "maxRunSeconds": 5400
+    }
+  },
+  {
+    "id": "go/go-zero-1783",
+    "language": "Go",
+    "source": {
+      "dataset": "ByteDance-Seed/Multi-SWE-bench",
+      "file": "go/zeromicro__go-zero_dataset.jsonl",
+      "number": 1783
+    },
+    "grader": {
+      "image": "mswebench/zeromicro_m_go-zero:pr-1783",
       "workdir": "/home/go-zero",
       "testPatch": "/home/test.patch",
       "test": [
@@ -102,6 +260,82 @@
       "maxAgentSteps": 150,
       "maxRunSeconds": 5400
     }
+  },
+  {
+    "id": "rust/fd-1162",
+    "language": "Rust",
+    "source": {
+      "dataset": "ByteDance-Seed/Multi-SWE-bench",
+      "file": "rust/sharkdp__fd_dataset.jsonl",
+      "number": 1162
+    },
+    "grader": {
+      "image": "mswebench/sharkdp_m_fd:pr-1162",
+      "workdir": "/home/fd",
+      "testPatch": "/home/test.patch",
+      "test": [
+        "bash",
+        "-c",
+        "cargo test --offline --no-fail-fast"
+      ],
+      "resultPattern": "^test (?<name>\\S+) \\.\\.\\. (?<status>ok|FAILED|ignored)"
+    },
+    "executionPolicy": {
+      "setupTimeoutSeconds": 2700,
+      "maxAgentSteps": 150,
+      "maxRunSeconds": 5400
+    }
+  },
+  {
+    "id": "rust/fd-497",
+    "language": "Rust",
+    "source": {
+      "dataset": "ByteDance-Seed/Multi-SWE-bench",
+      "file": "rust/sharkdp__fd_dataset.jsonl",
+      "number": 497
+    },
+    "grader": {
+      "image": "mswebench/sharkdp_m_fd:pr-497",
+      "workdir": "/home/fd",
+      "testPatch": "/home/test.patch",
+      "test": [
+        "bash",
+        "-c",
+        "cargo test --offline --no-fail-fast"
+      ],
+      "resultPattern": "^test (?<name>\\S+) \\.\\.\\. (?<status>ok|FAILED|ignored)"
+    },
+    "executionPolicy": {
+      "setupTimeoutSeconds": 2700,
+      "maxAgentSteps": 150,
+      "maxRunSeconds": 5400
+    }
+  },
+  {
+    "id": "rust/fd-1394",
+    "language": "Rust",
+    "source": {
+      "dataset": "ByteDance-Seed/Multi-SWE-bench",
+      "file": "rust/sharkdp__fd_dataset.jsonl",
+      "number": 1394
+    },
+    "grader": {
+      "image": "mswebench/sharkdp_m_fd:pr-1394",
+      "workdir": "/home/fd",
+      "testPatch": "/home/test.patch",
+      "test": [
+        "bash",
+        "-c",
+        "cargo test --offline --no-fail-fast"
+      ],
+      "resultPattern": "^test (?<name>\\S+) \\.\\.\\. (?<status>ok|FAILED|ignored)"
+    },
+    "executionPolicy": {
+      "setupTimeoutSeconds": 2700,
+      "maxAgentSteps": 150,
+      "maxRunSeconds": 5400
+    },
+    "heldOut": true
   },
   {
     "id": "ts/darkreader-6747",
@@ -154,6 +388,82 @@
     }
   },
   {
+    "id": "js/dayjs-2420",
+    "language": "JavaScript",
+    "source": {
+      "dataset": "ByteDance-Seed/Multi-SWE-bench",
+      "file": "js/iamkun__dayjs_dataset.jsonl",
+      "number": 2420
+    },
+    "grader": {
+      "image": "mswebench/iamkun_m_dayjs:pr-2420",
+      "workdir": "/home/dayjs",
+      "testPatch": "/home/test.patch",
+      "test": [
+        "bash",
+        "-c",
+        "npm test -- --verbose"
+      ],
+      "resultPattern": "^\\s*(?<status>PASS|FAIL) (?<name>\\S+)"
+    },
+    "executionPolicy": {
+      "setupTimeoutSeconds": 2700,
+      "maxAgentSteps": 150,
+      "maxRunSeconds": 5400
+    }
+  },
+  {
+    "id": "js/dayjs-1321",
+    "language": "JavaScript",
+    "source": {
+      "dataset": "ByteDance-Seed/Multi-SWE-bench",
+      "file": "js/iamkun__dayjs_dataset.jsonl",
+      "number": 1321
+    },
+    "grader": {
+      "image": "mswebench/iamkun_m_dayjs:pr-1321",
+      "workdir": "/home/dayjs",
+      "testPatch": "/home/test.patch",
+      "test": [
+        "bash",
+        "-c",
+        "npm test -- --verbose"
+      ],
+      "resultPattern": "^\\s*(?<status>PASS|FAIL) (?<name>\\S+)"
+    },
+    "executionPolicy": {
+      "setupTimeoutSeconds": 2700,
+      "maxAgentSteps": 150,
+      "maxRunSeconds": 5400
+    }
+  },
+  {
+    "id": "js/dayjs-2377",
+    "language": "JavaScript",
+    "source": {
+      "dataset": "ByteDance-Seed/Multi-SWE-bench",
+      "file": "js/iamkun__dayjs_dataset.jsonl",
+      "number": 2377
+    },
+    "grader": {
+      "image": "mswebench/iamkun_m_dayjs:pr-2377",
+      "workdir": "/home/dayjs",
+      "testPatch": "/home/test.patch",
+      "test": [
+        "bash",
+        "-c",
+        "npm test -- --verbose"
+      ],
+      "resultPattern": "^\\s*(?<status>PASS|FAIL) (?<name>\\S+)"
+    },
+    "executionPolicy": {
+      "setupTimeoutSeconds": 2700,
+      "maxAgentSteps": 150,
+      "maxRunSeconds": 5400
+    },
+    "heldOut": true
+  },
+  {
     "id": "c/jq-2821",
     "language": "C",
     "source": {
@@ -179,6 +489,82 @@
     }
   },
   {
+    "id": "c/jq-3238",
+    "language": "C",
+    "source": {
+      "dataset": "ByteDance-Seed/Multi-SWE-bench",
+      "file": "c/jqlang__jq_dataset.jsonl",
+      "number": 3238
+    },
+    "grader": {
+      "image": "mswebench/jqlang_m_jq:pr-3238",
+      "workdir": "/home/jq",
+      "testPatch": "/home/test.patch",
+      "test": [
+        "bash",
+        "-c",
+        "autoreconf -i && ./configure --with-oniguruma=builtin && make clean && make -j4 && make check"
+      ],
+      "resultPattern": "^(?<status>PASS|FAIL|XFAIL|XPASS|ERROR|SKIP): (?<name>\\S+)"
+    },
+    "executionPolicy": {
+      "setupTimeoutSeconds": 2700,
+      "maxAgentSteps": 150,
+      "maxRunSeconds": 5400
+    }
+  },
+  {
+    "id": "c/jq-2624",
+    "language": "C",
+    "source": {
+      "dataset": "ByteDance-Seed/Multi-SWE-bench",
+      "file": "c/jqlang__jq_dataset.jsonl",
+      "number": 2624
+    },
+    "grader": {
+      "image": "mswebench/jqlang_m_jq:pr-2624",
+      "workdir": "/home/jq",
+      "testPatch": "/home/test.patch",
+      "test": [
+        "bash",
+        "-c",
+        "autoreconf -i && ./configure --with-oniguruma=builtin && make clean && make -j4 && make check"
+      ],
+      "resultPattern": "^(?<status>PASS|FAIL|XFAIL|XPASS|ERROR|SKIP): (?<name>\\S+)"
+    },
+    "executionPolicy": {
+      "setupTimeoutSeconds": 2700,
+      "maxAgentSteps": 150,
+      "maxRunSeconds": 5400
+    }
+  },
+  {
+    "id": "c/jq-1793",
+    "language": "C",
+    "source": {
+      "dataset": "ByteDance-Seed/Multi-SWE-bench",
+      "file": "c/jqlang__jq_dataset.jsonl",
+      "number": 1793
+    },
+    "grader": {
+      "image": "mswebench/jqlang_m_jq:pr-1793",
+      "workdir": "/home/jq",
+      "testPatch": "/home/test.patch",
+      "test": [
+        "bash",
+        "-c",
+        "autoreconf -i && ./configure --with-oniguruma=builtin && make clean && make -j4 && make check"
+      ],
+      "resultPattern": "^(?<status>PASS|FAIL|XFAIL|XPASS|ERROR|SKIP): (?<name>\\S+)"
+    },
+    "executionPolicy": {
+      "setupTimeoutSeconds": 2700,
+      "maxAgentSteps": 150,
+      "maxRunSeconds": 5400
+    },
+    "heldOut": true
+  },
+  {
     "id": "cpp/catch2-2723",
     "language": "C++",
     "source": {
@@ -188,6 +574,82 @@
     },
     "grader": {
       "image": "mswebench/catchorg_m_catch2:pr-2723",
+      "workdir": "/home/Catch2",
+      "testPatch": "/home/test.patch",
+      "test": [
+        "bash",
+        "-c",
+        "cd build && cmake -DCATCH_DEVELOPMENT_BUILD=ON .. && make -j4 && ctest"
+      ],
+      "resultPattern": "Test\\s+#\\d+: (?<name>\\S+) \\.+\\s*\\**(?<status>Passed|Failed|Not Run|Timeout)|Performing Test (?<name>\\S+) - (?<status>Success|Failed)"
+    },
+    "executionPolicy": {
+      "setupTimeoutSeconds": 2700,
+      "maxAgentSteps": 150,
+      "maxRunSeconds": 5400
+    }
+  },
+  {
+    "id": "cpp/catch2-2288",
+    "language": "C++",
+    "source": {
+      "dataset": "ByteDance-Seed/Multi-SWE-bench",
+      "file": "cpp/catchorg__Catch2_dataset.jsonl",
+      "number": 2288
+    },
+    "grader": {
+      "image": "mswebench/catchorg_m_catch2:pr-2288",
+      "workdir": "/home/Catch2",
+      "testPatch": "/home/test.patch",
+      "test": [
+        "bash",
+        "-c",
+        "cd build && cmake -DCATCH_DEVELOPMENT_BUILD=ON .. && make -j4 && ctest"
+      ],
+      "resultPattern": "Test\\s+#\\d+: (?<name>\\S+) \\.+\\s*\\**(?<status>Passed|Failed|Not Run|Timeout)|Performing Test (?<name>\\S+) - (?<status>Success|Failed)"
+    },
+    "executionPolicy": {
+      "setupTimeoutSeconds": 2700,
+      "maxAgentSteps": 150,
+      "maxRunSeconds": 5400
+    }
+  },
+  {
+    "id": "cpp/catch2-2128",
+    "language": "C++",
+    "source": {
+      "dataset": "ByteDance-Seed/Multi-SWE-bench",
+      "file": "cpp/catchorg__Catch2_dataset.jsonl",
+      "number": 2128
+    },
+    "grader": {
+      "image": "mswebench/catchorg_m_catch2:pr-2128",
+      "workdir": "/home/Catch2",
+      "testPatch": "/home/test.patch",
+      "test": [
+        "bash",
+        "-c",
+        "cd build && cmake -DCATCH_DEVELOPMENT_BUILD=ON .. && make -j4 && ctest"
+      ],
+      "resultPattern": "Test\\s+#\\d+: (?<name>\\S+) \\.+\\s*\\**(?<status>Passed|Failed|Not Run|Timeout)|Performing Test (?<name>\\S+) - (?<status>Success|Failed)"
+    },
+    "executionPolicy": {
+      "setupTimeoutSeconds": 2700,
+      "maxAgentSteps": 150,
+      "maxRunSeconds": 5400
+    }
+  },
+  {
+    "id": "cpp/catch2-2187",
+    "heldOut": true,
+    "language": "C++",
+    "source": {
+      "dataset": "ByteDance-Seed/Multi-SWE-bench",
+      "file": "cpp/catchorg__Catch2_dataset.jsonl",
+      "number": 2187
+    },
+    "grader": {
+      "image": "mswebench/catchorg_m_catch2:pr-2187",
       "workdir": "/home/Catch2",
       "testPatch": "/home/test.patch",
       "test": [

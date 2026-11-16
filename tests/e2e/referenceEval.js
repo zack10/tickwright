@@ -19,6 +19,11 @@
 // ("# title", then the body) instead of the project's GitHub issue, e.g. a
 // clarified ticket, to tell an unclear ticket from the model or the agent.
 //
+// --held-out: also run the tickets marked "heldOut" (only at a phase gate).
+//
+// --fresh-environment: drop the stored environment before every run, so each
+// run discovers its own (measures discovery; otherwise only the first run does).
+//
 // --publish (one project only): approve publishing instead, so the run
 // opens a draft PR on the sandbox repo, and leave main at the project so
 // the PR's diff stays readable; the next run without it restores main.
@@ -201,7 +206,8 @@ const gradeDiff = async (project, instance, diff) => {
     const failing = (names) => names.filter((name) => status(name) !== "PASS").map((name) => `${name} (${status(name)})`);
     // Tests that cannot pass in the offline grader (e.g. they need a network interface), per project.
     const graded = (tests) => Object.keys(tests).filter((name) => !(project.grader.skip ?? []).includes(name.split("/")[0]));
-    const failToPass = failing(graded(instance.f2p_tests));
+    // n2p: tests the fix adds that do not exist before it (some instances have only these, e.g. gson-1703).
+    const failToPass = failing(graded({ ...instance.f2p_tests, ...instance.n2p_tests }));
     const passToPass = failing(graded(instance.p2p_tests));
     return { applied: true, failToPass, passToPass, passed: !failToPass.length && !passToPass.length, output: stdout.slice(-1500) };
   } finally {
@@ -245,8 +251,9 @@ const runProject = async (fixtures, project, publish, ticket) => {
     await useEnvironment(fixtures, project.environment ?? {});
     await usePolicy(fixtures, { ...ORIGINAL_POLICY(fixtures), ...project.executionPolicy });
     // The sandbox repository held another project before: discovery would first
-    // retry the environment that project's run stored. Runs of the same project keep it.
-    if (fixtures.lastProject !== project.id) {
+    // retry the environment that project's run stored. Runs of the same project keep it,
+    // unless --fresh-environment asks every run to discover its own.
+    if (process.argv.includes("--fresh-environment") || fixtures.lastProject !== project.id) {
       const { data } = await api("PATCH", `/api/repositories/${fixtures.repository.id}`, { body: { environmentProposal: null }, expectStatus: 200 });
       fixtures.repository = data;
       fixtures.lastProject = project.id;
@@ -389,6 +396,8 @@ const main = async () => {
   if (missing) throw new Error(missing);
   let projects = JSON.parse(fs.readFileSync(PROJECTS_FILE, "utf8"));
   if (wanted.length) projects = projects.filter((project) => wanted.some((id) => project.id.startsWith(id)));
+  // Held-out tickets run only at a phase gate, so nothing is tuned on them; --check may still prove them gradeable.
+  if (!check && !args.includes("--held-out")) projects = projects.filter((project) => !project.heldOut);
   if (!projects.length) throw new Error(`No reference project matches ${wanted.join(", ")}`);
   // Each project replaces main, which would turn an earlier project's PR into a diff against another project.
   if (publish && (projects.length > 1 || runs > 1)) throw new Error("--publish runs one project once; name it (e.g. go/go-zero-1969)");

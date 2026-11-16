@@ -379,7 +379,11 @@
         "-c",
         "npm test -- --verbose"
       ],
-      "resultPattern": "^\\s*(?<status>PASS|FAIL) (?<name>\\S+)"
+      "resultPattern": "^\\s*(?<status>PASS|FAIL) (?<name>\\S+)",
+      "skipReason": "badMutable.test.js fails on unchanged code when MockDate lands on .999 of a second (dayjs-589, 2026-11-14)",
+      "skip": [
+        "test/plugin/badMutable.test.js"
+      ]
     },
     "executionPolicy": {
       "setupTimeoutSeconds": 2700,
@@ -404,7 +408,11 @@
         "-c",
         "npm test -- --verbose"
       ],
-      "resultPattern": "^\\s*(?<status>PASS|FAIL) (?<name>\\S+)"
+      "resultPattern": "^\\s*(?<status>PASS|FAIL) (?<name>\\S+)",
+      "skipReason": "badMutable.test.js fails on unchanged code when MockDate lands on .999 of a second (dayjs-589, 2026-11-14)",
+      "skip": [
+        "test/plugin/badMutable.test.js"
+      ]
     },
     "executionPolicy": {
       "setupTimeoutSeconds": 2700,
@@ -429,7 +437,11 @@
         "-c",
         "npm test -- --verbose"
       ],
-      "resultPattern": "^\\s*(?<status>PASS|FAIL) (?<name>\\S+)"
+      "resultPattern": "^\\s*(?<status>PASS|FAIL) (?<name>\\S+)",
+      "skipReason": "badMutable.test.js fails on unchanged code when MockDate lands on .999 of a second (dayjs-589, 2026-11-14)",
+      "skip": [
+        "test/plugin/badMutable.test.js"
+      ]
     },
     "executionPolicy": {
       "setupTimeoutSeconds": 2700,

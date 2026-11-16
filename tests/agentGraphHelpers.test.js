@@ -11,6 +11,8 @@ const execFileAsync = promisify(execFile);
 const { reviewDiffSafety } = require("../dist/services/agentGraph/diffReview");
 const {
   collectRepoContext,
+  instructionsOf,
+  readInstructionFiles,
 } = require("../dist/services/agentGraph/repoContext");
 const {
   checkExistingTests,
@@ -54,6 +56,33 @@ test("repo context selects likely relevant files", async () => {
   assert.match(context.summary, /Language: JavaScript/);
   assert.ok(context.selectedFiles.includes("src/trelloAdapter.ts"));
   assert.match(context.summary, /src\/trelloAdapter\.ts/);
+});
+
+test("the project's instruction files are the configured ones, in order, inside the repository and within the size limit", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "instructions-"));
+  const outside = await fs.mkdtemp(path.join(os.tmpdir(), "outside-"));
+  t.after(() => Promise.all([root, outside].map((dir) => fs.rm(dir, { recursive: true, force: true }))));
+  await fs.mkdir(path.join(root, "docs"));
+  await fs.writeFile(path.join(root, "docs", "STYLE.md"), "Name tests after the rule.\n");
+  await fs.writeFile(path.join(root, "GUIDE.md"), "x".repeat(50));
+  await fs.writeFile(path.join(outside, "secret.md"), "outside-text");
+  let linked = true;
+  await fs.symlink(path.join(outside, "secret.md"), path.join(root, "link.md")).catch(() => (linked = false));
+
+  assert.equal(await readInstructionFiles(root, []), "None are configured for this repository.");
+  const text = await readInstructionFiles(root, ["docs/STYLE.md", "missing.md", "../outside/secret.md", "GUIDE.md", ...(linked ? ["link.md"] : [])], 40);
+  assert.match(text, /^--- docs\/STYLE\.md\nName tests after the rule\.\n/);
+  assert.match(text, /--- missing\.md\n\(not found\)/);
+  assert.match(text, /--- \.\.\/outside\/secret\.md\n\(not read: outside the repository/);
+  assert.match(text, /--- GUIDE\.md\nx{13}\n\[cut at the size limit\]/, "the rest of the limit, then cut");
+  if (linked) assert.match(text, /--- link\.md\n\(not read: outside the repository or through a symbolic link\)/);
+  assert.doesNotMatch(text, /outside-text/);
+  assert.ok(text.indexOf("docs/STYLE.md") < text.indexOf("GUIDE.md"), "in the configured order");
+
+  const files = instructionsOf({ verificationConfig: { instructionFiles: ["docs/STYLE.md"] }, executionPolicy: { maxInstructionChars: 5000 } });
+  assert.deepEqual(files, { files: ["docs/STYLE.md"], maxChars: 5000 });
+  const context = await collectRepoContext(root, "t", { checks: {} }, files);
+  assert.match(context.instructions, /Name tests after the rule/);
 });
 
 test("M5: repo context skips dotfiles and excluded dirs but keeps .env.example", async () => {

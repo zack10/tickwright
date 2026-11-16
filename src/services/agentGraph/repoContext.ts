@@ -1,6 +1,43 @@
 import { Dirent } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { findSymlink, resolveInsideRoot } from "../../utils/safePath";
+import { parseVerificationConfig } from "../toolchain";
+import type { RepositoryPolicy } from "./repoPolicy";
+
+/** The project's instruction files and their size limit, from the repository's configuration and policy. */
+export const instructionsOf = (repository: { verificationConfig: unknown; executionPolicy: unknown }) => ({
+  files: parseVerificationConfig(repository.verificationConfig).instructionFiles,
+  maxChars: (repository.executionPolicy as RepositoryPolicy | null)?.maxInstructionChars,
+});
+
+/** Default size of the project's instructions given to the models (executionPolicy.maxInstructionChars). */
+export const MAX_INSTRUCTION_CHARS = 20_000;
+
+/**
+ * The project's own instructions for contributors and coding agents (limitation 37): the files its
+ * configuration names, in that order, within a size limit. Which files they are is never chosen in code.
+ */
+export const readInstructionFiles = async (root: string, files: string[] = [], maxChars = MAX_INSTRUCTION_CHARS) => {
+  if (!files.length) return "None are configured for this repository.";
+  let left = maxChars;
+  const parts: string[] = [];
+  for (const file of files) {
+    const resolved = resolveInsideRoot(root, file);
+    if (!resolved || findSymlink(root, resolved.relativePath)) {
+      parts.push(`--- ${file}\n(not read: outside the repository or through a symbolic link)`);
+      continue;
+    }
+    const text = await fs.readFile(resolved.fullPath, "utf8").catch(() => undefined);
+    if (text === undefined) parts.push(`--- ${resolved.relativePath}\n(not found)`);
+    else if (left <= 0) parts.push(`--- ${resolved.relativePath}\n(not shown: the size limit was reached)`);
+    else {
+      parts.push(`--- ${resolved.relativePath}\n${text.length > left ? `${text.slice(0, left)}\n[cut at the size limit]` : text}`);
+      left -= Math.min(text.length, left);
+    }
+  }
+  return parts.join("\n\n");
+};
 
 export interface RepoContext {
   fileTree: string[];
@@ -13,6 +50,8 @@ export interface RepoContext {
   summary: string;
   /** The summary without file contents, for agents that read files with tools. */
   overview: string;
+  /** The project's instruction files (readInstructionFiles); absent in runs checkpointed before them. */
+  instructions?: string;
 }
 
 const EXCLUDED_DIRS = new Set([
@@ -162,6 +201,7 @@ export const collectRepoContext = async (
   root: string,
   ticket: string,
   toolchain: { language?: string; checks: Record<string, unknown> },
+  instructions?: { files?: string[]; maxChars?: number },
 ) => {
   const fileTree = await listFiles(root);
   const checks = Object.keys(toolchain.checks);
@@ -178,5 +218,6 @@ export const collectRepoContext = async (
     ...partial,
     summary: formatSummary(partial),
     overview: formatOverview(partial),
+    instructions: await readInstructionFiles(root, instructions?.files, instructions?.maxChars),
   };
 };

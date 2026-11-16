@@ -314,6 +314,8 @@ const runProject = async (fixtures, project, publish, ticket) => {
       result.note = (execution.lastError ?? "").replace(/\s+/g, " ").slice(0, 300);
     } else {
       result.note = `${execution.status}: ${(execution.lastError ?? "").replace(/\s+/g, " ").slice(0, 300)}`;
+      // A person canceled it (POST /api/executions/:id/cancel): the batch stops, as in codingEval.
+      if (execution.status === "CANCELED") result.canceled = true;
     }
   } catch (error) {
     result.outcome = "infra_failure";
@@ -436,6 +438,10 @@ const main = async () => {
         while (next < projects.length) {
           const index = next++;
           results[index] = await runProject(fixtures, projects[index], publish, ticket);
+          if (results[index].canceled) {
+            log(`${projects[index].id}: canceled; no further runs start`);
+            next = projects.length;
+          }
         }
       }),
     );
@@ -449,7 +455,8 @@ const main = async () => {
       await usePolicy(fixtures, ORIGINAL_POLICY(fixtures)).catch((error) => log(`could not restore ${fixtures.repo}'s policy: ${error.message}`));
     }
   }
-  const file = writeReport(results, { date: new Date().toLocaleDateString("sv"), commit: commit.trim(), ticket });
+  // Runs after a cancel never started.
+  const file = writeReport(results.filter(Boolean), { date: new Date().toLocaleDateString("sv"), commit: commit.trim(), ticket });
   log(`report: ${path.relative(process.cwd(), file)}`);
 };
 

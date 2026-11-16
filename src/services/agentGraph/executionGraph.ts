@@ -15,7 +15,7 @@ import {
 } from "../../prompts";
 import { NonRetryableError } from "../../utils/safeError";
 import { parseAgentOutput } from "../../utils/llmUtils";
-import { hashSnapshot } from "../executionService";
+import { ExecutionCanceledError, hashSnapshot, isCanceled } from "../executionService";
 import { DurableCheckpointSaver, prismaCheckpointStore } from "./checkpointer";
 import {
   askAgent,
@@ -79,7 +79,7 @@ import { reviewDiffSafety } from "./diffReview";
 import { secretValuesOfExecution, setupSecretsOf, testSecretsOf } from "../setupSecrets";
 import { ensureDiskSpace } from "../environmentSweep";
 import { fileActionsError } from "./outputFormat";
-import { RepoContext, collectRepoContext } from "./repoContext";
+import { RepoContext, collectRepoContext, instructionsOf } from "./repoContext";
 import { describeApprovedPlan } from "./planning";
 import { RepositoryPolicy, checkExistingTests, checkRepositoryPolicy, onlyAddsLines } from "./repoPolicy";
 
@@ -503,10 +503,15 @@ const requireToolchain = (state: GraphState) => {
 
 const inspectRepository = async (state: typeof ExecutionGraphState.State) => {
   if (!state.ticket) throw new Error("Execution graph is missing ticket");
+  const { repository } = await prisma.execution.findUniqueOrThrow({
+    where: { id: state.executionId },
+    include: { repository: true },
+  });
   const repoContext = await collectRepoContext(
     workspacePath(state.executionId),
     state.ticket,
     requireToolchain(state),
+    instructionsOf(repository),
   );
   await graphEvent(state.executionId, "GRAPH_REPOSITORY_INSPECTED", {
     fileTreeCount: repoContext.fileTree.length,
@@ -654,6 +659,7 @@ const agentLoop = async (state: GraphState) => {
       ? `${state.lastFailure}\n\n${state.keepChanges ? KEPT_CHANGES : RESET_CHANGES}`
       : "None",
     environment: state.environment ?? "Unknown.",
+    instructions: state.repoContext?.instructions ?? "None are configured for this repository.",
   });
 
   // The loop may use what is left of the execution's budget after planning
@@ -696,9 +702,10 @@ const agentLoop = async (state: GraphState) => {
         runTool: (call) => runRecordedTool(ctx, call, recorder),
         hasChanges: async () => (await changedFiles(state.executionId)).length > 0,
         // One event per model call; full tool input and output are in ToolCall.
-        onStep: (step) => {
+        onStep: async (step) => {
           steps.push(step);
-          return graphEvent(state.executionId, "GRAPH_AGENT_STEP", {
+          await stopIfCanceled(state.executionId);
+          await graphEvent(state.executionId, "GRAPH_AGENT_STEP", {
             attemptId: attempt.id,
             attemptNumber,
             step: step.step,
@@ -830,8 +837,8 @@ const verifyChange = async (state: typeof ExecutionGraphState.State) => {
     where: { id: state.executionId },
     include: { repository: true },
   });
-  await prisma.execution.update({
-    where: { id: state.executionId },
+  await prisma.execution.updateMany({
+    where: { id: state.executionId, status: { not: "CANCELED" } },
     data: { status: "VERIFYING" },
   });
   const toolchain = requireToolchain(state);
@@ -987,7 +994,11 @@ const reviewDiff = async (state: typeof ExecutionGraphState.State) => {
   let prompt: RenderedPrompt;
   let review: ReviewVerdict;
   if (state.agentMode === "tool_loop") {
-    ({ prompt, review } = await reviewWithTools(state, { ...reviewInput, verification: describeChecksRun(state.verification) }));
+    ({ prompt, review } = await reviewWithTools(state, {
+      ...reviewInput,
+      verification: describeChecksRun(state.verification),
+      instructions: state.repoContext?.instructions ?? "None are configured for this repository.",
+    }));
   } else {
     prompt = renderExecutionPrompt("review", reviewInput);
     const parsed = parseJsonRecord(await askAgent(state, prompt));
@@ -1029,8 +1040,8 @@ const reviewDiff = async (state: typeof ExecutionGraphState.State) => {
 };
 
 const blockExecution = async (state: typeof ExecutionGraphState.State) => {
-  await prisma.execution.update({
-    where: { id: state.executionId },
+  await prisma.execution.updateMany({
+    where: { id: state.executionId, status: { not: "CANCELED" } },
     data: {
       status: "BLOCKED",
       lastError: state.lastFailure,
@@ -1098,8 +1109,8 @@ const createDiffArtifact = async (state: typeof ExecutionGraphState.State) => {
         snapshotHash: sha256,
       },
     }),
-    prisma.execution.update({
-      where: { id: state.executionId },
+    prisma.execution.updateMany({
+      where: { id: state.executionId, status: { not: "CANCELED" } },
       data: { status: "AWAITING_PUBLISH_APPROVAL" },
     }),
   ]);
@@ -1124,17 +1135,28 @@ const routeAfterFailure = (state: GraphState) =>
 
 const checkpointer = new DurableCheckpointSaver(prismaCheckpointStore);
 
+const stopIfCanceled = async (executionId: string) => {
+  if (await isCanceled(executionId)) throw new ExecutionCanceledError(executionId);
+};
+/** A canceled execution stops at its next step instead of spending on with nobody waiting for it. */
+const stoppable =
+  <R>(node: (state: typeof ExecutionGraphState.State) => Promise<R>) =>
+  async (state: typeof ExecutionGraphState.State) => {
+    await stopIfCanceled(state.executionId);
+    return node(state);
+  };
+
 const graph = new StateGraph(ExecutionGraphState)
-  .addNode("load_context", loadExecutionContext)
-  .addNode("inspect_repo", inspectRepository)
-  .addNode("implement_change", implementChange)
-  .addNode("agent_loop", agentLoop)
-  .addNode("enforce_policy", enforceRepositoryPolicy)
-  .addNode("verify_change", verifyChange)
-  .addNode("analyze_failure", analyzeFailure)
-  .addNode("review_diff", reviewDiff)
-  .addNode("block_execution", blockExecution)
-  .addNode("create_diff_artifact", createDiffArtifact)
+  .addNode("load_context", stoppable(loadExecutionContext))
+  .addNode("inspect_repo", stoppable(inspectRepository))
+  .addNode("implement_change", stoppable(implementChange))
+  .addNode("agent_loop", stoppable(agentLoop))
+  .addNode("enforce_policy", stoppable(enforceRepositoryPolicy))
+  .addNode("verify_change", stoppable(verifyChange))
+  .addNode("analyze_failure", stoppable(analyzeFailure))
+  .addNode("review_diff", stoppable(reviewDiff))
+  .addNode("block_execution", stoppable(blockExecution))
+  .addNode("create_diff_artifact", stoppable(createDiffArtifact))
   .addEdge(START, "load_context")
   .addConditionalEdges("load_context", (state: GraphState) => (state.route === "blocked" ? "blocked" : "inspect"), {
     inspect: "inspect_repo",

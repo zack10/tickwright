@@ -1,5 +1,7 @@
 export interface RepositoryPolicy {
   maxChangedFiles?: number;
+  /** Characters of the project's instruction files given to the models; default MAX_INSTRUCTION_CHARS. */
+  maxInstructionChars?: number;
   protectedPaths?: string[];
   /** Tool result limits for the agent; see TOOL_OUTPUT_DEFAULTS. */
   maxToolOutputChars?: number;

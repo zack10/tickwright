@@ -73,6 +73,8 @@ export interface ToolchainResolution {
 export interface VerificationConfig {
   scripts?: string[];
   toolchain?: Partial<Toolchain>;
+  /** The project's instruction files for contributors and coding agents, given to the agent, planner and reviewer. */
+  instructionFiles?: string[];
 }
 
 /** Absolute path of the workspace inside every sandbox container. */

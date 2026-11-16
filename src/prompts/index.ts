@@ -9,12 +9,12 @@ import path from "node:path";
 export const EXECUTION_PROMPTS = {
   triage: "triage.v1",
   plan: "plan.v5",
-  planner: "planner.v2",
+  planner: "planner.v3",
   implement: "implement.v2",
-  agent: "agent.v6",
+  agent: "agent.v7",
   analyze: "analyze.v2",
   review: "review.v6",
-  reviewer: "reviewer.v6",
+  reviewer: "reviewer.v7",
   discover: "discover.v3",
   fileFormat: "file-format.v1",
 } as const;

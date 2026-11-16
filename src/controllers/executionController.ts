@@ -7,6 +7,7 @@ import { asyncHandler } from "../middleware/asyncHandler";
 import { parseVerificationConfig } from "../services/toolchain";
 import { StoredProposal } from "../services/toolchain/discovery";
 import {
+  cancelExecution,
   createExecution,
   decideApproval,
   requestPlanRevision,
@@ -227,6 +228,10 @@ export const createPlan = asyncHandler(async (req: Request, res: Response) => {
   res.status(201).json(await submitPlan(req.params.id, req.body));
 });
 /** Approve, reject, or (plan only) answer with feedback so the agent revises the plan. */
+export const cancel = asyncHandler(async (req: Request, res: Response) => {
+  res.json(await cancelExecution(req.params.id, config.apiAuthActor, req.body?.reason));
+});
+
 export const approve = asyncHandler(async (req: Request, res: Response) => {
   if (req.body.revise) {
     if (req.params.type !== "plan") throw AppError.badRequest("Only a plan can be revised");

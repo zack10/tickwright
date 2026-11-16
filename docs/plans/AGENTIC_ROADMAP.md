@@ -22,7 +22,7 @@ The existing plumbing stays: Docker sandbox, LangGraph run graph, snapshot-bound
 | 1. Provider registry + tool calling in the LLM layer | Each new LLM needs its own code and edits in several places, and the LLM layer can only send text and get text back, so the model can't ask to do anything. | One generic OpenAI-compatible provider configured per vendor (new vendors need configuration only), a single provider registry, then function calling behind one shared format. | M–L | Done; live check pending for Anthropic only (no key yet) |
 | 2. Sandbox tools | The agent only sees files chosen by name, cut at 20 KB, and must rewrite whole files; it can also edit tests. | Give it safe tools inside the Docker sandbox (list, read, search, edit, run checks) with the safety rules enforced in each tool, and log every call. | M | Done (tools built and tested; used from Phase 3) |
 | 3. Agent loop | The agent gets one shot per attempt and can't explore, check its work or change course. | A loop where the model picks a tool, sees the result and decides the next step, until it finishes or hits a step/token/time budget; the existing checks still run after it. | L | Done |
-| 4. Any language, framework and platform | The pipeline assumes Node: a Node-only sandbox image, `npm ci`, checks run as `npm run <script>`, `package.json`-based context and prompts that say "Node/TypeScript". A PHP, Java, Python or Go repository cannot be fixed at all. | Detect each repository's toolchain (with per-repository overrides) and take the sandbox image, install step and checks from it; give the agent a general command tool inside the sandbox like a real coding agent; enforce test and protected-file rules on the final diff; language-neutral prompts; benchmark scenarios in other languages. | L | In progress |
+| 4. Any language, framework and platform | The pipeline assumes Node: a Node-only sandbox image, `npm ci`, checks run as `npm run <script>`, `package.json`-based context and prompts that say "Node/TypeScript". A PHP, Java, Python or Go repository cannot be fixed at all. | Detect each repository's toolchain (with per-repository overrides) and take the sandbox image, install step and checks from it; give the agent a general command tool inside the sandbox like a real coding agent; enforce test and protected-file rules on the final diff; language-neutral prompts; benchmark scenarios in other languages. | L | In progress: "Done when" is met, the gate has not been run; what is left before it was cut to a short list on 2026-11-16 |
 | 5. Any source host and issue tracker | Only GitHub repositories and Trello cards work; the agent reads only a card's title and description, and always targets the default branch. | Pluggable source-control adapters (GitLab, Bitbucket, Azure DevOps) like the tracker adapters, more tracker adapters (Jira, Linear, GitHub Issues), ticket attachments and comments passed to the agent, and a chosen target branch. | L | Not started |
 | 6. Any kind of task | The agent only fixes bugs, with one task in one repository per ticket. | Task types (bug, feature, refactor, dependency upgrade, migration) with matching prompts and checks, plans with several tasks, and changes across several repositories; benchmark scenarios for each type. | L | Not started |
 | 7. Feedback loop after the PR | The agent stops at the draft PR: it never sees review comments or the repository's own CI. | Read PR review comments and CI results, and run a follow-up attempt on the same branch, within the same budgets and approvals. | M | Not started |
@@ -42,7 +42,7 @@ Phase numbers are names: code comments, `CLAUDE.md` and the limitation rows refe
 
 | Step | What | Why here |
 | --- | --- | --- |
-| 1 | **Finish Phase 4**, including the repository's own instructions (limitation 37) and working within the step limit (38), and its open rows (12, 18, 20, 21, 22, 30, 33 to 36, 42, 44) | Every later phase is measured on real projects, and those runs are still lost to the environment, the agent's own tests and the step limit rather than to the ticket |
+| 1 | **Pass Phase 4's gate** with the short list in [What is left](#what-is-left) (cut down 2026-11-16; before, this step was every open row of the phase: 12, 18, 20, 21, 22, 30, 33 to 38, 42, 44) | Every later phase is measured on real projects, and those runs are still lost to the environment, the agent's own tests and the step limit rather than to the ticket |
 | 2 | **Measurements that can still tell better from worse** (limitation 40): several tickets per reference project, harder benchmark scenarios | From here on almost every step changes the agent. A benchmark at its ceiling and one ticket per project cannot say whether a change helped |
 | 3 | **Phase 7: feedback after the PR**, with the rules for untrusted text (limitation 23) written first and keeping the branch up to date (39) | An agent that cannot answer a review comment or a failing CI run leaves the person to finish every change by hand. It needs GitHub only: build it on a small source-control interface that Phase 5 later implements for other hosts |
 | 4 | **Phase 6: any kind of task** | Features, refactors and changes that must update existing tests (limitation 31) are most of real work; bug fixes alone are a narrow product |
@@ -90,7 +90,7 @@ Advice written while the catch2 results of 2026-11-13 to 15 were fresh. These ar
 
 ## Known limitations (audit 2026-10-26)
 
-Every place where the agent is tied to one language, platform, service or kind of problem, and the phase that removes it. **No phase is done while it leaves one of its rows open.** New limitations of this kind go in this table first.
+Every place where the agent is tied to one language, platform, service or kind of problem, and the phase that removes it. **A phase is done when its gate passes** (changed 2026-11-16). A row still open then is not a reason to keep the phase open: it goes to the phase's backlog with the evidence that would bring it back (for Phase 4, [What is left](#what-is-left)). The rule before, "no phase is done while it leaves one of its rows open", meant Phase 4 could only grow: every real project that is run adds rows to it (most rows from 25 on were found that way). New limitations of this kind go in this table first.
 
 | # | Limitation | Where in the code | Effect | Phase |
 | --- | --- | --- | --- | --- |
@@ -485,6 +485,54 @@ Known limits of the design: budgets are checked before each call, so a started c
 - **How quality changes are accepted (decided 2026-10-29).** Patching a prompt after each benchmark failure tunes the agent to the 14 scenarios and can break others, and small models ignore rules they are given. So: a failure mode that matters is enforced in code (tools, verification, an independent reviewer), not only in a prompt; prompts keep general working principles, never scenario-specific patches, and a rule that removing does not hurt is removed. A change is measured with at least 3-5 runs per affected scenario plus a full-suite pass, and "wrong fix shipped" is a hard gate: a change that raises it is rejected. Before more prompt changes, the scenarios get a held-out set (the reference projects and a slice of a public multi-language benchmark) that is scored but not studied run by run. When the agent cannot verify a change, it blocks with its reason instead of shipping.
 - **Security unchanged:** only setup (and discovery) has network, and neither ever gets the source host token; hooks stay disabled; the agent's sandbox and the checks run without network. After setup the container is snapshotted (`docker commit`, as Devin snapshots its machine), so whatever setup installed is kept wherever the tool put it, with nothing per language; files setup or checks create in the repository never show up in diffs.
 
+### What is left
+
+Restructured 2026-11-16. The phase had 26 open tasks and no end: each reference project added more, and the rule was that none could stay open. This section is now what decides the phase. The [Tasks](#tasks-4) list below stays as the record of what was built and found; an unchecked box there that is listed under B, C or D here does not hold the phase open.
+
+All four parts of "Done when" are already met (three languages in the benchmark, a database scenario, a draft PR on a non-Node repository, the reference projects run with their failures recorded). What the phase lacks is its gate.
+
+**A. Before the gate.** Nothing else is built first.
+
+1. **One stronger model on the projects below the bar** (limitation 22, recommendation 1): `cpp/catch2-2723` and `rust/fd-590`, 10 runs each. If it clears them, the agent changes under B are model choice and not tooling, and are not built. A paid run: model, cost, cap and stop rule agreed first.
+2. **The evaluation tools** (recommendation 7): a cancel call that stops a run's containers (limitation 43; the API has none today), a report written when an evaluation is stopped, the clock-dependent dayjs grader test and the locale-dependent gson test taken out of grading. A gate of 240 runs hits each of them.
+3. **The gate's tickets, run once each** (limitation 40): the tickets added on 2026-11-16 are proven valid in their grader images but none has been run. One run each as a smoke check of the grading, not as a result. gson and go-zero have no usable held-out ticket in the dataset: the gate runs without one for those two, decided here and not after the result.
+4. **The repository's own instructions** (limitation 37), in its smallest form: the files named by the repository's configuration are given to the agent, the planner and the reviewer within a size limit. Hidden tests cannot show its effect, so it is not judged by the reference projects: it is needed for point 5 of the gate (real tickets), where a change is judged by a person who knows the conventions. A prompt change: x3 first.
+5. **Limitation 35 measured**: fd and dayjs, 10 runs each, with the stored proposal cleared before each run (`--fresh-environment`). This is also the gate's own run for those two projects, so it is paid once.
+
+Then the gate is run as written below. **Real tickets (point 5 of the gate) start now, not after the reference runs**: five small tickets from this repository's own backlog, through the tracker, each recorded as merged as it was, merged after edits or rejected. They cost cents, and they are the only tickets no model has seen in training (every reference project is a public issue with a public fix).
+
+**B. Agent changes, built only if the gate's cause counts point at them.** Each costs an x3 and a 10-run project, and three in a row have already moved one failure without ending it (limitations 34, its follow-up, 36). After the gate, a cause that makes a project miss its bar gets at most two attempts (the gate's own rule); the rest stay here.
+
+| Limitation | What would be built | Brought back by |
+| --- | --- | --- |
+| 44 | `finish` rehearses verification | A project missing its bar on "the agent's own test" |
+| 38 (rest) | A retry that starts from what the last attempt learned; stopping an attempt that repeats itself | A project missing its bar on "step limit". On the 150-step limit this is not what fails on five of six projects |
+| 30, 33, 47, 48 | Prompt and reviewer rules: keep behaviour the ticket does not mention, test every example of the plan, fix the cause and not the example, doubt a plan example | Wrong fixes over the gate's 3% from that cause. Each was seen in one run; 48 is caught at plan approval |
+| 25 | Baselines per test, not per check | A wrong fix that broke a test inside a check that already failed |
+| Triage false declines; several candidate fixes per ticket | As in the task list | A measured rate, not one run |
+
+**C. Backlog: built when a real repository needs it.** None of these blocks a team with an ordinary repository, and for several the main part is built and waits for a project to confirm it.
+
+| Limitation | State | Still open | Brought back by |
+| --- | --- | --- | --- |
+| 2 Service containers | Built, proven on the `python-db` suite | Discovery proposing services; a service `command`; a reference project with a database | A repository whose tests need a service a person has not declared |
+| 6 Private dependencies | Setup secrets and submodules built, not confirmed on a project | Git LFS; secret files; submodules on other hosts | A repository that needs one |
+| 17 Test secrets | Environment variables built | Files (`.env.test`, a credentials file) | A repository whose tests read a file |
+| 18 Flaky and slow suites | Baseline and one rerun built | Related tests first, then the full suite | A suite that does not finish in the check timeout |
+| 12 Subprojects | Not started | All of it | The first monorepo |
+| 20 Infrastructure repositories | Not started | All of it | The first such repository |
+| 21 Large repositories | Not started | Partial clone, search in the sandbox, a paged tree | A clone or a search that takes minutes |
+| 42 A default image a laptop can carry | A small image per repository works today | AUDIT M16 reproduced; a cheaper saved environment | A gate run lost to M16, or a second machine that cannot hold 15 GB |
+| A resumed run on another machine | Not started | A shared volume or object storage | Phase 8 (workers on several machines) |
+| Cost settings (reasoning effort and a model per call) | Settings built, defaults unchanged | Measured as defaults | Recommendation 2, measured at a gate |
+
+**D. Closed without more work.** Their boxes below are left as they were, for the record.
+
+- *Benchmark in two more languages:* Python, Go and Python with PostgreSQL are in the benchmark; "PHP or Java with dependencies" is covered by the gson reference project (Java, Maven).
+- *`reviewer.v2`, expected behaviour as examples, ask instead of guessing:* superseded by the later reviewer versions (live: `reviewer.v6`) and by the plan a person approves (Phase 9, pulled forward).
+- *One call for triage and the plan:* decided against on 2026-10-30.
+- *Build the reference matrix:* six projects in six stacks run. The stacks of the wish list that are missing (PHP, Ruby, .NET, a frontend, a monorepo, Terraform) are added by the phase or the real repository that needs them, not here.
+
 ### Tasks
 
 - [x] Environment model (`src/services/toolchain/`): image, setup command, checks, env, test-file patterns, protected files; stored per repository in `verificationConfig.toolchain`, validated by the API. Existing `{ scripts: [...] }` configurations keep working: the names select checks
@@ -562,7 +610,7 @@ Known limits of the design: budgets are checked before each call, so a started c
 
 **Done when:** the benchmark passes in at least three languages with no drop on the Node scenarios, a scenario whose tests need a database passes, an e2e execution opens a draft PR on a non-Node repository, and the reference projects have been run with every failure recorded as a limitation.
 
-**Gate for this phase** (see [Finishing a phase: the gate](#finishing-a-phase-the-gate-decided-2026-11-15)): the six reference projects that run today (`java/gson-1555`, `go/go-zero-1969`, `js/dayjs-589`, `rust/fd-590`, `c/jq-2821`, `cpp/catch2-2723`), each with two more tickets and one held-out ticket taken from the same dataset, at the default bar. `ts/darkreader-6747` stays a known failure under limitation 31 (Phase 6). Before the gate can be run: the extra tickets are added and each is proven valid in its grader image (limitation 40), the evaluation tools are fixed (recommendation 7), and limitations 35, 37 and 38 are closed or shown not to be what fails. Where the phase stood on 2026-11-15, one ticket per project: gson, go-zero and dayjs at 10 of 10, jq 9 of 10, fd 7 of 10, catch2 6 of 9 (limitation 34's row; later batches are recorded in rows 34 and 36). On the 150-step limit (row 38), 2026-11-15: catch2 9 of 10 with 1 wrong, gson and go-zero 10 of 10, dayjs 9 of 10, fd 8 of 10, 0 wrong outside catch2; jq not yet rerun. Limitation 38 is shown not to be what fails on these five; limitation 35 is.
+**Gate for this phase** (see [Finishing a phase: the gate](#finishing-a-phase-the-gate-decided-2026-11-15)): the six reference projects that run today (`java/gson-1555`, `go/go-zero-1969`, `js/dayjs-589`, `rust/fd-590`, `c/jq-2821`, `cpp/catch2-2723`), each with two more tickets and one held-out ticket taken from the same dataset, at the default bar. `ts/darkreader-6747` stays a known failure under limitation 31 (Phase 6). Before the gate can be run: the extra tickets are added and each is proven valid in its grader image (limitation 40), the evaluation tools are fixed (recommendation 7), and limitations 35, 37 and 38 are closed or shown not to be what fails. Where the phase stood on 2026-11-15, one ticket per project: gson, go-zero and dayjs at 10 of 10, jq 9 of 10, fd 7 of 10, catch2 6 of 9 (limitation 34's row; later batches are recorded in rows 34 and 36). On the 150-step limit (row 38), 2026-11-15: catch2 9 of 10 with 1 wrong, gson and go-zero 10 of 10, dayjs 9 of 10, fd 8 of 10, 0 wrong outside catch2; jq not yet rerun. Limitation 38 is shown not to be what fails on these five; limitation 35 is. Changed 2026-11-16: what has to happen before this gate is list A of [What is left](#what-is-left) and nothing else; the bar is unchanged.
 
 ---
 

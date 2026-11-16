@@ -413,31 +413,6 @@
     }
   },
   {
-    "id": "js/dayjs-1321",
-    "language": "JavaScript",
-    "source": {
-      "dataset": "ByteDance-Seed/Multi-SWE-bench",
-      "file": "js/iamkun__dayjs_dataset.jsonl",
-      "number": 1321
-    },
-    "grader": {
-      "image": "mswebench/iamkun_m_dayjs:pr-1321",
-      "workdir": "/home/dayjs",
-      "testPatch": "/home/test.patch",
-      "test": [
-        "bash",
-        "-c",
-        "npm test -- --verbose"
-      ],
-      "resultPattern": "^\\s*(?<status>PASS|FAIL) (?<name>\\S+)"
-    },
-    "executionPolicy": {
-      "setupTimeoutSeconds": 2700,
-      "maxAgentSteps": 150,
-      "maxRunSeconds": 5400
-    }
-  },
-  {
     "id": "js/dayjs-2377",
     "language": "JavaScript",
     "source": {
@@ -473,31 +448,6 @@
     },
     "grader": {
       "image": "mswebench/jqlang_m_jq:pr-2821",
-      "workdir": "/home/jq",
-      "testPatch": "/home/test.patch",
-      "test": [
-        "bash",
-        "-c",
-        "autoreconf -i && ./configure --with-oniguruma=builtin && make clean && make -j4 && make check"
-      ],
-      "resultPattern": "^(?<status>PASS|FAIL|XFAIL|XPASS|ERROR|SKIP): (?<name>\\S+)"
-    },
-    "executionPolicy": {
-      "setupTimeoutSeconds": 2700,
-      "maxAgentSteps": 150,
-      "maxRunSeconds": 5400
-    }
-  },
-  {
-    "id": "c/jq-3238",
-    "language": "C",
-    "source": {
-      "dataset": "ByteDance-Seed/Multi-SWE-bench",
-      "file": "c/jqlang__jq_dataset.jsonl",
-      "number": 3238
-    },
-    "grader": {
-      "image": "mswebench/jqlang_m_jq:pr-3238",
       "workdir": "/home/jq",
       "testPatch": "/home/test.patch",
       "test": [
@@ -624,32 +574,6 @@
     },
     "grader": {
       "image": "mswebench/catchorg_m_catch2:pr-2128",
-      "workdir": "/home/Catch2",
-      "testPatch": "/home/test.patch",
-      "test": [
-        "bash",
-        "-c",
-        "cd build && cmake -DCATCH_DEVELOPMENT_BUILD=ON .. && make -j4 && ctest"
-      ],
-      "resultPattern": "Test\\s+#\\d+: (?<name>\\S+) \\.+\\s*\\**(?<status>Passed|Failed|Not Run|Timeout)|Performing Test (?<name>\\S+) - (?<status>Success|Failed)"
-    },
-    "executionPolicy": {
-      "setupTimeoutSeconds": 2700,
-      "maxAgentSteps": 150,
-      "maxRunSeconds": 5400
-    }
-  },
-  {
-    "id": "cpp/catch2-2187",
-    "heldOut": true,
-    "language": "C++",
-    "source": {
-      "dataset": "ByteDance-Seed/Multi-SWE-bench",
-      "file": "cpp/catchorg__Catch2_dataset.jsonl",
-      "number": 2187
-    },
-    "grader": {
-      "image": "mswebench/catchorg_m_catch2:pr-2187",
       "workdir": "/home/Catch2",
       "testPatch": "/home/test.patch",
       "test": [

@@ -204,8 +204,10 @@ const gradeDiff = async (project, instance, diff) => {
       return suites.get(name) ?? suites.get(name.split("/")[0]) ?? suites.get(name.split(":")[0]) ?? "MISSING";
     };
     const failing = (names) => names.filter((name) => status(name) !== "PASS").map((name) => `${name} (${status(name)})`);
-    // Tests that cannot pass in the offline grader (e.g. they need a network interface), per project.
-    const graded = (tests) => Object.keys(tests).filter((name) => !(project.grader.skip ?? []).includes(name.split("/")[0]));
+    // Tests that cannot pass in the offline grader (e.g. they need a network interface) or that fail at random, per project.
+    // A name matches whole (Jest reports per file: "test/plugin/badMutable.test.js") or by its first segment (Go's "TestX/sub").
+    const skip = project.grader.skip ?? [];
+    const graded = (tests) => Object.keys(tests).filter((name) => !skip.includes(name) && !skip.includes(name.split("/")[0]));
     // n2p: tests the fix adds that do not exist before it (some instances have only these, e.g. gson-1703).
     const failToPass = failing(graded({ ...instance.f2p_tests, ...instance.n2p_tests }));
     const passToPass = failing(graded(instance.p2p_tests));
@@ -339,6 +341,7 @@ const writeReport = (results, meta) => {
     "",
     `Model: ${env("E2E_LLM_PROVIDER")} / ${env("E2E_LLM_MODEL")}. Code version: ${meta.commit}. Ticket: ${meta.ticket ? `\`${meta.ticket}\` (reference-projects/tickets/)` : "the GitHub issue"}.`,
     "",
+    ...(meta.partial ? [`**Partial: ${meta.partial} runs graded.** The evaluation did not reach its end (stopped, or still running).`, ""] : []),
     ...(results.length > new Set(results.map((result) => result.project)).size
       ? [
           "| Project | Runs | Outcomes |",
@@ -371,8 +374,9 @@ const writeReport = (results, meta) => {
     ]),
   ];
   fs.mkdirSync(REPORT_DIR, { recursive: true });
-  let file = path.join(REPORT_DIR, `reference-${meta.date}.md`);
-  for (let index = 2; fs.existsSync(file); index += 1) file = path.join(REPORT_DIR, `reference-${meta.date}-${index}.md`);
+  // The same file is rewritten after every run, so a batch that is stopped still leaves its report.
+  let file = meta.file ?? path.join(REPORT_DIR, `reference-${meta.date}.md`);
+  for (let index = 2; !meta.file && fs.existsSync(file); index += 1) file = path.join(REPORT_DIR, `reference-${meta.date}-${index}.md`);
   fs.writeFileSync(file, `${lines.join("\n")}\n`);
   return file;
 };
@@ -430,6 +434,7 @@ const main = async () => {
   const { stdout: commit } = await execFileAsync("git", ["rev-parse", "--short", "HEAD"]).catch(() => ({ stdout: "unknown" }));
   log(`${projects.length} project(s) with ${env("E2E_LLM_PROVIDER")}/${env("E2E_LLM_MODEL")}${env("E2E_PRICE_PER_MTOK") ? "" : " (set E2E_PRICE_PER_MTOK for cost)"}`);
   const results = new Array(projects.length);
+  const meta = { date: new Date().toLocaleDateString("sv"), commit: commit.trim(), ticket };
   let next = 0;
   try {
     // Each slot takes the next project when its run ends; results keep the project order.
@@ -438,6 +443,9 @@ const main = async () => {
         while (next < projects.length) {
           const index = next++;
           results[index] = await runProject(fixtures, projects[index], publish, ticket);
+          // A batch stopped at its dollar cap wrote no report (2026-11-14, twice): write one after every run.
+          const done = results.filter(Boolean);
+          meta.file = writeReport(done, { ...meta, partial: `${done.length} of ${projects.length}` });
           if (results[index].canceled) {
             log(`${projects[index].id}: canceled; no further runs start`);
             next = projects.length;
@@ -456,7 +464,7 @@ const main = async () => {
     }
   }
   // Runs after a cancel never started.
-  const file = writeReport(results.filter(Boolean), { date: new Date().toLocaleDateString("sv"), commit: commit.trim(), ticket });
+  const file = writeReport(results.filter(Boolean), meta);
   log(`report: ${path.relative(process.cwd(), file)}`);
 };
 

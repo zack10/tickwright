@@ -471,9 +471,13 @@ test("checks reach the run's services by name, and nothing else", { skip: requir
   });
   assert.equal(result.passed, true, result.results.map((r) => r.output).join("\n"));
 
-  // Setup (on the bridge too, for package registries) and the agent's sandbox reach it the same way.
-  const setup = await setupWorkspace(id, { ...toolchain, setup: null }, [check("service", "curl -sf -m 10 http://web >/dev/null")]);
-  assert.deepEqual(setup.baseline.map(({ check, passed }) => ({ check, passed })), [{ check: "service", passed: true }]);
+  // Setup (on the bridge too, for package registries) and the agent's sandbox reach it the same way;
+  // the baseline checks after setup are offline, as verification is.
+  const setup = await setupWorkspace(id, { ...toolchain, setup: ["sh", "-c", "curl -sf -m 10 https://example.com >/dev/null"] }, [
+    check("service", "curl -sf -m 10 http://web >/dev/null"),
+    check("internet", "! curl -sf -m 5 https://example.com >/dev/null"),
+  ]);
+  assert.deepEqual(setup.baseline.map(({ check, passed }) => ({ check, passed })), [{ check: "service", passed: true }, { check: "internet", passed: true }]);
   await startSandbox(id, toolchain);
   try {
     assert.equal((await execInSandbox(id, ["curl", "-sf", "-m", "10", "http://web"], 30_000)).exitCode, 0);
@@ -647,6 +651,9 @@ test("environment snapshots are cached per repository and per environment", () =
     environmentCacheImage("Repo-1", toolchain, [{ name: "test", command: ["make", "check"] }]),
   ];
   assert.equal(new Set([image, ...other]).size, 6, "any change to the environment is another cache");
+  const formatOne = require("node:crypto").createHash("sha256")
+    .update(JSON.stringify([toolchain.image, toolchain.setup, Object.entries(toolchain.env).sort(), checks])).digest("hex").slice(0, 32);
+  assert.notEqual(image, `agent-cache-repo-1:${formatOne}`, "a snapshot made before the baseline ran offline is not reused");
   assert.throws(() => environmentCacheImage("../x", toolchain, checks), /Unsafe workspace id/);
 });
 

@@ -69,6 +69,7 @@ import {
   FixedEnvironment,
   StoredProposal,
   applyProposal,
+  describeNoEnvironment,
   discoverEnvironment,
   discoveryFiles,
   hashProposal,
@@ -213,6 +214,8 @@ export interface ProposedEnvironment {
   repositoryId: string;
   hash: string;
   checks: Record<string, string[]>;
+  /** Discovery did not confirm it: setup worked and the checks ran, but failed on the unmodified code. */
+  unconfirmed?: true;
 }
 
 type SetupResult = Awaited<ReturnType<typeof setupWorkspace>>;
@@ -234,8 +237,9 @@ const describeFixed = (fixed: FixedEnvironment) =>
  * proposes an environment from the project's files (or the proposal an
  * earlier run proved is reused), and setup plus the checks on the unmodified
  * code prove it; a proposal that fails goes back to the agent. A proved
- * proposal is stored on the repository until a person approves it. If none
- * works, the run continues in the resolved toolchain (the default image).
+ * proposal is stored on the repository until a person approves it. If none is
+ * proven, the first whose checks all ran is used, unconfirmed; if none got that
+ * far, the run stops (`notFound`): without checks nothing can be verified.
  */
 /** Progress of a long build, setup or check, as an event the API shows (see withProgress). */
 const reportProgress = (executionId: string): ProgressReporter => (progress) =>
@@ -246,7 +250,7 @@ const prepareEnvironment = async (
   repository: Omit<Repository, "encryptedSetupSecrets" | "encryptedTestSecrets">,
   resolution: ToolchainResolution,
   ask: (prompt: RenderedPrompt) => Promise<string>,
-): Promise<{ toolchain: Toolchain; setup: SetupResult; environmentProposal?: ProposedEnvironment }> => {
+): Promise<{ toolchain: Toolchain; setup: SetupResult; environmentProposal?: ProposedEnvironment } | { notFound: string }> => {
   await ensureDiskSpace();
   const checksFor = (toolchain: Toolchain) => selectChecks(toolchain, repository.verificationConfig).run;
   const limits = repository.executionPolicy as RepositoryPolicy | null;
@@ -310,14 +314,14 @@ const prepareEnvironment = async (
   );
   await graphEvent(executionId, "GRAPH_ENVIRONMENT_DISCOVERED", {
     proven: result.proven,
+    ...(result.unconfirmed ? { unconfirmed: true } : {}),
     fromStored: result.fromStored,
     rationale: result.rationale,
     attempts: result.attempts,
   });
-  if (!result.proven || !result.proposal || !result.proof) {
-    if (proofs) await restoreClone(executionId);
-    return setUp(resolution.toolchain);
-  }
+  // Going on with no checks was blocked at ~3x cost in 3 of 4 runs (fd 3dd2814c, dayjs bd2a1554); the one fix it gave (go-zero 8501e753) is the accepted loss.
+  // An unconfirmed proposal (its checks ran) goes on: its failures count as already failing.
+  if (!result.proposal || !result.proof) return { notFound: describeNoEnvironment(result.attempts) };
 
   const hash = hashProposal(result.proposal);
   if (stored?.hash !== hash) {
@@ -337,7 +341,7 @@ const prepareEnvironment = async (
   return {
     toolchain: { ...toolchain, image: result.proof.image },
     setup: result.proof,
-    environmentProposal: { repositoryId: repository.id, hash, checks: toolchain.checks },
+    environmentProposal: { repositoryId: repository.id, hash, checks: toolchain.checks, ...(result.unconfirmed ? { unconfirmed: true as const } : {}) },
   };
 };
 
@@ -428,12 +432,14 @@ const loadExecutionContext = async (
   const ask = (prompt: RenderedPrompt) =>
     askAgent({ ...state, ...calls, maxTokens }, prompt);
   // Later commands run in the snapshot taken after setup and the baseline checks.
-  const { toolchain, setup, environmentProposal } = await prepareEnvironment(
+  const prepared = await prepareEnvironment(
     execution.id,
     execution.repository,
     resolution,
     ask,
   );
+  if ("notFound" in prepared) return { lastFailure: prepared.notFound, route: "blocked" as GraphRoute };
+  const { toolchain, setup, environmentProposal } = prepared;
   // Failures here existed before the agent changed anything.
   const failingBefore = Object.fromEntries(
     setup.baseline.filter((result) => !result.passed).map((result) => [result.check, result.output.slice(-2000)]),
@@ -1130,7 +1136,10 @@ const graph = new StateGraph(ExecutionGraphState)
   .addNode("block_execution", blockExecution)
   .addNode("create_diff_artifact", createDiffArtifact)
   .addEdge(START, "load_context")
-  .addEdge("load_context", "inspect_repo")
+  .addConditionalEdges("load_context", (state: GraphState) => (state.route === "blocked" ? "blocked" : "inspect"), {
+    inspect: "inspect_repo",
+    blocked: "block_execution",
+  })
   .addConditionalEdges("inspect_repo", implementNode, {
     implement_change: "implement_change",
     agent_loop: "agent_loop",

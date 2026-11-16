@@ -577,13 +577,16 @@ export const setupWorkspace = async (
       if (setupOutputs.length)
         await run(["sh", "-c", COPY_ENTRIES, "sh", SANDBOX_ROOT, SETUP_COPY_DIR, ...setupOutputs]);
     }
+    // The baseline runs offline like the sandbox and verification: a test that needs the network passed here and failed every verification (go-zero-2537, 3c8b7398).
+    if (checks.length) await execDocker(["network", "disconnect", "bridge", setupContainer(id)]);
     for (const { name, command } of checks)
       try {
         const result = await run(command, options.testSecrets, { step: "baseline", check: name });
         const output = mask(`${result.stdout}\n${result.stderr}`, Object.values(options.testSecrets ?? {}));
         baseline.push({ check: name, passed: true, output: output.slice(-4000) });
       } catch (error) {
-        baseline.push({ check: name, passed: false, output: (error as Error).message.slice(-4000) });
+        // Both streams' ends (each already cut to 4000): cutting the whole kept only Jest's stdout coverage table (dayjs bd2a1554).
+        baseline.push({ check: name, passed: false, output: (error as Error).message.slice(-10_000) });
       }
     await withImageLock(async () => {
       await execDocker([
@@ -618,6 +621,8 @@ export const setupWorkspace = async (
 export type CacheUse = "none" | "built" | "reused";
 const CACHE_LABEL = "agent.environment-cache";
 const cacheRepository = (image: string) => image.split(":")[0];
+// Bump when what a snapshot holds changes. 2: baseline offline; a v1 snapshot kept go's cached pass of a networked test (go-zero-2537, abe7e084).
+const SNAPSHOT_FORMAT = 2;
 
 export const environmentCacheImage = (
   scope: string,
@@ -626,7 +631,7 @@ export const environmentCacheImage = (
 ) => {
   const key = crypto
     .createHash("sha256")
-    .update(JSON.stringify([toolchain.image, toolchain.setup, Object.entries(toolchain.env).sort(), checks]))
+    .update(JSON.stringify([SNAPSHOT_FORMAT, toolchain.image, toolchain.setup, Object.entries(toolchain.env).sort(), checks]))
     .digest("hex")
     .slice(0, 32);
   return `agent-cache-${safeId(scope).toLowerCase()}:${key}`;
@@ -934,12 +939,15 @@ export const describeVerification = (verification: unknown) => {
   if (coverageNote) lines.push(coverageNote);
   if (unavailable.length) lines.push(`Not available in this repository: ${unavailable.join(", ")}.`);
   const { environmentProposal: proposal } = (verification ?? {}) as {
-    environmentProposal?: { repositoryId: string; hash: string; checks: Record<string, string[]> };
+    environmentProposal?: { repositoryId: string; hash: string; checks: Record<string, string[]>; unconfirmed?: true };
   };
   if (proposal)
     lines.push(
       "",
       "**These checks were proposed by the agent from the project's files and are not approved yet:**",
+      ...(proposal.unconfirmed
+        ? ["They ran but failed on the unmodified code, and the agent could not confirm the failures are the project's own rather than the environment's, so a check that failed before proves nothing about this change."]
+        : []),
       ...Object.entries(proposal.checks).map(([name, command]) => `- ${name}: \`${commandText(command)}\``),
       `Approve them once and every later run uses them as fixed checks: \`POST /api/repositories/${proposal.repositoryId}/environment/approve\` with \`{ "proposalHash": "${proposal.hash}" }\`.`,
     );

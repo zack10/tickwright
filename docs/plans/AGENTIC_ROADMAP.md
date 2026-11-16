@@ -690,6 +690,18 @@ Then the gate is run as written below. **Real tickets (point 5 of the gate) star
 
 **Goal:** several agents work on different tickets at the same time, safely, without interfering with each other or exhausting shared limits.
 
+### The front end (decided 2026-11-16)
+
+No phase owned a front end. The decision:
+
+- **A small web app, not a terminal tool, and not yet.** The people who approve plans and changes are reviewers and team leads: they will not install a tool to approve a change, and a terminal cannot show a diff with the reviewer's objections beside it. The person who runs the system already has a terminal tool (`npm run trace`).
+- **Until it exists, the tracker and the pull request page are the front end**: approvals on the ticket (`/approve`, `/reject`), the run read with the trace command. While the real tickets of the gate are run this way, every moment a person has to go to the API or the database by hand is written down; that list is what the web app has to do.
+- **It waits for users and roles** (limitation 41). A web app on the one shared API token cannot be given to a team.
+- **Four screens, in this order:** the approval queue with the exact diff, the checks that ran and the reviewer's objections; the run timeline (what the trace prints, for someone who did not build it); repository setup (connect a repository, approve its environment, enter secrets), which is done by API calls today; cost per ticket and per repository.
+- **Same repository, its own folder** (`web/`) with its own `package.json`, CI job and image. The API still changes in Phases 6, 7 and 8, and an endpoint and the screen that uses it should land in one pull request; the request shapes (`src/schemas/`) are shared as types so a mismatch fails the build. It only calls the HTTP API and holds no rule of its own: every rule stays in the backend, where it is tested. It moves to its own repository only when another person or team owns it, it needs its own release schedule, or one part is opened and the other is not.
+
+Not decided: whether the first users outside are teams or single developers (for single developers a terminal tool is worth more and the web app can wait longer), and whether a team would rather approve from its chat tool. Both are asked of the first pilot team before any screen is built.
+
 What already makes this safe: each execution has its own workspace folder, Docker container, diff artifact and branch (`agent/<executionId>`), and leases plus atomic claims stop two workers from running the same execution. What's missing is a way to turn concurrency on, limits to keep it under control, and proof that it works.
 
 ### Tasks
@@ -705,7 +717,7 @@ What already makes this safe: each execution has its own workspace folder, Docke
 - [ ] A second provider when the first is down (limitation 54): optional per agent, used only when the first is unavailable, and recorded on the execution
 - [ ] Change the encryption key without entering every credential again (limitation 58): a key identifier in the stored form, a second key accepted for reading, a command that re-encrypts
 - [ ] The old task pipeline removed or off by default (limitation 56, `AUDIT.md` X2), decided before the app runs on a shared server
-- [ ] Decide where a person reads and approves the exact diff once there are users and roles (the tracker comment, the host's PR page, or a frontend of our own); no phase owns a frontend today
+- [ ] The front end (decided 2026-11-16, see [below](#the-front-end-decided-2026-11-16)): after users and roles, the approval screen; then the run timeline; then repository setup
 - [ ] Fairness: one project's backlog cannot starve another's (e.g. a per-project concurrency cap), including a per-project share of `LLM_DAILY_TOKEN_LIMIT`
 - [ ] When the daily token limit is reached, pause queued and running executions and resume them after the reset (see Phase 3 "Cost guardrails")
 - [ ] Visibility: running and queued executions per project via the API (and queue depth in `/health` or a status endpoint)

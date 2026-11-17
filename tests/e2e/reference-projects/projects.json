@@ -421,6 +421,35 @@
     }
   },
   {
+    "id": "js/dayjs-2231",
+    "language": "JavaScript",
+    "source": {
+      "dataset": "ByteDance-Seed/Multi-SWE-bench",
+      "file": "js/iamkun__dayjs_dataset.jsonl",
+      "number": 2231
+    },
+    "grader": {
+      "image": "mswebench/iamkun_m_dayjs:pr-2231",
+      "workdir": "/home/dayjs",
+      "testPatch": "/home/test.patch",
+      "test": [
+        "bash",
+        "-c",
+        "npm test -- --verbose"
+      ],
+      "resultPattern": "^\\s*(?<status>PASS|FAIL) (?<name>\\S+)",
+      "skipReason": "badMutable.test.js fails on unchanged code when MockDate lands on .999 of a second (dayjs-589, 2026-11-14)",
+      "skip": [
+        "test/plugin/badMutable.test.js"
+      ]
+    },
+    "executionPolicy": {
+      "setupTimeoutSeconds": 2700,
+      "maxAgentSteps": 150,
+      "maxRunSeconds": 5400
+    }
+  },
+  {
     "id": "js/dayjs-2377",
     "language": "JavaScript",
     "source": {
@@ -485,6 +514,31 @@
     },
     "grader": {
       "image": "mswebench/jqlang_m_jq:pr-2624",
+      "workdir": "/home/jq",
+      "testPatch": "/home/test.patch",
+      "test": [
+        "bash",
+        "-c",
+        "autoreconf -i && ./configure --with-oniguruma=builtin && make clean && make -j4 && make check"
+      ],
+      "resultPattern": "^(?<status>PASS|FAIL|XFAIL|XPASS|ERROR|SKIP): (?<name>\\S+)"
+    },
+    "executionPolicy": {
+      "setupTimeoutSeconds": 2700,
+      "maxAgentSteps": 150,
+      "maxRunSeconds": 5400
+    }
+  },
+  {
+    "id": "c/jq-2157",
+    "language": "C",
+    "source": {
+      "dataset": "ByteDance-Seed/Multi-SWE-bench",
+      "file": "c/jqlang__jq_dataset.jsonl",
+      "number": 2157
+    },
+    "grader": {
+      "image": "mswebench/jqlang_m_jq:pr-2157",
       "workdir": "/home/jq",
       "testPatch": "/home/test.patch",
       "test": [

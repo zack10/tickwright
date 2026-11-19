@@ -266,6 +266,11 @@ const REVIEW_CHECKS = {
     question: "Does the ticket's example give the expected result with the change?",
     other: ["no example"],
   },
+  // catch2-2128 (Luna x2, Sol x2): the ticket said "all other operators", the tests reached only `==`.
+  casesCovered: {
+    question: "Does a test that verification ran reach every case the ticket or plan names and every place the diff changes alike?",
+    other: ["none named"],
+  },
 };
 
 const reviewCheck = (other: string[]) =>
@@ -300,6 +305,7 @@ const ARGS = {
     newCodeCalled: reviewCheck(REVIEW_CHECKS.newCodeCalled.other),
     testsCallExistingCode: reviewCheck(REVIEW_CHECKS.testsCallExistingCode.other),
     exampleWorks: reviewCheck(REVIEW_CHECKS.exampleWorks.other),
+    casesCovered: reviewCheck(REVIEW_CHECKS.casesCovered.other),
     issues: z.array(z.string()),
     suggestions: z.array(z.string()).default([]),
     summary: z.string().min(1),

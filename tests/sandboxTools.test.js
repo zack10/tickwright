@@ -334,7 +334,7 @@ test("the reviewer can only read and give a verdict; the implementer cannot give
   assert.match(fs.readFileSync(path.join(ctx.root, "src/math.js"), "utf8"), /a - b/);
 
   const yes = { answer: "yes", evidence: "src/math.js:2" };
-  const allYes = { sourceChanged: yes, newCodeCalled: yes, testsCallExistingCode: yes, exampleWorks: yes };
+  const allYes = { sourceChanged: yes, newCodeCalled: yes, testsCallExistingCode: yes, exampleWorks: yes, casesCovered: yes };
   const approved = await review("verdict", { ...allYes, issues: [], summary: "Read callers." });
   assert.equal(approved.verdict.approved, true);
   assert.equal(approved.finish.status, "done", "a verdict ends the loop");
@@ -354,6 +354,20 @@ test("the reviewer can only read and give a verdict; the implementer cannot give
   ]);
   const withIssue = await review("verdict", { ...allYes, issues: ["adds a secret"], summary: "s" });
   assert.equal(withIssue.verdict.approved, false, "a listed issue rejects even with every answer yes");
+
+  // catch2-2128: the ticket said "and similarly all other operators", the tests reached only `==`.
+  const uncovered = await review("verdict", {
+    ...allYes,
+    casesCovered: { answer: "no", evidence: "`<`, `>`, `<=`, `>=`, `|`, `&`, `^` have no test" },
+    issues: [],
+    summary: "Approve.",
+  });
+  assert.equal(uncovered.verdict.approved, false, "a case the ticket names with no test rejects");
+  assert.match(uncovered.verdict.issues[0], /every case the ticket or plan names.*No: `<`/);
+  const single = await review("verdict", { ...allYes, casesCovered: { answer: "none named", evidence: "one case, one place" }, issues: [], summary: "s" });
+  assert.equal(single.verdict.approved, true, "a ticket that names a single case passes the check");
+  const { casesCovered: _omitted, ...withoutCases } = allYes;
+  assert.equal((await review("verdict", { ...withoutCases, issues: [], summary: "x" })).status, "FAILED", "the casesCovered answer is required");
 
   // python/02: good fixes were rejected over a test comment and an unused import.
   const remarks = await review("verdict", {

@@ -169,40 +169,6 @@
     }
   },
   {
-    "id": "go/go-zero-2537",
-    "language": "Go",
-    "source": {
-      "dataset": "ByteDance-Seed/Multi-SWE-bench",
-      "file": "go/zeromicro__go-zero_dataset.jsonl",
-      "number": 2537
-    },
-    "grader": {
-      "image": "mswebench/zeromicro_m_go-zero:pr-2537",
-      "workdir": "/home/go-zero",
-      "testPatch": "/home/test.patch",
-      "test": [
-        "go",
-        "test",
-        "-v",
-        "-count=1",
-        "-p",
-        "1",
-        "./..."
-      ],
-      "resultPattern": "^\\s*--- (?<status>PASS|FAIL|SKIP): (?<name>\\S+)",
-      "skipReason": "need a network interface; the grader runs with --network none",
-      "skip": [
-        "TestInternalIp",
-        "TestFigureOutListenOn"
-      ]
-    },
-    "executionPolicy": {
-      "setupTimeoutSeconds": 2700,
-      "maxAgentSteps": 150,
-      "maxRunSeconds": 5400
-    }
-  },
-  {
     "id": "go/go-zero-1783",
     "language": "Go",
     "source": {

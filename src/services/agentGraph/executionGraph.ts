@@ -214,8 +214,6 @@ export interface ProposedEnvironment {
   repositoryId: string;
   hash: string;
   checks: Record<string, string[]>;
-  /** Discovery did not confirm it: setup worked and the checks ran, but failed on the unmodified code. */
-  unconfirmed?: true;
 }
 
 type SetupResult = Awaited<ReturnType<typeof setupWorkspace>>;
@@ -238,8 +236,7 @@ const describeFixed = (fixed: FixedEnvironment) =>
  * earlier run proved is reused), and setup plus the checks on the unmodified
  * code prove it; a proposal that fails goes back to the agent. A proved
  * proposal is stored on the repository until a person approves it. If none is
- * proven, the first whose checks all ran is used, unconfirmed; if none got that
- * far, the run stops (`notFound`): without checks nothing can be verified.
+ * proven, the run stops (`notFound`): without checks nothing can be verified.
  */
 /** Progress of a long build, setup or check, as an event the API shows (see withProgress). */
 const reportProgress = (executionId: string): ProgressReporter => (progress) =>
@@ -314,14 +311,12 @@ const prepareEnvironment = async (
   );
   await graphEvent(executionId, "GRAPH_ENVIRONMENT_DISCOVERED", {
     proven: result.proven,
-    ...(result.unconfirmed ? { unconfirmed: true } : {}),
     fromStored: result.fromStored,
     rationale: result.rationale,
     attempts: result.attempts,
   });
   // Going on with no checks was blocked at ~3x cost in 3 of 4 runs (fd 3dd2814c, dayjs bd2a1554); the one fix it gave (go-zero 8501e753) is the accepted loss.
-  // An unconfirmed proposal (its checks ran) goes on: its failures count as already failing.
-  if (!result.proposal || !result.proof) return { notFound: describeNoEnvironment(result.attempts) };
+  if (!result.proposal || !result.proof) return { notFound: describeNoEnvironment(result.attempts, repository.id) };
 
   const hash = hashProposal(result.proposal);
   if (stored?.hash !== hash) {
@@ -341,7 +336,7 @@ const prepareEnvironment = async (
   return {
     toolchain: { ...toolchain, image: result.proof.image },
     setup: result.proof,
-    environmentProposal: { repositoryId: repository.id, hash, checks: toolchain.checks, ...(result.unconfirmed ? { unconfirmed: true as const } : {}) },
+    environmentProposal: { repositoryId: repository.id, hash, checks: toolchain.checks },
   };
 };
 

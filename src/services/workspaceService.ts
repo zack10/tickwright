@@ -945,6 +945,7 @@ export const describeVerification = (verification: unknown) => {
     lines.push(
       "",
       "**These checks were proposed by the agent from the project's files and are not approved yet:**",
+      // No run sets `unconfirmed` since 2026-11-19 (limitation 60); diffs stored before that may still carry it.
       ...(proposal.unconfirmed
         ? ["They ran but failed on the unmodified code, and the agent could not confirm the failures are the project's own rather than the environment's, so a check that failed before proves nothing about this change."]
         : []),

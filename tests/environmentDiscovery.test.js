@@ -192,29 +192,29 @@ test("a check's failure keeps the end of both its streams for the model, and the
   const result = await discoverEnvironment({ fixed: {}, maxAttempts: 3 }, { ...model, ...proofs });
   assert.match(model.shown[1], /expected 3, got 4/);
   assert.match(result.attempts[0].detail, /^test:\ndocker run failed[\s\S]*expected 3, got 4[\s\S]*coverage row\n$/);
-  assert.match(describeNoEnvironment(result.attempts.slice(0, 1)), /1\. checks_failed \(setup: make deps\): FAIL test\/x\.test\.js: expected 3, got 4\n/);
+  assert.match(describeNoEnvironment(result.attempts.slice(0, 1), "repo-1"), /1\. checks_failed \(setup: make deps\): FAIL test\/x\.test\.js: expected 3, got 4$/);
 });
 
-test("when no proposal is proven, the first whose checks all ran is used unconfirmed, and set up again if a later one replaced it", async () => {
-  const assertionFails = { baseline: [{ check: "test", passed: false, output: "docker run failed (exit code 1)\nstderr:\n(empty)\nstdout:\n--- FAIL: TestX" }] };
+// catch2-2128 (2026-11-19): the model rejected the GCC 13 build, and the old fallback used it anyway because its checks "ran".
+test("when no proposal is proven, none is used, even one whose checks ran", async () => {
+  const buildFails = { baseline: [{ check: "test", passed: false, output: "docker run failed (exit code 2)\nstderr:\nerror: 'TestCaseProperties' has not been declared\nstdout:\n(empty)" }] };
   const notFound = { baseline: [{ check: "test", passed: false, output: "docker run failed (exit code 127)\nstderr:\nsh: 1: make: not found\nstdout:\n(empty)" }] };
   const model = scriptedModel([reply(PROPOSAL), reply({ ...PROPOSAL, setup: "make deps2" }), reply({ ...PROPOSAL, setup: "make deps3" })]);
-  const proofs = scriptedProofs([assertionFails, notFound, assertionFails]);
+  const proofs = scriptedProofs([buildFails, notFound, buildFails]);
   const result = await discoverEnvironment({ fixed: {}, maxAttempts: 2 }, { ...model, ...proofs });
   assert.equal(result.proven, false);
-  assert.equal(result.unconfirmed, true);
-  assert.deepEqual(result.proposal.setup, ["sh", "-c", "make deps"]);
-  assert.equal(proofs.proved.length, 3, "the first proposal is proved again, its snapshot was replaced");
-  assert.equal(result.proof.image, "snapshot-3");
+  assert.equal(result.proposal, undefined);
+  assert.equal(result.proof, undefined);
+  assert.equal(proofs.proved.length, 2, "nothing is proved again after the last attempt");
+  assert.match(describeNoEnvironment(result.attempts, "repo-1"), /^No working environment was found/);
 });
 
-test("a proposal is not used unconfirmed when a check could not run or setup failed", async () => {
+test("nothing is used when a check could not run or setup failed", async () => {
   const notFound = { baseline: [{ check: "test", passed: false, output: "docker run failed (exit code 127)\nstderr:\nsh: 1: make: not found\nstdout:\n(empty)" }] };
   const timedOut = { baseline: [{ check: "test", passed: false, output: "docker run failed (killed by SIGTERM)\nstderr:\n(empty)\nstdout:\n(empty)" }] };
   const model = scriptedModel([reply(PROPOSAL), reply({ ...PROPOSAL, setup: "make deps2" }), reply({ ...PROPOSAL, setup: "make deps3" })]);
   const result = await discoverEnvironment({ fixed: {}, maxAttempts: 3 }, { ...model, ...scriptedProofs([notFound, timedOut, { setupError: "no", baseline: [] }]) });
   assert.equal(result.proven, false);
-  assert.equal(result.unconfirmed, undefined);
   assert.equal(result.proposal, undefined);
 });
 
@@ -228,16 +228,21 @@ test("the PR body says when the proposed checks were not confirmed", () => {
   assert.doesNotMatch(verification(false), /could not confirm/);
 });
 
-test("when no environment is found, the reason lists each attempt in a few lines", () => {
+test("when no environment is found, the reason says how to fix it first, then lists each attempt in a few lines", () => {
   const attempts = [
     { proposal: { setup: ["sh", "-c", "tool fetch"], checks: {} }, outcome: "setup_failed", detail: "docker run failed (exit code 127)\n...\nsh: 1: tool: not found" },
     { proposal: null, outcome: "invalid", detail: "The reply was not JSON." },
     { proposal: { setup: null, checks: {} }, outcome: "checks_failed", detail: `test:\n${"x".repeat(5000)}` },
   ];
-  const reason = describeNoEnvironment(attempts);
+  const reason = describeNoEnvironment(attempts, "repo-1");
   assert.match(reason, /^No working environment was found/);
-  assert.match(reason, /\n1\. setup_failed \(setup: tool fetch\): docker run failed .* tool: not found\n2\. invalid: The reply was not JSON\.\n3\. checks_failed: \.\.\.x+\n/);
-  assert.ok(reason.length < 1500, "fits the ticket comment");
+  assert.match(reason, /PATCH \/api\/repositories\/repo-1 with \{"verificationConfig":\{"toolchain":\{"image"/);
+  assert.match(reason, /\.devcontainer\/devcontainer\.json/);
+  assert.match(reason, /\n1\. setup_failed \(setup: tool fetch\): docker run failed .* tool: not found\n2\. invalid: The reply was not JSON\.\n3\. checks_failed: \.\.\.x+$/);
+  // The ticket comment shows the first 1500 characters: the fix must be in them, the attempts may be cut.
+  assert.ok(reason.indexOf("Discovery made") < 1500, "the fix fits the ticket comment");
+  assert.ok(reason.length < 1500, "three short attempts fit too");
+  assert.doesNotMatch(reason, /java|maven|npm|gcc|python/i, "names no language or tool");
 });
 
 test("discovery reads instruction and CI files first, then root and subproject files, never deeper", () => {

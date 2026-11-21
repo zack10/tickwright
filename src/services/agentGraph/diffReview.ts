@@ -18,13 +18,6 @@ const SECRET_PATTERNS = [
   /:\/\/[^/\s:@]+:[^/\s@]{8,}@/,
 ];
 
-const riskyFiles = new Set([
-  "package.json",
-  "package-lock.json",
-  "pnpm-lock.yaml",
-  "yarn.lock",
-]);
-
 export const reviewDiffSafety = (
   diff: string,
   files: string[],
@@ -37,10 +30,9 @@ export const reviewDiffSafety = (
     issues.push("Diff is empty.");
   }
 
+  // Manifests and lockfiles are the toolchain's protectedPaths, checked on the final diff in
+  // enforce_policy; a fixed Node list here refused every registered test (limitation 68).
   for (const file of files) {
-    if (riskyFiles.has(file)) {
-      issues.push(`Diff modifies dependency or package metadata file: ${file}`);
-    }
     if (file.startsWith(".github/")) {
       issues.push(`Diff modifies GitHub automation path: ${file}`);
     }

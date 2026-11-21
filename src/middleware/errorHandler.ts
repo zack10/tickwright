@@ -70,6 +70,7 @@ function handlePrismaError(
         },
       });
     default:
+      console.error(`Database error (${err.code}): ${describeError(err)}`);
       return res.status(500).json({
         error: {
           code: "DATABASE_ERROR",

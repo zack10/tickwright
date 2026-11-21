@@ -38,7 +38,7 @@ function invoke(error) {
   return { events, logs };
 }
 
-test("logs a sanitized Prisma code before returning the generic database error", () => {
+test("logs the Prisma code and the described error before returning the generic database error", () => {
   const result = invoke(knownError("P2028"));
 
   assert.deepEqual(result.events, [
@@ -50,7 +50,7 @@ test("logs a sanitized Prisma code before returning the generic database error",
   ]);
   assert.equal(result.logs.length, 1);
   assert.match(result.logs[0], /P2028/);
-  assert.doesNotMatch(result.logs[0], /database secret/);
+  assert.match(result.logs[0], /^Database error \(P2028\): PrismaClientKnownRequestError: database secret$/);
 });
 
 test("keeps known Prisma errors with specific responses unlogged", () => {

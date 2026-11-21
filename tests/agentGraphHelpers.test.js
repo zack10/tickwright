@@ -20,6 +20,7 @@ const {
   checkRepositoryPolicy,
 } = require("../dist/services/agentGraph/repoPolicy");
 const {
+  MODE_PROBE_SCRIPT,
   WORKSPACE_RESET_COMMANDS,
 } = require("../dist/services/workspaceService");
 
@@ -160,6 +161,33 @@ test("M2: workspace reset drops edits and new files but keeps node_modules", asy
   await fs.access(path.join(root, "node_modules", "dep", "index.js"));
   assert.equal(await git("status", "--porcelain"), "");
 });
+
+test(
+  "a clone keeps file modes, so a new script made executable reaches the diff, unless files the host writes look executable",
+  { skip: process.platform === "win32" && "file modes need a Linux file system" },
+  async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "agent-mode-"));
+    const git = (...args) => execFileAsync("git", args, { cwd: root }).then((result) => result.stdout);
+    const probe = async (probeMode) => {
+      await fs.writeFile(path.join(root, ".git", "mode-probe"), "", { mode: probeMode });
+      await execFileAsync("sh", ["-c", MODE_PROBE_SCRIPT], { cwd: root });
+      await assert.rejects(fs.access(path.join(root, ".git", "mode-probe")));
+      return (await git("config", "core.fileMode")).trim();
+    };
+    await git("init", "--quiet");
+    await git("-c", "user.name=test", "-c", "user.email=test@localhost", "commit", "--quiet", "--allow-empty", "-m", "base");
+
+    // A Windows bind mount shows every file the host writes as executable.
+    assert.equal(await probe(0o777), "false");
+    assert.equal(await probe(0o644), "true");
+
+    // jq-2624 run 9: the agent's chmod +x on a new test script.
+    await fs.writeFile(path.join(root, "run-tests"), "#!/bin/sh\n");
+    await fs.chmod(path.join(root, "run-tests"), 0o755);
+    await git("add", "-N", ".");
+    assert.match(await git("-c", "core.hooksPath=/dev/null", "diff"), /new file mode 100755/);
+  },
+);
 
 test("implement replies without usable FILE blocks are rejected with a specific reason", () => {
   const { fileActionsError } = require("../dist/services/agentGraph/outputFormat");

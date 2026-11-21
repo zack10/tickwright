@@ -292,6 +292,7 @@ const publish = async (executionId: string) => {
       await publishApprovedDiff({
         executionId: execution.id,
         diff,
+        message: `${execution.workItem.title}\n\nExecution: ${execution.id}\n`,
         branch,
         baseSha: execution.baseSha,
         owner: repository.owner,

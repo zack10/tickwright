@@ -51,6 +51,12 @@ export const syncIntegrationConnection = async (connectionId: string) => {
       },
       update: fields,
     });
+    // A ticket whose run opened its PR is done: moving the card to Done must not plan it again (limitation 69).
+    const finished = await prisma.execution.findFirst({
+      where: { workItemId: workItem.id, status: "COMPLETED" },
+      select: { id: true },
+    });
+    if (finished) continue;
     await createExecution({
       projectId: connection.projectId,
       repositoryId,

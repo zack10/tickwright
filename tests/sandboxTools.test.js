@@ -498,3 +498,48 @@ test("the planner reads a long file to its end, then submits one plan; it cannot
   turns.splice(0, turns.length, [], [], []);
   assert.equal(await runPlanner(ctx, prompt, { generate, maxTokens: 10_000, deadline: Date.now() + 60_000 }), undefined, "no plan when the loop ends without one");
 });
+
+test("after a review names missing tests, finish waits until the test files use those names, at most twice", async (t) => {
+  const changed = [];
+  const { ctx, root } = workspace(t, {
+    requestedTests: { tests: [{ case: "report.json errors", mustReach: ["RunReporter", "render"] }], refusals: 0 },
+    changedTestFiles: async () => changed,
+  });
+  fs.writeFileSync(path.join(root, "tests/redactor.test.js"), "redact(value);\n");
+  changed.push("tests/redactor.test.js");
+
+  const first = await run(ctx, "finish", { status: "done", summary: "s" });
+  assert.equal(first.status, "FAILED");
+  assert.match(first.output, /report\.json errors: no test file uses RunReporter, render/);
+  assert.equal((await run(ctx, "finish", { status: "blocked", summary: "cannot test it" })).status, "COMPLETED", "blocked is never held");
+
+  fs.writeFileSync(path.join(root, "tests/report.test.js"), "new RunReporter().render(failure);\n");
+  changed.push("tests/report.test.js");
+  const done = await run(ctx, "finish", { status: "done", summary: "s" });
+  assert.equal(done.status, "COMPLETED");
+  assert.equal(ctx.requestedTests.unmet, undefined);
+});
+
+test("a requested name no test uses stops holding finish after two refusals, and is recorded for the reviewer", async (t) => {
+  const { ctx } = workspace(t, {
+    requestedTests: { tests: [{ case: "CLI log", mustReach: ["CommandLineRunner"] }], refusals: 0 },
+    changedTestFiles: async () => ["tests/math.test.js"],
+  });
+  assert.equal((await run(ctx, "finish", { status: "done", summary: "s" })).status, "FAILED");
+  assert.equal((await run(ctx, "finish", { status: "done", summary: "s" })).status, "FAILED");
+  assert.equal((await run(ctx, "finish", { status: "done", summary: "s" })).status, "COMPLETED");
+  assert.deepEqual(ctx.requestedTests.unmet, ["- CLI log: no test file uses CommandLineRunner"]);
+});
+
+test("a rejecting verdict carries the missing tests it names; an approving one carries none", async (t) => {
+  const { ctx } = workspace(t);
+  const review = (args) => executeTool(ctx, "verdict", args, REVIEW_TOOLS);
+  const yes = { answer: "yes", evidence: "src/math.js:2" };
+  const allYes = { sourceChanged: yes, newCodeCalled: yes, testsCallExistingCode: yes, exampleWorks: yes, casesCovered: yes };
+  const missingTests = [{ case: "report.json errors", mustReach: ["RunReporter"] }];
+  const rejected = await review({ ...allYes, casesCovered: { answer: "no", evidence: "no test reaches RunReporter" }, missingTests, issues: [], summary: "s" });
+  assert.deepEqual(rejected.verdict.missingTests, missingTests);
+  const approved = await review({ ...allYes, missingTests, issues: [], summary: "s" });
+  assert.equal(approved.verdict.missingTests, undefined);
+  assert.equal((await review({ ...allYes, issues: [], summary: "s" })).verdict.approved, true, "missingTests is optional");
+});

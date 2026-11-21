@@ -298,7 +298,7 @@ test("the prompts in use name no language, package manager or file type", () => 
   }
   assert.deepEqual(
     rendered.map((prompt) => prompt.version),
-    ["plan.v5", "implement.v2", "analyze.v2", "review.v6", "agent.v7", "discover.v4", "triage.v1", "reviewer.v8", "planner.v3"],
+    ["plan.v5", "implement.v2", "analyze.v2", "review.v6", "agent.v7", "discover.v4", "triage.v1", "reviewer.v9", "planner.v3"],
   );
 });
 
@@ -328,6 +328,19 @@ test("reviewer.v8 adds only the casesCovered question, limited to cases the tick
   assert.match(added[0], /^5\. casesCovered: /);
   assert.match(added[0], /never cases you think of yourself/);
   assert.match(added[0], /"none named"/);
+});
+
+// csv cards 2 and 4 (limitation 65): the reviewer named the missing tests in prose, and the next attempt rewrote the same ones.
+test("reviewer.v9 adds only the missingTests instruction, limited to names in the repository's code", () => {
+  const vars = { ...current.review, verification: "v", instructions: "i" };
+  const old = renderPromptVersion("reviewer.v8", vars);
+  const next = renderPromptVersion("reviewer.v9", vars);
+  assert.equal(next.user, old.user);
+  assert.deepEqual(lines(old.system).filter((line) => !next.system.includes(line)), []);
+  const added = lines(next.system).filter((line) => !old.system.includes(line));
+  assert.equal(added.length, 1);
+  assert.match(added[0], /^When testsCallExistingCode or casesCovered is no, also fill missingTests/);
+  assert.match(added[0], /never a word from the ticket that is not in the code/);
 });
 
 // catch2-2128: GCC 13 could not build the 2020 code, and discover.v3 counted "compiler errors in the code" as a working environment.

@@ -14,7 +14,12 @@ test("an approved change goes to publish approval with its suggestions and no ob
 });
 
 test("objections with attempts left go to the next attempt", () => {
-  assert.deepEqual(reviewOutcome(rejected, true), { route: "retry", lastFailure: "NextRun is unchanged" });
+  assert.deepEqual(reviewOutcome(rejected, true), { route: "retry", lastFailure: "NextRun is unchanged", requestedTests: [] });
+});
+
+test("the tests a rejecting review names go to the next attempt", () => {
+  const missingTests = [{ case: "report.json errors", mustReach: ["RunReporter"] }];
+  assert.deepEqual(reviewOutcome({ ...rejected, missingTests }, true).requestedTests, missingTests);
 });
 
 test("objections on the last attempt go to the approver instead of blocking", () => {

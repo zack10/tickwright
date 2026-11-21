@@ -36,6 +36,28 @@ export interface ToolContext {
   limits?: Partial<ToolOutputLimits> & { checkTimeoutSeconds?: number; maxFileBytes?: number };
   /** Checks that failed on the unmodified code, with the end of that output. */
   failingBefore?: Record<string, string>;
+  /** Tests the last review asked for; finish(done) waits until the test files use their names. */
+  requestedTests?: RequestedTests;
+  /** The run's new and changed test files, repository-relative. */
+  changedTestFiles?: () => Promise<string[]>;
+}
+
+/** A case the reviewer found untested, and the repository names a test for it must use. */
+export interface RequestedTest {
+  case: string;
+  mustReach: string[];
+}
+
+/**
+ * The reviewer named the missing tests and the agent's next attempt rewrote
+ * the same ones (csv cards 2 and 4, limitation 65), so finish checks for them.
+ */
+export interface RequestedTests {
+  tests: RequestedTest[];
+  /** How often finish was refused for them; after MAX_TEST_REQUEST_REFUSALS it lets the run go on. */
+  refusals: number;
+  /** What was still missing when finish let the run go on, for the reviewer. */
+  unmet?: string[];
 }
 
 export interface ToolOutputLimits {
@@ -121,6 +143,8 @@ export interface ReviewVerdict {
   suggestions?: string[];
   /** The reviewer's checklist answers, when it gave them. */
   checks?: Record<string, { answer: string; evidence: string }>;
+  /** On a rejection: the cases without a test, for the next attempt's finish. */
+  missingTests?: RequestedTest[];
 }
 
 const MAX_LIST_ENTRIES = 500;
@@ -306,6 +330,10 @@ const ARGS = {
     testsCallExistingCode: reviewCheck(REVIEW_CHECKS.testsCallExistingCode.other),
     exampleWorks: reviewCheck(REVIEW_CHECKS.exampleWorks.other),
     casesCovered: reviewCheck(REVIEW_CHECKS.casesCovered.other),
+    missingTests: z
+      .array(z.object({ case: z.string().trim().min(1), mustReach: z.array(z.string().trim().min(1)).min(1).max(10) }))
+      .max(20)
+      .default([]),
     issues: z.array(z.string()),
     suggestions: z.array(z.string()).default([]),
     summary: z.string().min(1),
@@ -341,6 +369,22 @@ export const REVIEW_TOOLS: ToolDefinition[] = [
             },
           ]),
         ),
+        missingTests: {
+          type: "array",
+          description: "When testsCallExistingCode or casesCovered is no: each case without a test, and the names a test for it must use (see the prompt). Empty otherwise",
+          items: {
+            type: "object",
+            properties: {
+              case: { type: "string", description: "The case, in the ticket's or the plan's words" },
+              mustReach: {
+                type: "array",
+                items: { type: "string" },
+                description: "Names from this repository's code that a test for this case has to call, exactly as written",
+              },
+            },
+            required: ["case", "mustReach"],
+          },
+        },
         issues: {
           type: "array",
           items: { type: "string" },
@@ -395,13 +439,14 @@ export const PLAN_TOOLS: ToolDefinition[] = [
  * a problem cannot still approve: any "no" or listed issue rejects.
  */
 const decideReview = (args: z.infer<typeof ARGS.verdict>): ReviewVerdict => {
-  const { issues, suggestions, summary, ...checks } = args;
+  const { issues, suggestions, summary, missingTests, ...checks } = args;
   const failedChecks = Object.entries(checks)
     .filter(([, check]) => check.answer === "no")
     .map(([name, check]) => `${REVIEW_CHECKS[name as keyof typeof REVIEW_CHECKS].question} No: ${check.evidence}`);
   const problems = [...failedChecks, ...issues.map((issue) => issue.trim()).filter(Boolean)];
   const remarks = suggestions.map((remark) => remark.trim()).filter(Boolean);
-  return { approved: problems.length === 0, issues: problems, suggestions: remarks, summary, checks };
+  const approved = problems.length === 0;
+  return { approved, issues: problems, suggestions: remarks, summary, checks, ...(approved ? {} : { missingTests }) };
 };
 
 const completed = (output: string): ToolOutcome => ({ status: "COMPLETED", output });
@@ -598,6 +643,40 @@ const unconfirmedTest = (ctx: ToolContext) => {
   return `Not finished: the command that runs your new test has not passed since your change, and it is run again to verify the change:\n${state.command.slice(0, 500)}\nRun it again and see it pass. If that command cannot pass on a correct change (it does not build or run the test the way the project does, the shell rejects it, or it exits non-zero when the test behaves as expected), run your test with one command that exits 0 only when the test passes, through the project's own build and test commands where it has them. The last command you run before calling finish again must be that command and must pass: it is the one verification runs. Verification runs it on its own in a new container, after the project's checks: only the repository's files are still there, so anything your earlier commands left elsewhere (for example a program built in /tmp) is gone. The command must build what it needs itself. If the change cannot be made to pass, call finish with status blocked.`;
 };
 
+export const MAX_TEST_REQUEST_REFUSALS = 2;
+
+/**
+ * finish(done) waits until the test files use every name the last review
+ * said a missing test must reach. A name match, not coverage: the reviewer
+ * still judges the tests. After MAX_TEST_REQUEST_REFUSALS the run goes on, so
+ * a name the reviewer got wrong cannot hold it, and the reviewer is told.
+ */
+const missingRequestedTests = async (ctx: ToolContext) => {
+  const request = ctx.requestedTests;
+  if (!request?.tests.length || !ctx.changedTestFiles) return "";
+  const contents: string[] = [];
+  for (const file of await ctx.changedTestFiles()) {
+    const target = checkPath(ctx, file);
+    if (typeof target !== "string" && fs.existsSync(target.fullPath) && fs.statSync(target.fullPath).isFile())
+      contents.push(fs.readFileSync(target.fullPath, "utf8"));
+  }
+  const text = contents.join("\n");
+  const missing = request.tests
+    .map((test) => ({ case: test.case, names: test.mustReach.filter((name) => !text.includes(name)) }))
+    .filter((test) => test.names.length > 0);
+  if (!missing.length) {
+    request.unmet = undefined;
+    return "";
+  }
+  const lines = missing.map((test) => `- ${test.case}: no test file uses ${test.names.join(", ")}`);
+  if (request.refusals >= MAX_TEST_REQUEST_REFUSALS) {
+    request.unmet = lines;
+    return "";
+  }
+  request.refusals += 1;
+  return `Not finished: the last review rejected the change because these cases have no test, and your test files still do not reach them:\n${lines.join("\n")}\nWrite tests that call that code for each case (in a new test file, or by adding lines to one), run them and see them pass, then call finish again. If a case cannot be tested, call finish with status blocked and say why.`;
+};
+
 const runCheck = async (ctx: ToolContext, args: z.infer<typeof ARGS.run_check>) => {
   if (!ctx.checkScripts.includes(args.check))
     return denied(`"${args.check}" is not an available check. Available: ${ctx.checkScripts.join(", ") || "none"}.`);
@@ -681,7 +760,7 @@ export const executeTool = async (
       }
       default: {
         const args = parsed.data as z.infer<typeof ARGS.finish>;
-        const refusal = args.status === "done" ? unconfirmedTest(ctx) : "";
+        const refusal = args.status === "done" ? unconfirmedTest(ctx) || (await missingRequestedTests(ctx)) : "";
         if (refusal) return failed(refusal);
         return { ...completed(`Finished (${args.status}).`), finish: args };
       }

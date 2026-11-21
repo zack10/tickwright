@@ -4,7 +4,7 @@ import { ToolCall, ToolDefinition } from "../llm/types";
 import { Toolchain, isTestFile, selectChecks } from "../toolchain";
 import { testSecretsOf } from "../setupSecrets";
 import { baseFileContent, changedFiles, execInSandbox, keepOutputOutOfDiffs, trackedFiles, workspacePath } from "../workspaceService";
-import { CHECK_TIMEOUT_MS, ToolContext, ToolOutcome, ToolStatus, executeTool } from "./tools";
+import { CHECK_TIMEOUT_MS, RequestedTest, ToolContext, ToolOutcome, ToolStatus, executeTool } from "./tools";
 
 // Stored output is capped; the full output already went to the model.
 const MAX_STORED_OUTPUT_CHARS = 10_000;
@@ -80,6 +80,7 @@ export const executionToolContext = async (
   repository: { id: string; executionPolicy: unknown; verificationConfig: unknown },
   toolchain: Toolchain,
   failingBefore: Record<string, string> = {},
+  requestedTests: RequestedTest[] = [],
 ): Promise<ToolContext> => {
   const policy = repository.executionPolicy as RepositoryPolicy | null;
   const checks = selectChecks(toolchain, repository.verificationConfig).run;
@@ -111,5 +112,7 @@ export const executionToolContext = async (
       maxFileBytes: policy?.maxFileBytes,
     },
     failingBefore,
+    ...(requestedTests.length ? { requestedTests: { tests: requestedTests, refusals: 0 } } : {}),
+    changedTestFiles: async () => (await changedFiles(executionId)).filter((file) => isTestFile(toolchain, file)),
   };
 };

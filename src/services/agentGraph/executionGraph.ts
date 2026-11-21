@@ -26,7 +26,7 @@ import {
   resolveAgentCalls,
 } from "./agentCalls";
 import type { CallModel, ReasoningEffortConfig } from "./agentCalls";
-import { ReviewVerdict, SANDBOX_TOOLS, agentTestCheck, describeReproduction } from "../sandbox/tools";
+import { RequestedTest, ReviewVerdict, SANDBOX_TOOLS, agentTestCheck, describeReproduction } from "../sandbox/tools";
 import { REVIEW_MAX_TOKENS, reviewOutcome, runReviewer } from "./reviewer";
 import {
   executionToolContext,
@@ -135,6 +135,8 @@ const ExecutionGraphState = Annotation.Root({
     reducer: (_current, update) => update,
     default: () => "",
   }),
+  // The tests the last review said are missing; the next attempt's finish waits for them.
+  requestedTests: Annotation<RequestedTest[]>({ reducer: (_old, value) => value, default: () => [] }),
   verification: Annotation<VerificationResult | undefined>(),
   route: Annotation<GraphRoute>(),
   agentMode: Annotation<ExecutionAgentMode>({
@@ -641,7 +643,7 @@ const agentLoop = async (state: GraphState) => {
     include: { repository: true },
   });
   const toolchain = requireToolchain(state);
-  const ctx = await executionToolContext(state.executionId, execution.repository, toolchain, state.failingBefore);
+  const ctx = await executionToolContext(state.executionId, execution.repository, toolchain, state.failingBefore, state.requestedTests);
   const recorder = prismaToolCallRecorder(attempt.id);
   const prompt = renderExecutionPrompt("agent", {
     ticket,
@@ -749,7 +751,10 @@ const agentLoop = async (state: GraphState) => {
   if (outcome.stopReason === "done") {
     if (changed.length > 0) {
       const codeChanged = changed.some((file) => !isTestFile(toolchain, file));
-      const reproduction = describeReproduction(ctx.reproduction, codeChanged);
+      const unmet = ctx.requestedTests?.unmet;
+      const reproduction =
+        describeReproduction(ctx.reproduction, codeChanged) +
+        (unmet ? `\nThe last review asked for tests the agent's test files still do not reach:\n${unmet.join("\n")}` : "");
       const reproductionCommand = ctx.reproduction.command ?? "";
       return { attemptNumber, attemptId: attempt.id, attemptLog, keepChanges, reproduction, reproductionCommand, route: "implemented" as GraphRoute };
     }

@@ -73,6 +73,6 @@ export const reviewOutcome = (review: ReviewVerdict, canRetry: boolean) => {
   // A rejection with no issue listed still needs feedback.
   const issues = review.issues.length ? review.issues : [review.summary];
   return canRetry
-    ? { route: "retry" as const, lastFailure: issues.join("\n") }
+    ? { route: "retry" as const, lastFailure: issues.join("\n"), requestedTests: review.missingTests ?? [] }
     : { route: "artifact" as const, reviewSuggestions: suggestions, reviewObjections: issues };
 };

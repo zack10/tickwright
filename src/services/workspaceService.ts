@@ -779,6 +779,8 @@ export const trackedFiles = async (id: string) =>
 export const publishApprovedDiff = async (input: {
   executionId: string;
   diff: string;
+  /** The commit message; written to a file, never put on the command line. */
+  message: string;
   branch: string;
   baseSha: string;
   owner: string;
@@ -792,13 +794,15 @@ export const publishApprovedDiff = async (input: {
   await removeWorkspace(publishId);
   const root = await createWorkspace(publishId);
   await fs.writeFile(path.join(root, "changes.diff"), input.diff, "utf8");
+  await fs.writeFile(path.join(root, "commit-message.txt"), input.message, "utf8");
   const script = [
     `mkdir repo && cd repo`,
     `${AUTH_GIT} clone https://github.com/${input.owner}/${input.repo}.git .`,
     `${SAFE_GIT} checkout ${input.baseSha}`,
     `${SAFE_GIT} checkout -b '${input.branch}'`,
     `${SAFE_GIT} apply --index --binary ../changes.diff`,
-    `${SAFE_GIT} -c user.name='Agent Orchestrator' -c user.email='agent@localhost' commit --no-verify -m 'fix: automated bug fix'`,
+    // The ticket's title, not a fixed "bug fix": tickets are any kind of change.
+    `${SAFE_GIT} -c user.name='Tickwright' -c user.email='tickwright@localhost' commit --no-verify --cleanup=verbatim -F ../commit-message.txt`,
     // Force is safe: the branch is owned by this execution, and a retry after
     // a partial publish must be able to replace its own earlier push.
     `${AUTH_GIT} push --no-verify --force origin 'HEAD:refs/heads/${input.branch}'`,

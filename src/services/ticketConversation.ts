@@ -14,11 +14,14 @@ import { decideApproval, requestPlanRevision } from "./executionService";
  */
 
 /** Ends every comment the agent posts, so its own comments are never read as replies. */
-export const AGENT_SIGNATURE = "— Agent Orchestrator";
+export const AGENT_SIGNATURE = "— Tickwright";
+// Comments posted before the rename still sit on open cards; they must not be read as replies.
+const EARLIER_SIGNATURES = ["— Agent Orchestrator"];
 
 export const signed = (text: string) => `${text}\n\n${AGENT_SIGNATURE}`;
 
-export const isAgentComment = (text: string) => text.trimEnd().endsWith(AGENT_SIGNATURE);
+export const isAgentComment = (text: string) =>
+  [AGENT_SIGNATURE, ...EARLIER_SIGNATURES].some((signature) => text.trimEnd().endsWith(signature));
 
 const COMMANDS = "Reply `/approve` to go ahead, `/reject <reason>` to stop, or write what should change and I'll revise the plan.";
 

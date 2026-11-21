@@ -42,6 +42,12 @@ test("the agent's own comments and empty ones are never replies", () => {
   assert.ok(!isAgentComment(`About "${AGENT_SIGNATURE}" above: wait until Tuesday`), "only a signature at the end counts");
 });
 
+test("comments are signed Tickwright, and ones signed with the earlier name are still the agent's own", () => {
+  assert.match(signed("plan"), /— Tickwright$/);
+  assert.ok(isAgentComment("Plan approved.\n\n— Agent Orchestrator"));
+  assert.equal(replyAction(reply("/approve\n\n— Agent Orchestrator"), approvers, "PLAN").kind, "ignore");
+});
+
 test("approvers match by tracker id or name, without @ and case", () => {
   assert.ok(isApprover({ authorId: "5f1", authorName: "someone" }, ["5F1"]));
   assert.ok(isApprover({ authorId: "x", authorName: "Zack" }, ["@zack"]));

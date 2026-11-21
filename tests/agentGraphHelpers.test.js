@@ -37,6 +37,13 @@ test("diff review rejects added secrets", () => {
   assert.match(result.issues.join("\n"), /secret|credential/i);
 });
 
+test("diff review leaves manifests to the repository's protected paths, so a project can register a new test", () => {
+  const diff = ['diff --git a/package.json b/package.json', '+  "test": "node --test tests/a.test.js tests/new.test.js"'].join("\n");
+  assert.equal(reviewDiffSafety(diff, ["package.json"]).passed, true);
+  assert.match(checkRepositoryPolicy(["package.json"], { protectedPaths: ["package.json"] }) ?? "", /protected/);
+  assert.equal(checkRepositoryPolicy(["package.json"], { protectedPaths: [".github"] }), undefined);
+});
+
 test("repo context selects likely relevant files", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "agent-graph-"));
   await fs.mkdir(path.join(root, "src"), { recursive: true });

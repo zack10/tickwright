@@ -56,20 +56,24 @@ export const removeWorkspace = async (id: string) => {
   }
 };
 // Repository-controlled config (hooks, fsmonitor, textconv) must never run
-// with credentials or influence what is reviewed. fileMode=false because
-// files are written from the host: on Windows bind mounts every file looks
-// executable, which would put a spurious mode change in each diff.
-const SAFE_GIT =
-  "git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c core.fileMode=false";
+// with credentials or influence what is reviewed. core.fileMode is set per
+// clone (cloneRepository), not forced here: forcing false dropped the agent's
+// chmod +x from every diff (jq-2624 run 9, limitation 61).
+const SAFE_GIT = "git -c core.hooksPath=/dev/null -c core.fsmonitor=false";
 const SAFE_GIT_ARGS = [
   "git",
   "-c",
   "core.hooksPath=/dev/null",
   "-c",
   "core.fsmonitor=false",
-  "-c",
-  "core.fileMode=false",
 ];
+/**
+ * Sets core.fileMode from how a file written by the host looks in the
+ * container: executable on a Windows bind mount (modes would be noise in every
+ * diff), not on a Linux disk (modes are real and the agent's chmod must count).
+ */
+export const MODE_PROBE_SCRIPT =
+  "if [ -x .git/mode-probe ]; then mode=false; else mode=true; fi; rm -f .git/mode-probe; git config core.fileMode $mode";
 // The token is read from the container env and sent as an HTTP header, so it
 // is never written to .git/config or placed on the docker command line. Only
 // to github.com, and only over HTTPS: a submodule on another host never gets
@@ -291,6 +295,8 @@ export const cloneGithubWorkspace = async (
   // Submodules at the commit's recorded revisions; a no-op without .gitmodules.
   const script = `${AUTH_GIT} clone https://github.com/${owner}/${repo}.git . && ${SAFE_GIT} checkout ${sha} && ${AUTH_GIT} submodule update --init --recursive`;
   await execDocker(dockerArgs(root, true, true, ["sh", "-c", script]), { GITHUB_TOKEN: token });
+  await fs.writeFile(path.join(root, ".git", "mode-probe"), "");
+  await runDocker(id, ["sh", "-c", MODE_PROBE_SCRIPT]);
 };
 
 /** Untracked files git doesn't ignore; `directories` collapses whole new folders. */

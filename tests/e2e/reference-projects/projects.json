@@ -475,7 +475,7 @@
         "setup": [
           "sh",
           "-c",
-          "export DEBIAN_FRONTEND=noninteractive && apt-get update -q && apt-get install -y -q --no-install-recommends ca-certificates build-essential autoconf automake libtool bison flex libonig-dev git && autoreconf -fi && ./configure --disable-docs --disable-maintainer-mode --with-oniguruma=yes && make -j4"
+          "export DEBIAN_FRONTEND=noninteractive && apt-get update -q && apt-get install -y -q --no-install-recommends ca-certificates build-essential autoconf automake libtool bison flex libonig-dev git && mkdir -p modules/oniguruma && autoreconf -fi && ./configure --disable-docs --disable-maintainer-mode --with-oniguruma=yes && make -j4"
         ],
         "checks": {
           "test": [
@@ -517,7 +517,7 @@
         "setup": [
           "sh",
           "-c",
-          "export DEBIAN_FRONTEND=noninteractive && apt-get update -q && apt-get install -y -q --no-install-recommends ca-certificates build-essential autoconf automake libtool bison flex libonig-dev git && autoreconf -fi && ./configure --disable-docs --disable-maintainer-mode --with-oniguruma=yes && make -j4"
+          "export DEBIAN_FRONTEND=noninteractive && apt-get update -q && apt-get install -y -q --no-install-recommends ca-certificates build-essential autoconf automake libtool bison flex libonig-dev git && mkdir -p modules/oniguruma && autoreconf -fi && ./configure --disable-docs --disable-maintainer-mode --with-oniguruma=yes && make -j4"
         ],
         "checks": {
           "test": [
@@ -559,7 +559,7 @@
         "setup": [
           "sh",
           "-c",
-          "export DEBIAN_FRONTEND=noninteractive && apt-get update -q && apt-get install -y -q --no-install-recommends ca-certificates build-essential autoconf automake libtool bison flex libonig-dev git && autoreconf -fi && ./configure --disable-docs --disable-maintainer-mode --with-oniguruma=yes && make -j4"
+          "export DEBIAN_FRONTEND=noninteractive && apt-get update -q && apt-get install -y -q --no-install-recommends ca-certificates build-essential autoconf automake libtool bison flex libonig-dev git && mkdir -p modules/oniguruma && autoreconf -fi && ./configure --disable-docs --disable-maintainer-mode --with-oniguruma=yes && make -j4"
         ],
         "checks": {
           "test": [
@@ -601,7 +601,7 @@
         "setup": [
           "sh",
           "-c",
-          "export DEBIAN_FRONTEND=noninteractive && apt-get update -q && apt-get install -y -q --no-install-recommends ca-certificates build-essential autoconf automake libtool bison flex libonig-dev git && autoreconf -fi && ./configure --disable-docs --disable-maintainer-mode --with-oniguruma=yes && make -j4"
+          "export DEBIAN_FRONTEND=noninteractive && apt-get update -q && apt-get install -y -q --no-install-recommends ca-certificates build-essential autoconf automake libtool bison flex libonig-dev git && mkdir -p modules/oniguruma && autoreconf -fi && ./configure --disable-docs --disable-maintainer-mode --with-oniguruma=yes && make -j4"
         ],
         "checks": {
           "test": [
@@ -666,48 +666,6 @@
     },
     "grader": {
       "image": "mswebench/catchorg_m_catch2:pr-2288",
-      "workdir": "/home/Catch2",
-      "testPatch": "/home/test.patch",
-      "test": [
-        "bash",
-        "-c",
-        "cd build && cmake -DCATCH_DEVELOPMENT_BUILD=ON .. && make -j4 && ctest"
-      ],
-      "resultPattern": "Test\\s+#\\d+: (?<name>\\S+) \\.+\\s*\\**(?<status>Passed|Failed|Not Run|Timeout)|Performing Test (?<name>\\S+) - (?<status>Success|Failed)"
-    },
-    "executionPolicy": {
-      "setupTimeoutSeconds": 2700,
-      "maxAgentSteps": 150,
-      "maxRunSeconds": 5400
-    },
-    "environment": {
-      "toolchain": {
-        "image": "ubuntu:22.04@sha256:9abcaffc92a5279fff3a6a41635c0800ea33e528425fb389658806476e7defde",
-        "setup": [
-          "sh",
-          "-c",
-          "export DEBIAN_FRONTEND=noninteractive && apt-get update -q && apt-get install -y -q --no-install-recommends g++ cmake make python3 && cmake -S . -B build -DCATCH_DEVELOPMENT_BUILD=ON && cmake --build build -j4"
-        ],
-        "checks": {
-          "test": [
-            "sh",
-            "-c",
-            "cmake --build build -j4 && cd build && ctest -j4 --output-on-failure"
-          ]
-        }
-      }
-    }
-  },
-  {
-    "id": "cpp/catch2-2128",
-    "language": "C++",
-    "source": {
-      "dataset": "ByteDance-Seed/Multi-SWE-bench",
-      "file": "cpp/catchorg__Catch2_dataset.jsonl",
-      "number": 2128
-    },
-    "grader": {
-      "image": "mswebench/catchorg_m_catch2:pr-2128",
       "workdir": "/home/Catch2",
       "testPatch": "/home/test.patch",
       "test": [

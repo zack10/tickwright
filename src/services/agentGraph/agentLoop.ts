@@ -248,13 +248,18 @@ export const runAgentLoop = async (
   // Steps left after the soft limit was reached; undefined before that.
   let graceLeft: number | undefined;
   let softStop: { reason: "max_tokens" | "timeout"; summary: string } | undefined;
+  // One more final-only call, past the step and token budgets, when the model called a tool
+  // the final call did not offer (deepseek-flash read files instead of submit_plan: e8528e7b).
+  let finalRetry: "pending" | "used" | undefined;
 
   for (; ;) {
     // Budgets are checked before each model call, so a call that is
     // started always gets to finish and record its tool results.
-    if (steps >= budget.maxSteps)
+    const retrying = finalRetry === "pending";
+    if (retrying) finalRetry = "used";
+    if (!retrying && steps >= budget.maxSteps)
       return result("max_steps", `Stopped after ${budget.maxSteps} steps without calling finish.`);
-    if (usage.inputTokens + usage.outputTokens >= budget.maxTokens)
+    if (!retrying && usage.inputTokens + usage.outputTokens >= budget.maxTokens)
       return result("max_tokens", `Stopped after using ${usage.inputTokens + usage.outputTokens} of ${budget.maxTokens} tokens.`);
     if (now() >= budget.deadline)
       return result("timeout", "Stopped: the execution's time budget ran out.");
@@ -284,13 +289,15 @@ export const runAgentLoop = async (
     const used = usage.inputTokens + usage.outputTokens;
     // Also the last call when this one and the next would not both fit.
     const lastCall =
+      retrying ||
       steps >= budget.maxSteps ||
       used >= budget.maxTokens * BUDGET_WARNING_SHARE ||
       used + 2 * lastStepTokens > budget.maxTokens;
+    const finalOnly = lastCall ? input.finalTools : undefined;
     const turn = await deps.generate({
       system: input.system,
       messages: compactMessages(messages, keepRecent),
-      tools: lastCall && input.finalTools ? input.finalTools : input.tools,
+      tools: finalOnly ?? input.tools,
     });
     usage.inputTokens += turn.usage?.inputTokens ?? 0;
     usage.outputTokens += turn.usage?.outputTokens ?? 0;
@@ -310,7 +317,11 @@ export const runAgentLoop = async (
     const ran: AgentStep["toolCalls"] = [];
     let finish: ToolOutcome["finish"];
     for (const call of turn.toolCalls) {
-      const outcome = await deps.runTool(call);
+      const offered = !finalOnly || finalOnly.some((tool) => tool.name === call.name);
+      if (!offered && !finalRetry) finalRetry = "pending";
+      const outcome: ToolOutcome = offered
+        ? await deps.runTool(call)
+        : { status: "DENIED", output: `Not run: only ${finalOnly?.map((tool) => tool.name).join(", ")} can be called now. Call it with what you have found.` };
       ran.push({ call, outcome });
       if (outcome.finish) {
         // Calls after finish in the same turn are not run.

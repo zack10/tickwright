@@ -15,6 +15,7 @@ Prompt files keep their own versions (`src/prompts/execution/*.vN.md`).
 
 ### Added
 
+- **The plan covers everything the ticket asks for.** Before planning, the agent lists the requirements the ticket states in its own words. The plan must give an example for each one, or a question when the agent thinks it is wrong or unclear; a requirement it still leaves out is shown to you as a question on the plan. The reviewer then checks the change against every requirement, and one that is missing rejects the change.
 - **The agent writes the tests the reviewer asked for.** When the reviewer rejects a change because a case has no test, it now names the code a test for that case must call, and the agent's next attempt cannot finish until its test files call that code (or it says why the case cannot be tested). After two refusals the run goes on, and the reviewer is told what is still missing. New prompt version `reviewer.v9`.
 
 - **Cancel an execution.** `POST /api/executions/:id/cancel` (optional `{ "reason": "..." }`) ends an execution in any state that is not already final: it becomes `CANCELED`, pending approvals are rejected, and an `EXECUTION_CANCELED` event records who canceled it, from which state and why. A run in progress stops at its next step (after the current model call or command), and the environment sweep removes what it left. An execution that has already ended answers 409.
@@ -51,6 +52,7 @@ Prompt files keep their own versions (`src/prompts/execution/*.vN.md`).
 
 ### Fixed
 
+- **Plans no longer come back empty when the model ignores its last-call instruction.** At the end of its planning budget the agent may only submit its plan (or the reviewer its verdict); a model that asked to read more files instead ran out of budget with no plan. Such a call is now refused and the model gets one more chance to submit.
 - **A finished ticket is not run again.** Once a ticket's run has opened its pull request, moving the card (for example to Done) or editing it no longer starts a new run with a new plan comment.
 - **A sync no longer fails when the tracker poller picks up the same new ticket at the same moment.** `POST /api/integrations/:id/sync` could answer 409 "Unique constraint violation" because both syncs tried to start the ticket's run; it now returns the run the other sync started. The coding eval also cancels the run of a try that failed, so nothing is left waiting at plan approval.
 - **A change may edit `package.json` when the repository allows it.** The final safety check refused every change to `package.json`, `package-lock.json`, `pnpm-lock.yaml` and `yarn.lock`, whatever the repository's protected paths said, so in a project whose test script lists each test file a new test could never be registered. Those files are now protected only through the repository's `protectedPaths`, which every change is still checked against; the published draft PR still needs a person's approval.

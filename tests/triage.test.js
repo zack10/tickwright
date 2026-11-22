@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { describeApprovedPlan, describeRevisions, planFromReply, triageDecision } = require("../dist/services/agentGraph/planning");
+const { describeApprovedPlan, describeRevisions, numberedRequirements, planFromReply, triageDecision } = require("../dist/services/agentGraph/planning");
 
 test("triage only declines on an explicit decline", () => {
   assert.deepEqual(triageDecision({ decision: "decline", reason: "needs a key" }), { decision: "decline", reason: "needs a key" });
@@ -56,4 +56,13 @@ test("the run follows the approved plan without its questions, plus the approver
   // A plan submitted through the API has no written plan: its criteria are the examples.
   const manual = { version: 1, summary: "Manual", acceptanceCriteria: ["x"], snapshotHash: "h", tasks: [{ expectedOutput: {} }] };
   assert.deepEqual(JSON.parse(describeApprovedPlan(manual, undefined)).expectedBehaviour, ["x"]);
+});
+
+// Limitation 64: 5 of 5 point-5 plans dropped a requirement the ticket stated, and the reviewer judged against the plan only.
+test("the approved plan carries the ticket's stated requirements, numbered, so the reviewer answers each", () => {
+  const plan = stored(1, { ...planFromReply({ summary: "Log it.", expectedBehaviour: ["a"] }, "t"), requirements: ["P2002 answers 409", "Test each"] }, "h");
+  assert.deepEqual(JSON.parse(describeApprovedPlan(plan, undefined)).requirements, ["1. P2002 answers 409", "2. Test each"]);
+  assert.equal(JSON.parse(describeApprovedPlan(stored(1, planFromReply({ summary: "s", expectedBehaviour: ["a"] }, "t"), "h"), undefined)).requirements, undefined, "a plan without any keeps its old shape");
+  assert.equal(numberedRequirements(["a", "b"]), "1. a\n2. b");
+  assert.match(numberedRequirements([]), /^None/);
 });

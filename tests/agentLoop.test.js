@@ -373,9 +373,11 @@ test("finalTools are the only tools offered on the last step and past the token 
     { ...byStep, ...fakeTools() },
   );
   assert.equal(result.stopReason, "max_steps");
+  // The model keeps calling read_file: the last step gets one more final-only call, then the loop stops.
   assert.deepEqual(byStep.requests.map((request) => request.tools.map((tool) => tool.name)), [
     ["read_file", "verdict"],
     ["read_file", "verdict"],
+    ["verdict"],
     ["verdict"],
   ]);
 
@@ -400,7 +402,28 @@ test("steps that grow (large file reads) still reach a final step before the bud
     generate,
     ...fakeTools(),
   });
-  assert.deepEqual(model.requests.map((request) => request.tools.length), [2, 2, 2, 1]);
+  assert.deepEqual(model.requests.map((request) => request.tools.length), [2, 2, 2, 1, 1]);
+});
+
+test("a tool the final call did not offer is not run, and the model gets one more final call", async () => {
+  const read = { name: "read_file" };
+  const finish = { name: "finish" };
+  // deepseek-flash, e8528e7b: offered only submit_plan, it read files until the budget ended with no plan.
+  const model = scriptedModel([{ calls: [["read_file", { path: "a" }]] }, { calls: [["read_file", { path: "b" }]] }, { calls: [["finish", { status: "done", summary: "verdict given" }]] }]);
+  const tools = fakeTools();
+  const result = await runAgentLoop(input({ tools: [read, finish], finalTools: [finish], budget: budget({ maxSteps: 2 }) }), { ...model, ...tools });
+  assert.equal(result.stopReason, "done");
+  assert.deepEqual(tools.ran, ["read_file", "finish"], "the second read_file was not run");
+  assert.deepEqual(model.requests.map((request) => request.tools.length), [2, 1, 1]);
+  const refused = model.requests[2].messages.find((message) => message.role === "tool" && /Not run: only finish/.test(message.content));
+  assert.ok(refused, "the model is told why its call did not run");
+
+  // A model that calls the final tool on the last step takes exactly the path it took before.
+  const obeys = scriptedModel([{ calls: [["read_file", { path: "a" }]] }, { calls: [["finish", { status: "done", summary: "s" }]] }]);
+  const obeyed = fakeTools();
+  await runAgentLoop(input({ tools: [read, finish], finalTools: [finish], budget: budget({ maxSteps: 2 }) }), { ...obeys, ...obeyed });
+  assert.deepEqual(obeys.requests.map((request) => request.tools.length), [2, 1]);
+  assert.deepEqual(obeyed.ran, ["read_file", "finish"]);
 });
 
 test("keepRecentResults keeps more tool results in full", async () => {

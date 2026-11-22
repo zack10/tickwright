@@ -33,7 +33,11 @@ export interface AgentPlan {
   filesToEdit: string[];
   risk: string;
   testStrategy: string[];
+  /** What the ticket itself asks for, in its words; the plan and the review answer each (limitation 64). */
+  requirements: string[];
 }
+
+const MAX_REQUIREMENTS = 20;
 
 const strings = (value: unknown) =>
   Array.isArray(value)
@@ -48,6 +52,7 @@ export const planFromReply = (parsed: Record<string, unknown>, title: string): A
   filesToEdit: strings(parsed.filesToEdit),
   risk: typeof parsed.risk === "string" && ["low", "medium", "high"].includes(parsed.risk) ? parsed.risk : "unknown",
   testStrategy: strings(parsed.testStrategy),
+  requirements: [],
 });
 
 /** A stored plan as the agent wrote it, or, for one submitted through the API, its summary and criteria. */
@@ -60,8 +65,13 @@ export const storedPlan = (plan: Plan & { tasks: PlanTask[] }): AgentPlan => {
     filesToEdit: strings(written?.filesToEdit),
     risk: written?.risk ?? "unknown",
     testStrategy: strings(written?.testStrategy),
+    requirements: strings(written?.requirements),
   };
 };
+
+/** The ticket's stated requirements as the plan prompt shows them. */
+export const numberedRequirements = (requirements: string[]) =>
+  requirements.map((requirement, index) => `${index + 1}. ${requirement}`).join("\n") || "None: the ticket states no requirement of its own.";
 
 /** Earlier plans of the execution with the feedback each got, for the next revision. */
 export const describeRevisions = (plans: Array<Plan & { tasks: PlanTask[] }>, approvals: Approval[]) =>
@@ -153,8 +163,18 @@ export const planExecution = async (executionId: string): Promise<PlanningOutcom
     const revisions = describeRevisions(execution.plans, execution.approvals);
     // With tools the planner reads the code itself; without, it gets a sample of it (each file cut short).
     const withTools = config.executionAgentMode === "tool_loop";
+    // Listed once per execution: a revision has the same ticket, and an edited ticket is a new execution.
+    const latest = execution.plans.at(-1);
+    const requirements = !withTools ? [] : latest ? storedPlan(latest).requirements : await listRequirements(ctx, ticket);
     const prompt = withTools
-      ? renderExecutionPrompt("planner", { ticket, environment, repoOverview: repoContext.overview, revisions, instructions: repoContext.instructions })
+      ? renderExecutionPrompt("planner", {
+          ticket,
+          environment,
+          repoOverview: repoContext.overview,
+          revisions,
+          instructions: repoContext.instructions,
+          requirements: numberedRequirements(requirements),
+        })
       : renderExecutionPrompt("plan", { ticket, environment, repoContext: repoContext.summary, revisions });
     const policy = repository.executionPolicy as RepositoryPolicy | null;
     const noSandbox = async (): Promise<never> => {
@@ -170,6 +190,7 @@ export const planExecution = async (executionId: string): Promise<PlanningOutcom
       isBaseFile: () => true,
       reproduction: { shown: false, newTest: false },
       limits: { maxOutputChars: policy?.maxToolOutputChars, maxReadLines: policy?.maxReadLines },
+      requirements: { list: requirements, refusals: 0 },
     };
     const reply = withTools
       ? ((await runPlanner(tools, prompt, {
@@ -189,7 +210,7 @@ export const planExecution = async (executionId: string): Promise<PlanningOutcom
             }),
         })) ?? {})
       : parseJsonRecord(await askAgent(ctx, prompt));
-    const plan = planFromReply(reply, workItem.title);
+    const plan = { ...planFromReply(reply, workItem.title), requirements };
     const coverage = testCoverage(toolchain, await trackedFiles(executionId), fsRepoFiles(root), plan.filesToEdit);
     const submitted = await submitPlan(executionId, {
       summary: plan.summary,
@@ -217,10 +238,18 @@ export const planExecution = async (executionId: string): Promise<PlanningOutcom
   }
 };
 
+/** A separate call, so the list comes from the ticket alone and not from a plan already written. */
+const listRequirements = async (ctx: CallContext, ticket: string) => {
+  const prompt = renderExecutionPrompt("requirements", { ticket });
+  const requirements = strings(parseJsonRecord(await askAgent(ctx, prompt)).requirements).slice(0, MAX_REQUIREMENTS);
+  await graphEvent(ctx.executionId, "PLAN_REQUIREMENTS_LISTED", { requirements, promptVersion: prompt.version });
+  return requirements;
+};
+
 /** The approved plan as the run's agent, analysis and reviewer read it, with the approver's note. */
 export const describeApprovedPlan = (plan: Plan & { tasks: PlanTask[] }, approval: Approval | undefined) => {
   // The questions were for the person; approving the plan settled them.
-  const { summary, expectedBehaviour, filesToEdit, risk, testStrategy } = storedPlan(plan);
+  const { summary, expectedBehaviour, filesToEdit, risk, testStrategy, requirements } = storedPlan(plan);
   return JSON.stringify(
     {
       summary,
@@ -228,6 +257,7 @@ export const describeApprovedPlan = (plan: Plan & { tasks: PlanTask[] }, approva
       filesToEdit,
       risk,
       testStrategy,
+      ...(requirements.length ? { requirements: requirements.map((requirement, index) => `${index + 1}. ${requirement}`) } : {}),
       ...(approval?.comment ? { approverNote: approval.comment } : {}),
     },
     null,

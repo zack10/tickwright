@@ -3,12 +3,7 @@ import fs from "node:fs/promises";
 import { z } from "zod";
 import { config } from "../config";
 import prisma from "../db";
-import {
-  createDraftPullRequest,
-  findOpenPullRequest,
-  getBaseSha,
-  getInstallationToken,
-} from "../integrations/githubApp";
+import { getSourceControl } from "../integrations/sourceControl";
 import { commentOnWorkItem } from "./ingestionService";
 import { NonRetryableError, describeError } from "../utils/safeError";
 import { discardExecutionRun, runExecutionGraph } from "./agentGraph/executionGraph";
@@ -270,24 +265,14 @@ const publish = async (executionId: string) => {
       );
     if (!execution.baseSha)
       throw new NonRetryableError("Execution has no recorded base SHA");
-    const currentBaseSha = await getBaseSha(
-      repository.githubInstallationId,
-      repository.owner,
-      repository.name,
-      repository.defaultBranch,
-    );
+    const sourceControl = getSourceControl(repository);
+    const currentBaseSha = await sourceControl.branchHead(repository, repository.defaultBranch);
     if (currentBaseSha !== execution.baseSha)
       throw new NonRetryableError(
         "Repository base branch changed after execution; replan is required",
       );
 
-    const pullRequestInput = {
-      installationId: repository.githubInstallationId,
-      owner: repository.owner,
-      repo: repository.name,
-      head: branch,
-    };
-    let pr = await findOpenPullRequest(pullRequestInput);
+    let pr = await sourceControl.findOpenPullRequest(repository, branch);
     if (!pr) {
       await publishApprovedDiff({
         executionId: execution.id,
@@ -297,10 +282,10 @@ const publish = async (executionId: string) => {
         baseSha: execution.baseSha,
         owner: repository.owner,
         repo: repository.name,
-        token: await getInstallationToken(repository.githubInstallationId),
+        token: await sourceControl.gitToken(repository),
       });
-      pr = await createDraftPullRequest({
-        ...pullRequestInput,
+      pr = await sourceControl.createDraftPullRequest(repository, {
+        head: branch,
         title: execution.workItem.title,
         base: repository.defaultBranch,
         body: `Automated draft for ${execution.workItem.sourceUrl ?? execution.workItem.id}\n\nExecution: ${execution.id}\n\n${describeVerification(diffArtifact.metadata)}\n\nHuman review is required.`,

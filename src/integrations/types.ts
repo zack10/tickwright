@@ -34,6 +34,35 @@ export interface TrackerComment {
   createdAt: Date;
 }
 
+/** The repository fields a source-control adapter needs. */
+export interface SourceRepository {
+  owner: string;
+  name: string;
+  githubInstallationId: string;
+}
+
+export interface PullRequestRef {
+  number: number;
+  html_url: string;
+}
+
+/**
+ * Adapter for a source-control host (GitHub today, Phase 5 adds others).
+ * Every API call to the host goes through it; git itself still runs in
+ * workspaceService.
+ */
+export interface SourceControlAdapter {
+  /** The commit a branch points at. */
+  branchHead(repository: SourceRepository, branch: string): Promise<string>;
+  /** A short-lived token for git over HTTPS (clone and push). */
+  gitToken(repository: SourceRepository): Promise<string>;
+  findOpenPullRequest(repository: SourceRepository, head: string): Promise<PullRequestRef | undefined>;
+  createDraftPullRequest(
+    repository: SourceRepository,
+    input: { title: string; head: string; base: string; body: string },
+  ): Promise<PullRequestRef>;
+}
+
 /**
  * Adapter for an issue tracker (Trello today). Adapters only talk to the
  * tracker API; persistence and execution creation live in ingestionService.

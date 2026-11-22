@@ -27,7 +27,7 @@ src/
   middleware/           securityHeaders, authenticate, rateLimit, validate, errorHandler, asyncHandler
   schemas/index.ts      shared Zod schemas (agents, skills, tasks)
   errors/AppError.ts    the error type controllers and services throw
-  integrations/         vendor adapters: githubApp.ts, trelloAdapter.ts, trackerRegistry.ts, types.ts (IssueTrackerAdapter)
+  integrations/         vendor adapters: githubApp.ts, trelloAdapter.ts, trackerRegistry.ts, sourceControl.ts, types.ts (IssueTrackerAdapter, SourceControlAdapter)
   prompts/
     index.ts            which version of each prompt is live (EXECUTION_PROMPTS)
     execution/*.vN.md   versioned prompt files: "<!-- system -->" and "<!-- user -->" sections, {{variables}}

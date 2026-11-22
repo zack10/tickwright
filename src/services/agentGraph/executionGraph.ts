@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { ExecutionAgentMode, config } from "../../config";
 import prisma from "../../db";
-import { getBaseSha, getInstallationToken } from "../../integrations/githubApp";
+import { getSourceControl } from "../../integrations/sourceControl";
 import { writeActionsToRoot } from "../../utils/codeWriter";
 import {
   EXECUTION_PROMPTS,
@@ -381,17 +381,11 @@ const loadExecutionContext = async (
   const internalPlan = describeApprovedPlan(approvedPlan, execution.approvals[0]);
 
   // The commit the plan was made on; a plan submitted through the API has none yet.
+  const sourceControl = getSourceControl(execution.repository);
   const baseSha =
     execution.baseSha ??
-    (await getBaseSha(
-      execution.repository.githubInstallationId,
-      execution.repository.owner,
-      execution.repository.name,
-      execution.repository.defaultBranch,
-    ));
-  const githubToken = await getInstallationToken(
-    execution.repository.githubInstallationId,
-  );
+    (await sourceControl.branchHead(execution.repository, execution.repository.defaultBranch));
+  const githubToken = await sourceControl.gitToken(execution.repository);
 
   await cloneGithubWorkspace(
     execution.id,

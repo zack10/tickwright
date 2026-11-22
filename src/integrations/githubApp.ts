@@ -1,10 +1,13 @@
 import axios from "axios";
 import crypto from "node:crypto";
 
+import { config } from "../config";
+import { SourceControlAdapter } from "./types";
+
 const base64url = (value: string) => Buffer.from(value).toString("base64url");
 const appJwt = () => {
-  const appId = process.env.GITHUB_APP_ID;
-  const privateKey = process.env.GITHUB_APP_PRIVATE_KEY?.replaceAll(
+  const appId = config.githubAppId;
+  const privateKey = config.githubAppPrivateKey.replaceAll(
     String.raw`\n`,
     "\n",
   );
@@ -100,4 +103,14 @@ export const createDraftPullRequest = async (input: {
     },
   );
   return response.data as { number: number; html_url: string };
+};
+
+export const githubSourceControl: SourceControlAdapter = {
+  branchHead: (repository, branch) =>
+    getBaseSha(repository.githubInstallationId, repository.owner, repository.name, branch),
+  gitToken: (repository) => getInstallationToken(repository.githubInstallationId),
+  findOpenPullRequest: (repository, head) =>
+    findOpenPullRequest({ installationId: repository.githubInstallationId, owner: repository.owner, repo: repository.name, head }),
+  createDraftPullRequest: (repository, input) =>
+    createDraftPullRequest({ installationId: repository.githubInstallationId, owner: repository.owner, repo: repository.name, ...input }),
 };

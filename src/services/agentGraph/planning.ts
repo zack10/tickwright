@@ -1,7 +1,7 @@
 import { Approval, Plan, PlanTask } from "@prisma/client";
 import { config } from "../../config";
 import prisma from "../../db";
-import { getBaseSha, getInstallationToken } from "../../integrations/githubApp";
+import { getSourceControl } from "../../integrations/sourceControl";
 import { renderExecutionPrompt } from "../../prompts";
 import { NonRetryableError } from "../../utils/safeError";
 import { submitPlan } from "../executionService";
@@ -122,9 +122,8 @@ export const planExecution = async (executionId: string): Promise<PlanningOutcom
   const { repository, workItem } = execution;
 
   // Pinned on the first plan, so every revision and the run see the same code.
-  const baseSha =
-    execution.baseSha ??
-    (await getBaseSha(repository.githubInstallationId, repository.owner, repository.name, repository.defaultBranch));
+  const sourceControl = getSourceControl(repository);
+  const baseSha = execution.baseSha ?? (await sourceControl.branchHead(repository, repository.defaultBranch));
   if (!execution.baseSha) await prisma.execution.update({ where: { id: executionId }, data: { baseSha } });
 
   await removeWorkspace(executionId);
@@ -133,7 +132,7 @@ export const planExecution = async (executionId: string): Promise<PlanningOutcom
     repository.owner,
     repository.name,
     baseSha,
-    await getInstallationToken(repository.githubInstallationId),
+    await sourceControl.gitToken(repository),
   );
   try {
     const root = workspacePath(executionId);

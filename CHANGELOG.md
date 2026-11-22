@@ -13,6 +13,10 @@ Prompt files keep their own versions (`src/prompts/execution/*.vN.md`).
 
 ## [Unreleased]
 
+### Changed
+
+- **One way to talk to the code host.** Reading branches, cloning and opening the draft pull request now go through a single source-control interface, with GitHub as its first implementation. Nothing changes for you yet; it is the first step toward the agent answering review requests on its own pull requests (roadmap Phase 7) and toward hosts other than GitHub.
+
 ## [0.2.0] - 2026-11-22
 
 Covers the rest of roadmap Phase 4, which is finished (its gate was met on 2026-11-21): repositories in any language, with their environment found or configured, the agent working with tools by default, a reviewer, and cancel and trace for executions. **Breaking:** `OPENAI_BASE_URL` and `OPENAI_TOOLS_API` are removed, and a set `LLM_PROVIDERS` is now the whole list (see Changed). Migrations apply on start, with no manual step.

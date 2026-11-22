@@ -214,6 +214,7 @@ npm run eval:coding -- --runs 3 --parallel 4
 ```
 
 - The last recorded result is the newest `docs/testing/coding-eval-*.md` with "Runs per scenario | 3". Compare run counts, correct fixes, correctly blocked, wrong fixes shipped, and infrastructure failures.
+- **The x3 shows regressions only, never a gain.** It has been at its ceiling since 2026-11-11 (51 / 0 / 3), and harder synthetic scenarios did not move it (roadmap row 40). A claim that a change makes the agent better needs real tickets: reference tickets (`npm run eval:reference`, at least 10 runs of a ticket) or the user's own tickets through the tracker, with the bar set before the run.
 - Infrastructure, eval and docs changes are exempt.
 - **Evals test the production stack.** Before an eval of a code change, rebuild it from the working tree and confirm the running image has the change (for example `docker exec <app container> grep -c "<new text>" dist/...`). An eval against an image without the change proves nothing. Never rebuild or restart it while an execution is running: the run is lost.
 - **Never draw a conclusion from 1 to 3 runs of one scenario.** Use at least 10.

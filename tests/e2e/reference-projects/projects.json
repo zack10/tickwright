@@ -228,6 +228,56 @@
     }
   },
   {
+    "id": "rust/fd-1121",
+    "language": "Rust",
+    "source": {
+      "dataset": "ByteDance-Seed/Multi-SWE-bench",
+      "file": "rust/sharkdp__fd_dataset.jsonl",
+      "number": 1121
+    },
+    "grader": {
+      "image": "mswebench/sharkdp_m_fd:pr-1121",
+      "workdir": "/home/fd",
+      "testPatch": "/home/test.patch",
+      "test": [
+        "bash",
+        "-c",
+        "cargo test --offline --no-fail-fast"
+      ],
+      "resultPattern": "^test (?<name>\\S+) \\.\\.\\. (?<status>ok|FAILED|ignored)"
+    },
+    "executionPolicy": {
+      "setupTimeoutSeconds": 2700,
+      "maxAgentSteps": 150,
+      "maxRunSeconds": 5400
+    }
+  },
+  {
+    "id": "rust/fd-1079",
+    "language": "Rust",
+    "source": {
+      "dataset": "ByteDance-Seed/Multi-SWE-bench",
+      "file": "rust/sharkdp__fd_dataset.jsonl",
+      "number": 1079
+    },
+    "grader": {
+      "image": "mswebench/sharkdp_m_fd:pr-1079",
+      "workdir": "/home/fd",
+      "testPatch": "/home/test.patch",
+      "test": [
+        "bash",
+        "-c",
+        "cargo test --offline --no-fail-fast"
+      ],
+      "resultPattern": "^test (?<name>\\S+) \\.\\.\\. (?<status>ok|FAILED|ignored)"
+    },
+    "executionPolicy": {
+      "setupTimeoutSeconds": 2700,
+      "maxAgentSteps": 150,
+      "maxRunSeconds": 5400
+    }
+  },
+  {
     "id": "rust/fd-1162",
     "language": "Rust",
     "source": {
@@ -358,6 +408,35 @@
     }
   },
   {
+    "id": "js/dayjs-1954",
+    "language": "JavaScript",
+    "source": {
+      "dataset": "ByteDance-Seed/Multi-SWE-bench",
+      "file": "js/iamkun__dayjs_dataset.jsonl",
+      "number": 1954
+    },
+    "grader": {
+      "image": "mswebench/iamkun_m_dayjs:pr-1954",
+      "workdir": "/home/dayjs",
+      "testPatch": "/home/test.patch",
+      "test": [
+        "bash",
+        "-c",
+        "npm test -- --verbose"
+      ],
+      "resultPattern": "^\\s*(?<status>PASS|FAIL) (?<name>\\S+)",
+      "skipReason": "badMutable.test.js fails on unchanged code when MockDate lands on .999 of a second (dayjs-589, 2026-11-14)",
+      "skip": [
+        "test/plugin/badMutable.test.js"
+      ]
+    },
+    "executionPolicy": {
+      "setupTimeoutSeconds": 2700,
+      "maxAgentSteps": 150,
+      "maxRunSeconds": 5400
+    }
+  },
+  {
     "id": "js/dayjs-2420",
     "language": "JavaScript",
     "source": {
@@ -455,6 +534,90 @@
     },
     "grader": {
       "image": "mswebench/jqlang_m_jq:pr-2821",
+      "workdir": "/home/jq",
+      "testPatch": "/home/test.patch",
+      "test": [
+        "bash",
+        "-c",
+        "autoreconf -i && ./configure --with-oniguruma=builtin && make clean && make -j4 && make check"
+      ],
+      "resultPattern": "^(?<status>PASS|FAIL|XFAIL|XPASS|ERROR|SKIP): (?<name>\\S+)"
+    },
+    "executionPolicy": {
+      "setupTimeoutSeconds": 2700,
+      "maxAgentSteps": 150,
+      "maxRunSeconds": 5400
+    },
+    "environment": {
+      "toolchain": {
+        "image": "ubuntu:22.04@sha256:9abcaffc92a5279fff3a6a41635c0800ea33e528425fb389658806476e7defde",
+        "setup": [
+          "sh",
+          "-c",
+          "export DEBIAN_FRONTEND=noninteractive && apt-get update -q && apt-get install -y -q --no-install-recommends ca-certificates build-essential autoconf automake libtool bison flex libonig-dev git && mkdir -p modules/oniguruma && autoreconf -fi && ./configure --disable-docs --disable-maintainer-mode --with-oniguruma=yes && make -j4"
+        ],
+        "checks": {
+          "test": [
+            "sh",
+            "-c",
+            "make -j4 check"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "id": "c/jq-2646",
+    "language": "C",
+    "source": {
+      "dataset": "ByteDance-Seed/Multi-SWE-bench",
+      "file": "c/jqlang__jq_dataset.jsonl",
+      "number": 2646
+    },
+    "grader": {
+      "image": "mswebench/jqlang_m_jq:pr-2646",
+      "workdir": "/home/jq",
+      "testPatch": "/home/test.patch",
+      "test": [
+        "bash",
+        "-c",
+        "autoreconf -i && ./configure --with-oniguruma=builtin && make clean && make -j4 && make check"
+      ],
+      "resultPattern": "^(?<status>PASS|FAIL|XFAIL|XPASS|ERROR|SKIP): (?<name>\\S+)"
+    },
+    "executionPolicy": {
+      "setupTimeoutSeconds": 2700,
+      "maxAgentSteps": 150,
+      "maxRunSeconds": 5400
+    },
+    "environment": {
+      "toolchain": {
+        "image": "ubuntu:22.04@sha256:9abcaffc92a5279fff3a6a41635c0800ea33e528425fb389658806476e7defde",
+        "setup": [
+          "sh",
+          "-c",
+          "export DEBIAN_FRONTEND=noninteractive && apt-get update -q && apt-get install -y -q --no-install-recommends ca-certificates build-essential autoconf automake libtool bison flex libonig-dev git && mkdir -p modules/oniguruma && autoreconf -fi && ./configure --disable-docs --disable-maintainer-mode --with-oniguruma=yes && make -j4"
+        ],
+        "checks": {
+          "test": [
+            "sh",
+            "-c",
+            "make -j4 check"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "id": "c/jq-2133",
+    "language": "C",
+    "source": {
+      "dataset": "ByteDance-Seed/Multi-SWE-bench",
+      "file": "c/jqlang__jq_dataset.jsonl",
+      "number": 2133
+    },
+    "grader": {
+      "image": "mswebench/jqlang_m_jq:pr-2133",
       "workdir": "/home/jq",
       "testPatch": "/home/test.patch",
       "test": [

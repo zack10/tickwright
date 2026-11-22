@@ -80,7 +80,7 @@ The rules for when an eval may be started, and how its result is reported, are i
 6. **Every failed run gets one cause** from the fixed list: environment, the agent's own test, step limit, wrong change, reviewer, infrastructure, ticket. Priorities come from the counts.
 7. **Infrastructure failures are counted and investigated, not excluded and forgotten.** A rate excludes them; the report still lists them, and three with one cause is a bug to fix before the next batch.
 8. **Report cost per correct change beside the pass rate.** A change that buys quality at four times the price must be seen as one.
-9. **Keep the benchmark able to fail.** When every scenario has passed in four x3 runs in a row, the benchmark only detects regressions. Add scenarios the current agent does not always pass (limitation 40), taken first from our own rejected or edited pull requests (limitation 50).
+9. **The benchmark detects regressions; real tickets show gains.** Every scenario has passed in every x3 since 2026-11-11, and eight harder synthetic scenarios also passed 40 of 40 (2026-11-22, limitation 40), so a claimed improvement is shown on real tickets: reference tickets at 10 runs each, or our own tickets through the tracker. A scenario is still worth adding when it reproduces one of our own rejected or edited pull requests (limitation 50).
 10. **Batch agent changes.** Several changes, one x3. An eval after every edit tunes the agent to the benchmark and spends the budget on noise.
 11. **Two attempts per cause.** A project that misses its bar is diagnosed and fixed once, and rerun once. A second miss is recorded as a limitation; it is not patched a third time.
 

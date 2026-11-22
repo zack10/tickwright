@@ -590,7 +590,7 @@ Behaviour worth knowing:
 | --- | --- |
 | Core | `NODE_ENV`, `PORT`, `DATABASE_URL`, `RABBITMQ_URL`, `ENCRYPTION_KEY` |
 | API access | `API_AUTH_TOKEN`, `API_AUTH_ACTOR`, `AUTH_DISABLED`, `CORS_ORIGINS`, `API_RATE_LIMIT_PER_MINUTE` |
-| LLM | `GEMINI_API_KEY`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `ANTHROPIC_API_KEY`, `LLM_PROVIDERS`, `LLM_DEFAULT_PROVIDER`, `LLM_DEFAULT_MODEL`, `LLM_DAILY_TOKEN_LIMIT`, `LLM_REQUEST_TIMEOUT_MS`, `LLM_MAX_OUTPUT_TOKENS`, `LLM_RATE_LIMIT_RETRIES`, `OPENAI_TOOLS_API` |
+| LLM | `LLM_PROVIDERS` (and the key variables its entries name), `LLM_DEFAULT_PROVIDER`, `LLM_DEFAULT_MODEL`, `LLM_DAILY_TOKEN_LIMIT`, `LLM_REQUEST_TIMEOUT_MS`, `LLM_MAX_OUTPUT_TOKENS`, `LLM_RATE_LIMIT_RETRIES` |
 | Task pipeline | `TASK_MAX_ATTEMPTS`, `TASK_RETRY_DELAY_MS`, `TASK_LEASE_MS`, `GENERATED_CODE_MAX_FILES`, `GENERATED_CODE_MAX_FILE_BYTES`, `STORE_RAW_LLM_OUTPUT` |
 | Execution pipeline | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `INTEGRATION_POLL_INTERVAL_MS`, `EXECUTION_LEASE_MS`, `EXECUTION_RUN_CONCURRENCY`, `EXECUTION_PLAN_CONCURRENCY`, `PLAN_MAX_VERSIONS`, `EXECUTION_AGENT_MODE`, `AGENT_MAX_STEPS`, `EXECUTION_MAX_TOKENS`, `EXECUTION_MAX_DURATION_SECONDS`, `WORKSPACE_ROOT`, `KEEP_WORKSPACES`, `ARTIFACT_ROOT` |
 | Repository environment | `EXECUTION_DEFAULT_IMAGE`, `EXECUTION_DISCOVERY_MAX_ATTEMPTS`, `EXECUTION_SNAPSHOT_MAX_AGE_HOURS`, `EXECUTION_MIN_FREE_DISK_GB`, `EXECUTION_PROGRESS_INTERVAL_SECONDS`, `EXECUTION_HUNG_AFTER_SECONDS` |
@@ -599,24 +599,26 @@ Behaviour worth knowing:
 
 Defaults and comments are in `.env.example`; `src/config.ts` is the single place they are read.
 
-### Adding an LLM provider
+### LLM providers
 
-Built in: `gemini` and `anthropic` (native APIs) and `openai`. Any other API that speaks OpenAI's `/models` and `/chat/completions` format (Groq, Mistral, DeepSeek, xAI, Together, Fireworks, OpenRouter, a LiteLLM proxy, or local Ollama / vLLM / LM Studio) is added with configuration only, as a profile in `LLM_PROVIDERS`:
+`LLM_PROVIDERS` is the one list of every provider agents can use, OpenAI, Gemini and Anthropic included. Unset, it is these three, each reading its key from `OPENAI_API_KEY`, `GEMINI_API_KEY` or `ANTHROPIC_API_KEY` when set. Set, it is the whole list: keep any of the three you still use. Any API that speaks OpenAI's `/models` and `/chat/completions` format (Groq, Mistral, DeepSeek, xAI, Together, Fireworks, OpenRouter, a LiteLLM proxy, or local Ollama / vLLM / LM Studio) is added with configuration only:
 
 ```bash
 LLM_PROVIDERS='[
-  {"key": "groq", "label": "Groq", "baseUrl": "https://api.groq.com/openai/v1", "apiKeyEnv": "GROQ_API_KEY", "supportsTools": true},
+  {"key": "openai", "label": "OpenAI", "baseUrl": "https://api.openai.com/v1", "apiKeyEnv": "OPENAI_API_KEY", "supportsTools": true, "toolsApi": "responses"},
+  {"key": "anthropic", "type": "anthropic", "apiKeyEnv": "ANTHROPIC_API_KEY"},
+  {"key": "deepseek", "label": "DeepSeek", "baseUrl": "https://api.deepseek.com/v1", "apiKeyEnv": "DEEPSEEK_API_KEY", "supportsTools": true},
   {"key": "ollama", "baseUrl": "http://localhost:11434/v1"}
 ]'
-GROQ_API_KEY=...
 ```
 
-Agents then use `"provider": "groq"` with a `model` the endpoint offers (`GET /api/llm/models?provider=groq`). `GET /api/llm/providers` lists every configured provider.
+Agents then use `"provider": "deepseek"` with a `model` the endpoint offers (`GET /api/llm/models?provider=deepseek`). `GET /api/llm/providers` lists every configured provider.
 
 | Field | Meaning |
 | --- | --- |
-| `key` | Name agents use; lowercase letters, digits, dashes; must not clash with a built-in |
-| `baseUrl` | API root. `https` only; `http` is allowed for `localhost` outside production |
+| `key` | Name agents use; lowercase letters, digits, dashes; unique in the list |
+| `type` | `openai-compatible` (default), or `gemini` / `anthropic` for those vendors' own APIs. A native entry takes only `key`, `type`, `label` and `apiKeyEnv` |
+| `baseUrl` | API root, required for `openai-compatible`. `https` only; `http` is allowed for `localhost` outside production |
 | `apiKeyEnv` | Environment variable holding the server's key. Omit for keyless local servers or when each agent sets `config.apiKey` |
 | `supportsTools` | Whether the endpoint supports tool calling (default `false`) |
 | `toolsApi` | `chat` (default) for Chat Completions, or `responses` for the OpenAI Responses API |
@@ -627,7 +629,7 @@ The server refuses to start if a profile is invalid (bad URL, duplicate key, `ap
 
 An agent without a `provider` uses `LLM_DEFAULT_PROVIDER` and `LLM_DEFAULT_MODEL` (default `gemini` / `gemini-flash-latest`); an agent with a provider but no model fails with a clear error. APIs with their own format (e.g. AWS Bedrock, Vertex AI) still need a native provider class in `src/services/llm/providers/`.
 
-The built-in OpenAI provider makes tool calls through the Responses API (`OPENAI_TOOLS_API=responses`, the default). It keeps the model's reasoning from one step to the next, sent back encrypted with `store: false`, so nothing is kept at OpenAI; newer models such as `gpt-5.6-luna` refuse tools with reasoning on Chat Completions. `OPENAI_TOOLS_API=chat` goes back to Chat Completions.
+The default OpenAI entry makes tool calls through the Responses API (`"toolsApi": "responses"`). It keeps the model's reasoning from one step to the next, sent back encrypted with `store: false`, so nothing is kept at OpenAI; newer models such as `gpt-5.6-luna` refuse tools with reasoning on Chat Completions. A listed OpenAI entry needs `"toolsApi": "responses"` too; without it, it uses Chat Completions.
 
 ## Testing
 

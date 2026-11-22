@@ -13,6 +13,10 @@ Prompt files keep their own versions (`src/prompts/execution/*.vN.md`).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-22
+
+Covers the rest of roadmap Phase 4, which is finished (its gate was met on 2026-11-21): repositories in any language, with their environment found or configured, the agent working with tools by default, a reviewer, and cancel and trace for executions. **Breaking:** `OPENAI_BASE_URL` and `OPENAI_TOOLS_API` are removed, and a set `LLM_PROVIDERS` is now the whole list (see Changed). Migrations apply on start, with no manual step.
+
 ### Added
 
 - **The plan covers everything the ticket asks for.** Before planning, the agent lists the requirements the ticket states in its own words. The plan must give an example for each one, or a question when the agent thinks it is wrong or unclear; a requirement it still leaves out is shown to you as a question on the plan. The reviewer then checks the change against every requirement, and one that is missing rejects the change.
@@ -101,5 +105,6 @@ First tagged version. It covers roadmap Phases 0–3 and the Phase 4 work done s
 - A failed model listing (`GET /api/llm/models`, `POST /api/llm/discover`) answers 502 `BAD_GATEWAY` with the provider's message instead of a generic 500.
 - An MCP resource type without a connector fails with an error instead of returning a simulated success.
 
-[Unreleased]: https://github.com/zack10/tickwright/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/zack10/tickwright/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/zack10/tickwright/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/zack10/tickwright/releases/tag/v0.1.0

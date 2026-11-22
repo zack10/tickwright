@@ -116,7 +116,20 @@ export const createExecution = async (input: {
       },
     });
     return execution;
-  });
+  }).catch(alreadyCreated(idempotencyKey));
+};
+
+/**
+ * Two syncs of one connection (the tracker poller and POST .../sync) can create the
+ * same execution at once; the one that loses returns the winner's instead of a 409
+ * (reference eval dayjs-589, DeepSeek x3 node/06-vague-csv-import).
+ */
+const alreadyCreated = (idempotencyKey: string) => async (error: unknown) => {
+  if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+    const created = await prisma.execution.findUnique({ where: { idempotencyKey } });
+    if (created) return created;
+  }
+  throw error;
 };
 
 export const submitPlan = async (

@@ -26,7 +26,8 @@ const tokenUsage = (usage: MessagesUsage | undefined): TokenUsage => ({
 });
 
 export class AnthropicProvider implements LLMProvider {
-  private readonly apiKey = process.env.ANTHROPIC_API_KEY || "";
+  /** The server's key from its LLM_PROVIDERS entry; an agent's own key takes precedence. */
+  constructor(private readonly apiKey = "") {}
 
   async listModels(apiKey?: string): Promise<Model[]> {
     const key = apiKey || this.apiKey;

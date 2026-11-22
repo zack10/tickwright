@@ -290,7 +290,8 @@ test("the prompts in use name no language, package manager or file type", () => 
     renderExecutionPrompt("discover", neutral(["fixed", "files", "lastAttempt"])),
     renderExecutionPrompt("triage", neutral(["ticket", "environment", "repoContext"])),
     renderExecutionPrompt("reviewer", neutral([...Object.keys(current.review), "verification", "instructions"])),
-    renderExecutionPrompt("planner", neutral(["ticket", "environment", "repoOverview", "revisions", "instructions"])),
+    renderExecutionPrompt("planner", neutral(["ticket", "environment", "repoOverview", "revisions", "instructions", "requirements"])),
+    renderExecutionPrompt("requirements", neutral(["ticket"])),
   ];
   for (const prompt of rendered) {
     const text = `${prompt.system}\n${prompt.user}`;
@@ -298,7 +299,7 @@ test("the prompts in use name no language, package manager or file type", () => 
   }
   assert.deepEqual(
     rendered.map((prompt) => prompt.version),
-    ["plan.v5", "implement.v2", "analyze.v2", "review.v6", "agent.v7", "discover.v4", "triage.v1", "reviewer.v9", "planner.v3"],
+    ["plan.v5", "implement.v2", "analyze.v2", "review.v6", "agent.v7", "discover.v4", "triage.v1", "reviewer.v10", "planner.v4", "requirements.v1"],
   );
 });
 
@@ -354,4 +355,30 @@ test("discover.v4 no longer accepts an environment that cannot build the project
   assert.doesNotMatch(next.system, /compiler errors in the code\): the environment works/);
   assert.match(next.system, /Never call an environment that cannot build the project a working one/);
   assert.match(next.system, /The project built, every check ran, and any failure is in individual tests/);
+});
+
+// Limitation 64: 5 of 5 point-5 plans dropped a requirement the ticket stated.
+test("planner.v4 and reviewer.v10 add only the stated-requirements rule, and requirements.v1 never adds one of its own", () => {
+  const plannerVars = { ticket: "t", environment: "e", repoOverview: "o", revisions: "r", instructions: "i" };
+  const oldPlanner = renderPromptVersion("planner.v3", plannerVars);
+  const planner = renderPromptVersion("planner.v4", { ...plannerVars, requirements: "REQUIREMENTS-LIST" });
+  assert.deepEqual(lines(oldPlanner.system).filter((line) => !planner.system.includes(line)), []);
+  const plannerAdded = lines(planner.system).filter((line) => !oldPlanner.system.includes(line));
+  assert.equal(plannerAdded.length, 1);
+  assert.match(plannerAdded[0], /submit_plan is refused while a requirement is not mapped/);
+  assert.match(planner.user, /The ticket's stated requirements:\nREQUIREMENTS-LIST/);
+  for (const line of lines(oldPlanner.user)) assert.ok(planner.user.includes(line), `planner.v4 keeps "${line}"`);
+
+  const reviewVars = { ...current.review, verification: "v", instructions: "i" };
+  const oldReviewer = renderPromptVersion("reviewer.v9", reviewVars);
+  const reviewer = renderPromptVersion("reviewer.v10", reviewVars);
+  assert.equal(reviewer.user, oldReviewer.user);
+  assert.deepEqual(lines(oldReviewer.system).filter((line) => !reviewer.system.includes(line)), []);
+  const reviewerAdded = lines(reviewer.system).filter((line) => !oldReviewer.system.includes(line));
+  assert.equal(reviewerAdded.length, 1);
+  assert.match(reviewerAdded[0], /A requirement you do not answer, or answer no, rejects the change/);
+
+  const listing = renderExecutionPrompt("requirements", { ticket: "TICKET-TEXT" });
+  assert.match(listing.user, /TICKET-TEXT/);
+  assert.match(listing.system, /never add a requirement of your own/);
 });

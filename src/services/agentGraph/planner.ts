@@ -45,7 +45,8 @@ export const runPlanner = async (
       generate: deps.generate,
       runTool: async (call) => {
         const result = await executeTool(ctx, call.name, call.arguments, PLAN_TOOLS);
-        plan ??= result.plan;
+        // The latest wins: a refused plan is kept until a corrected one comes.
+        plan = result.plan ?? plan;
         return result;
       },
       onStep: deps.onStep,

@@ -80,7 +80,7 @@ import { secretValuesOfExecution, setupSecretsOf, testSecretsOf } from "../setup
 import { ensureDiskSpace } from "../environmentSweep";
 import { fileActionsError } from "./outputFormat";
 import { RepoContext, collectRepoContext, instructionsOf } from "./repoContext";
-import { describeApprovedPlan } from "./planning";
+import { describeApprovedPlan, storedPlan } from "./planning";
 import { RepositoryPolicy, checkExistingTests, checkRepositoryPolicy, onlyAddsLines } from "./repoPolicy";
 
 const MAX_ATTEMPTS = 3;
@@ -137,6 +137,8 @@ const ExecutionGraphState = Annotation.Root({
   }),
   // The tests the last review said are missing; the next attempt's finish waits for them.
   requestedTests: Annotation<RequestedTest[]>({ reducer: (_old, value) => value, default: () => [] }),
+  // The ticket's stated requirements from the approved plan; the reviewer's verdict answers each.
+  requirements: Annotation<string[]>({ reducer: (_old, value) => value, default: () => [] }),
   verification: Annotation<VerificationResult | undefined>(),
   route: Annotation<GraphRoute>(),
   agentMode: Annotation<ExecutionAgentMode>({
@@ -189,9 +191,9 @@ type GraphState = typeof ExecutionGraphState.State;
 
 /** The prompts a mode actually uses, recorded with every run. */
 const promptVersionsFor = (mode: ExecutionAgentMode) => {
-  const { implement, fileFormat, agent, review, reviewer, ...shared } = EXECUTION_PROMPTS;
+  const { implement, fileFormat, agent, review, reviewer, requirements, ...shared } = EXECUTION_PROMPTS;
   return mode === "tool_loop"
-    ? { ...shared, agent, reviewer }
+    ? { ...shared, agent, reviewer, requirements }
     : { ...shared, implement, fileFormat, review };
 };
 
@@ -473,6 +475,7 @@ const loadExecutionContext = async (
     baseSha,
     planTaskId: planTask.id,
     internalPlan,
+    requirements: storedPlan(approvedPlan).requirements,
     ...calls,
     ticket: `${execution.workItem.title}\n${execution.workItem.description ?? ""}`,
     agentMode,
@@ -927,7 +930,10 @@ const reviewWithTools = async (
     where: { id: state.executionId },
     include: { repository: true },
   });
-  const ctx = await executionToolContext(state.executionId, execution.repository, requireToolchain(state));
+  const ctx = {
+    ...(await executionToolContext(state.executionId, execution.repository, requireToolchain(state))),
+    requirements: { list: state.requirements, refusals: 0 },
+  };
   const prompt = renderExecutionPrompt("reviewer", input);
   const review = await runReviewer(ctx, prompt, {
     generate: (request) => askAgentWithTools(state, request, prompt.version),

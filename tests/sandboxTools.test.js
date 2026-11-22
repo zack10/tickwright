@@ -499,6 +499,55 @@ test("the planner reads a long file to its end, then submits one plan; it cannot
   assert.equal(await runPlanner(ctx, prompt, { generate, maxTokens: 10_000, deadline: Date.now() + 60_000 }), undefined, "no plan when the loop ends without one");
 });
 
+// Limitation 64: tickwright card 5 stated "P2025 (404), P2002 (409) and P2003 (400). Test each"; the plan kept only P2025.
+test("submit_plan is refused until every stated requirement maps to an example or a question, at most twice", async (t) => {
+  const { ctx } = workspace(t, { requirements: { list: ["P2025 answers 404", "P2002 answers 409", "P2003 answers 400"], refusals: 0 } });
+  const plan = { summary: "Map Prisma errors.", expectedBehaviour: ["given P2025, now 500; after 404"], questions: [], risk: "low" };
+  const submit = (args) => executeTool(ctx, "submit_plan", args, PLAN_TOOLS);
+
+  const first = await submit({ ...plan, requirements: [{ requirement: 1, example: 1 }, { requirement: 2, example: 5 }] });
+  assert.equal(first.status, "FAILED");
+  assert.equal(first.finish, undefined, "a refused plan does not end planning");
+  assert.match(first.output, /2\. P2002 answers 409\n3\. P2003 answers 400/, "an example that does not exist covers nothing");
+  assert.doesNotMatch(first.output, /P2025/);
+  assert.deepEqual(first.plan.questions, ['The ticket says "P2002 answers 409"; this plan does not cover it yet.', 'The ticket says "P2003 answers 400"; this plan does not cover it yet.'], "the refused plan is kept, its gaps shown");
+
+  const mapped = await submit({
+    ...plan,
+    expectedBehaviour: [...plan.expectedBehaviour, "given P2002, now 500; after 409"],
+    questions: ["P2003 is a foreign-key error: should it really be 400?"],
+    requirements: [{ requirement: 1, example: 1 }, { requirement: 2, example: 2 }, { requirement: 3, question: 1 }],
+  });
+  assert.equal(mapped.status, "COMPLETED", "a question covers a requirement the planner doubts");
+  assert.equal(mapped.finish.status, "done");
+  assert.equal(mapped.plan.requirements, undefined, "the mapping is not part of the stored plan");
+  assert.deepEqual(mapped.plan.questions, ["P2003 is a foreign-key error: should it really be 400?"]);
+
+  await submit(plan);
+  const given = await submit(plan);
+  assert.equal(given.status, "COMPLETED", "after two refusals the plan goes to the person");
+  assert.equal(given.plan.questions.length, 3, "with every gap as a question");
+
+  const none = workspace(t).ctx;
+  assert.equal((await executeTool(none, "submit_plan", plan, PLAN_TOOLS)).status, "COMPLETED", "a ticket with no stated requirement is not gated");
+});
+
+test("a verdict that leaves a stated requirement unanswered, or answers no, rejects the change", async (t) => {
+  const { ctx } = workspace(t, { requirements: { list: ["P2002 answers 409", "log the Prisma code"], refusals: 0 } });
+  const yes = { answer: "yes", evidence: "src/math.js:2" };
+  const allYes = { sourceChanged: yes, newCodeCalled: yes, testsCallExistingCode: yes, exampleWorks: yes, casesCovered: yes, issues: [], summary: "s" };
+  const review = (requirements) => executeTool(ctx, "verdict", { ...allYes, requirements }, REVIEW_TOOLS);
+
+  const done = await review([{ requirement: 1, answer: "yes", evidence: "errorHandler.ts:56" }, { requirement: 2, answer: "yes", evidence: "errorHandler.ts:60" }]);
+  assert.equal(done.verdict.approved, true);
+  const skipped = await review([{ requirement: 1, answer: "yes", evidence: "errorHandler.ts:56" }]);
+  assert.equal(skipped.verdict.approved, false, "an unanswered requirement fails closed");
+  assert.deepEqual(skipped.verdict.issues, ['The ticket\'s requirement 2 ("log the Prisma code") was not checked.']);
+  const missed = await review([{ requirement: 1, answer: "yes", evidence: "e" }, { requirement: 2, answer: "no", evidence: "logs only the message" }]);
+  assert.deepEqual(missed.verdict.issues, ['The ticket requires "log the Prisma code". No: logs only the message']);
+  assert.equal(missed.verdict.checks.requirements, undefined, "requirement answers are not checklist items");
+});
+
 test("after a review names missing tests, finish waits until the test files use those names, at most twice", async (t) => {
   const changed = [];
   const { ctx, root } = workspace(t, {

@@ -15,6 +15,7 @@ Prompt files keep their own versions (`src/prompts/execution/*.vN.md`).
 
 ### Added
 
+- **The plan covers everything the ticket asks for.** Before planning, the agent lists the requirements the ticket states in its own words. The plan must give an example for each one, or a question when the agent thinks it is wrong or unclear; a requirement it still leaves out is shown to you as a question on the plan. The reviewer then checks the change against every requirement, and one that is missing rejects the change.
 - **The agent writes the tests the reviewer asked for.** When the reviewer rejects a change because a case has no test, it now names the code a test for that case must call, and the agent's next attempt cannot finish until its test files call that code (or it says why the case cannot be tested). After two refusals the run goes on, and the reviewer is told what is still missing. New prompt version `reviewer.v9`.
 
 - **Cancel an execution.** `POST /api/executions/:id/cancel` (optional `{ "reason": "..." }`) ends an execution in any state that is not already final: it becomes `CANCELED`, pending approvals are rejected, and an `EXECUTION_CANCELED` event records who canceled it, from which state and why. A run in progress stops at its next step (after the current model call or command), and the environment sweep removes what it left. An execution that has already ended answers 409.

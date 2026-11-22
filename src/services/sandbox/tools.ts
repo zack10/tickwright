@@ -40,6 +40,8 @@ export interface ToolContext {
   requestedTests?: RequestedTests;
   /** The run's new and changed test files, repository-relative. */
   changedTestFiles?: () => Promise<string[]>;
+  /** The ticket's stated requirements, for submit_plan and the verdict. */
+  requirements?: StatedRequirements;
 }
 
 /** A case the reviewer found untested, and the repository names a test for it must use. */
@@ -58,6 +60,17 @@ export interface RequestedTests {
   refusals: number;
   /** What was still missing when finish let the run go on, for the reviewer. */
   unmet?: string[];
+}
+
+/**
+ * The ticket's stated requirements, in its own words (limitation 64): 5 of 5
+ * point-5 plans dropped at least one. submit_plan maps each to an example or
+ * a question, and the reviewer's verdict answers each.
+ */
+export interface StatedRequirements {
+  list: string[];
+  /** submit_plan refusals so far; after MAX_PLAN_REFUSALS the plan goes to the person with the gaps as questions. */
+  refusals: number;
 }
 
 export interface ToolOutputLimits {
@@ -323,6 +336,9 @@ const ARGS = {
     filesToEdit: z.array(z.string()).default([]),
     risk: z.enum(["low", "medium", "high"]),
     testStrategy: z.array(z.string()).default([]),
+    requirements: z
+      .array(z.object({ requirement: z.number().int().positive(), example: z.number().int().positive().optional(), question: z.number().int().positive().optional() }))
+      .default([]),
   }),
   verdict: z.object({
     sourceChanged: reviewCheck(REVIEW_CHECKS.sourceChanged.other),
@@ -333,6 +349,9 @@ const ARGS = {
     missingTests: z
       .array(z.object({ case: z.string().trim().min(1), mustReach: z.array(z.string().trim().min(1)).min(1).max(10) }))
       .max(20)
+      .default([]),
+    requirements: z
+      .array(z.object({ requirement: z.number().int().positive(), answer: z.enum(["yes", "no"]), evidence: z.string().trim().min(1) }))
       .default([]),
     issues: z.array(z.string()),
     suggestions: z.array(z.string()).default([]),
@@ -385,6 +404,19 @@ export const REVIEW_TOOLS: ToolDefinition[] = [
             required: ["case", "mustReach"],
           },
         },
+        requirements: {
+          type: "array",
+          description: "One answer per numbered requirement in the internal plan (see the prompt); one not answered, or answered no, rejects the change. Empty if the plan lists none",
+          items: {
+            type: "object",
+            properties: {
+              requirement: { type: "integer", description: "The requirement's number" },
+              answer: { type: "string", enum: ["yes", "no"] },
+              evidence: { type: "string", description: "The line of the diff or the test that does it, or what in the approved plan settles it" },
+            },
+            required: ["requirement", "answer", "evidence"],
+          },
+        },
         issues: {
           type: "array",
           items: { type: "string" },
@@ -428,6 +460,19 @@ export const PLAN_TOOLS: ToolDefinition[] = [
         filesToEdit: { type: "array", items: { type: "string" }, description: "Relative paths" },
         risk: { type: "string", enum: ["low", "medium", "high"] },
         testStrategy: { type: "array", items: { type: "string" }, description: "Check names or commands" },
+        requirements: {
+          type: "array",
+          description: "One entry per numbered requirement of the ticket: the expectedBehaviour example that shows it, or the question that raises it (both numbered from 1). Required when requirements are listed",
+          items: {
+            type: "object",
+            properties: {
+              requirement: { type: "integer" },
+              example: { type: "integer" },
+              question: { type: "integer" },
+            },
+            required: ["requirement"],
+          },
+        },
       },
       required: ["summary", "expectedBehaviour", "risk"],
     },
@@ -438,12 +483,18 @@ export const PLAN_TOOLS: ToolDefinition[] = [
  * Turns the reviewer's answers into the decision, so a reviewer that finds
  * a problem cannot still approve: any "no" or listed issue rejects.
  */
-const decideReview = (args: z.infer<typeof ARGS.verdict>): ReviewVerdict => {
-  const { issues, suggestions, summary, missingTests, ...checks } = args;
+const decideReview = (args: z.infer<typeof ARGS.verdict>, stated: string[] = []): ReviewVerdict => {
+  const { issues, suggestions, summary, missingTests, requirements, ...checks } = args;
   const failedChecks = Object.entries(checks)
     .filter(([, check]) => check.answer === "no")
     .map(([name, check]) => `${REVIEW_CHECKS[name as keyof typeof REVIEW_CHECKS].question} No: ${check.evidence}`);
-  const problems = [...failedChecks, ...issues.map((issue) => issue.trim()).filter(Boolean)];
+  // An unanswered requirement fails closed, like a missing verdict.
+  const unmetRequirements = stated.flatMap((requirement, index) => {
+    const answer = requirements.find((entry) => entry.requirement === index + 1);
+    if (!answer) return [`The ticket's requirement ${index + 1} ("${requirement}") was not checked.`];
+    return answer.answer === "no" ? [`The ticket requires "${requirement}". No: ${answer.evidence}`] : [];
+  });
+  const problems = [...failedChecks, ...unmetRequirements, ...issues.map((issue) => issue.trim()).filter(Boolean)];
   const remarks = suggestions.map((remark) => remark.trim()).filter(Boolean);
   const approved = problems.length === 0;
   return { approved, issues: problems, suggestions: remarks, summary, checks, ...(approved ? {} : { missingTests }) };
@@ -713,6 +764,41 @@ const runCommand = async (ctx: ToolContext, args: z.infer<typeof ARGS.run_comman
   return completed(cap(ctx, `$ ${args.command}\n${verdict(result, timeoutMs)}\n${result.output.trim()}`, "ends") + note);
 };
 
+export const MAX_PLAN_REFUSALS = 2;
+
+/**
+ * A plan maps every stated requirement to one of its examples or questions.
+ * Each refusal still carries the plan, with the gaps added as questions, so a
+ * planner that runs out of steps leaves them for the person to see.
+ */
+const submitPlan = (ctx: ToolContext, args: z.infer<typeof ARGS.submit_plan>): ToolOutcome => {
+  const { requirements: mapping, ...plan } = args;
+  const covered = (number: number) =>
+    mapping.some(
+      (entry) =>
+        entry.requirement === number &&
+        ((entry.example !== undefined && entry.example <= plan.expectedBehaviour.length) ||
+          (entry.question !== undefined && entry.question <= plan.questions.length)),
+    );
+  const stated = ctx.requirements?.list ?? [];
+  const gaps = stated.map((requirement, index) => ({ requirement, number: index + 1 })).filter(({ number }) => !covered(number));
+  const kept = {
+    ...plan,
+    questions: [...plan.questions, ...gaps.map(({ requirement }) => `The ticket says "${requirement}"; this plan does not cover it yet.`)],
+  };
+  if (gaps.length && ctx.requirements && ctx.requirements.refusals < MAX_PLAN_REFUSALS) {
+    ctx.requirements.refusals += 1;
+    return {
+      ...failed(
+        `Plan not submitted: these requirements of the ticket are not mapped to an expectedBehaviour example or a question:\n${gaps.map(({ requirement, number }) => `${number}. ${requirement}`).join("\n")}\nAdd an example for each, or a question if you think it is wrong or unclear, and list it under requirements (numbers start at 1).`,
+      ),
+      plan: kept,
+    };
+  }
+  // finish ends the loop; the plan is what the caller keeps.
+  return { ...completed("Plan submitted."), finish: { status: "done", summary: plan.summary }, plan: kept };
+};
+
 /** Runs one tool call. Unknown tools and invalid arguments are FAILED results. */
 export const executeTool = async (
   ctx: ToolContext,
@@ -745,7 +831,7 @@ export const executeTool = async (
         ctx.reproduction.skipped = (parsed.data as z.infer<typeof ARGS.skip_reproduction>).reason;
         return completed("Noted. You can change files other than tests now; the reviewer will see your reason.");
       case "verdict": {
-        const verdict = decideReview(parsed.data as z.infer<typeof ARGS.verdict>);
+        const verdict = decideReview(parsed.data as z.infer<typeof ARGS.verdict>, ctx.requirements?.list);
         // finish ends the loop; the verdict carries the decision.
         return {
           ...completed(`Review ${verdict.approved ? "approved" : "rejected"}.`),
@@ -753,11 +839,8 @@ export const executeTool = async (
           verdict,
         };
       }
-      case "submit_plan": {
-        const plan = parsed.data as z.infer<typeof ARGS.submit_plan>;
-        // finish ends the loop; the plan is what the caller keeps.
-        return { ...completed("Plan submitted."), finish: { status: "done", summary: plan.summary }, plan };
-      }
+      case "submit_plan":
+        return submitPlan(ctx, parsed.data as z.infer<typeof ARGS.submit_plan>);
       default: {
         const args = parsed.data as z.infer<typeof ARGS.finish>;
         const refusal = args.status === "done" ? unconfirmedTest(ctx) || (await missingRequestedTests(ctx)) : "";

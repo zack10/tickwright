@@ -1,15 +1,18 @@
 import { Prisma } from "@prisma/client";
 import axios from "axios";
 import crypto from "node:crypto";
+import { z } from "zod";
 import { IssueTrackerAdapter, NormalizedWorkItem, TrackerComment } from "./types";
 
-interface TrelloConfig {
-  apiKey: string;
-  token: string;
-  boardId: string;
-  eligibleLabel: string;
-  repositoryId: string;
-}
+// Other keys (approvers) are the tracker-neutral settings; the route checks those.
+const trelloConfigSchema = z.object({
+  apiKey: z.string().min(1),
+  token: z.string().min(1),
+  boardId: z.string().min(1),
+  eligibleLabel: z.string().min(1),
+  repositoryId: z.string().uuid(),
+});
+type TrelloConfig = z.infer<typeof trelloConfigSchema>;
 export interface TrelloCard {
   id: string;
   name: string;
@@ -84,6 +87,7 @@ export const toWorkItems = (
 export const trelloAdapter: IssueTrackerAdapter = {
   type: "TRELLO",
   externalSystem: "TRELLO",
+  configSchema: trelloConfigSchema,
 
   async fetchEligibleItems(rawConfig) {
     const config = asConfig(rawConfig);

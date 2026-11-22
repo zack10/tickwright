@@ -14,6 +14,7 @@ import {
   submitPlan,
 } from "../services/executionService";
 import { getSourceControlAdapter } from "../integrations/sourceControl";
+import { getTrackerAdapter } from "../integrations/trackerRegistry";
 import { syncIntegrationConnection } from "../services/ingestionService";
 import { sealSetupSecrets, sealTestSecrets } from "../services/setupSecrets";
 import {
@@ -129,8 +130,8 @@ export const listRepositories = asyncHandler(
 export const createIntegration = asyncHandler(
   async (req: Request, res: Response) => {
     const { config: secretConfig, projectId, type, name } = req.body;
-    // A source-control connection's config is the host's credentials; its adapter knows their shape.
-    const checked = getSourceControlAdapter(type)?.configSchema.safeParse(secretConfig);
+    // Each tracker or code host knows the shape of its own config; a bad one fails here, not at the next poll.
+    const checked = (getTrackerAdapter(type) ?? getSourceControlAdapter(type))?.configSchema.safeParse(secretConfig);
     if (checked && !checked.success)
       throw AppError.badRequest(`Invalid ${type} connection config: ${checked.error.issues.map((issue) => `${issue.path.join(".")} ${issue.message}`).join("; ")}`);
     const connection = await prisma.integrationConnection.create({

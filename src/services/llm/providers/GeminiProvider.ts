@@ -5,8 +5,6 @@ import { LLMOutputError } from "../errors";
 import { groupMessages, replayable } from "../toolMessages";
 import { LLMProvider, Model, TextResult, TokenUsage, ToolRequest, ToolTurn, UsageStats } from "../types";
 
-// environment variable: GEMINI_API_KEY
-
 interface GeminiModel {
   name: string;
   description?: string;
@@ -33,11 +31,12 @@ const tokenUsage = (usage: UsageMetadata | undefined): TokenUsage => ({
 
 // shortcut: reasoningEffort is not mapped to Gemini's thinkingConfig yet (ignored), add it when a Gemini model is the benchmark default.
 export class GeminiProvider implements LLMProvider {
-  private readonly apiKey = process.env.GEMINI_API_KEY || "";
+  /** The server's key from its LLM_PROVIDERS entry; an agent's own key takes precedence. */
+  constructor(private readonly apiKey = "") {}
 
   /**
    * List available models from Gemini API
-   * @param apiKey - API key (optional, uses environment variable if not provided)
+   * @param apiKey - API key (optional, uses the LLM_PROVIDERS key if not provided)
    * @returns Array of available models
    */
   async listModels(apiKey?: string): Promise<Model[]> {
@@ -74,7 +73,7 @@ export class GeminiProvider implements LLMProvider {
    * Generate content using Gemini API
    * @param model - Model name
    * @param prompt - System and user prompt
-   * @param apiKey - API key (optional, uses environment variable if not provided)
+   * @param apiKey - API key (optional, uses the LLM_PROVIDERS key if not provided)
    * @returns Generated content
    */
   async generateContent(

@@ -163,6 +163,16 @@ const eventMetrics = (events) => {
   };
 };
 
+/** Cancels every execution of the card that has not ended, so a try that failed leaves nothing running or waiting. */
+const cancelCardExecutions = async ({ project }, cardId) => {
+  const { data: workItems } = await api("GET", `/api/work-items?projectId=${project.id}`, { expectStatus: 200 });
+  const workItem = workItems.find((candidate) => candidate.externalId === cardId);
+  if (!workItem) return;
+  const { data: detail } = await api("GET", `/api/work-items/${workItem.id}`, { expectStatus: 200 });
+  for (const execution of detail.executions.filter((candidate) => !["COMPLETED", "FAILED", "BLOCKED", "CANCELED"].includes(candidate.status)))
+    await api("POST", `/api/executions/${execution.id}/cancel`, { body: { reason: "coding eval: this try failed and runs again" }, expectStatus: 200 });
+};
+
 const runScenario = async (fixtures, scenario, runNumber) => {
   const id = runId();
   const started = Date.now();
@@ -252,6 +262,8 @@ const runScenario = async (fixtures, scenario, runNumber) => {
   } catch (error) {
     result.outcome = "infra_failure";
     result.note = error.message.replace(/\s+/g, " ").slice(0, 300);
+    // A failed sync may still have started this card's execution (DeepSeek x3, node/06): left alone, it waits at plan approval for good.
+    if (cardId) await cancelCardExecutions(fixtures, cardId).catch((cancelError) => log(`could not cancel the card's execution: ${cancelError.message}`));
   } finally {
     result.durationMs = Date.now() - started;
     if (cardId && env("E2E_KEEP_RESOURCES") !== "true")

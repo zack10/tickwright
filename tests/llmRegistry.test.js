@@ -27,16 +27,41 @@ const capturePosts = (t) => {
   return calls;
 };
 
-test("without LLM_PROVIDERS only the built-in OpenAI profile exists, honouring OPENAI_BASE_URL", () => {
-  const profiles = parseProviderProfiles("", { OPENAI_BASE_URL: "https://proxy.example.com/v1/", OPENAI_API_KEY: "k" }, "development");
-  assert.equal(profiles.length, 1);
-  assert.equal(profiles[0].key, "openai");
-  assert.equal(profiles[0].baseUrl, "https://proxy.example.com/v1");
-  assert.equal(profiles[0].apiKey, "k");
+test("without LLM_PROVIDERS the list is Gemini, Anthropic and OpenAI, keyed by their variables when set", () => {
+  const profiles = parseProviderProfiles("", { OPENAI_API_KEY: "k" }, "development");
+  assert.deepEqual(
+    profiles.map((profile) => [profile.key, profile.type, profile.apiKey]),
+    [
+      ["gemini", "gemini", ""],
+      ["anthropic", "anthropic", ""],
+      ["openai", "openai-compatible", "k"],
+    ],
+  );
+  assert.equal(profiles[2].baseUrl, "https://api.openai.com/v1");
+  assert.equal(profiles[2].toolsApi, "responses");
+});
+
+test("a set LLM_PROVIDERS is the whole list, native providers included, so every provider is configured in one place", () => {
+  const profiles = parse([{ key: "claude", type: "anthropic", apiKeyEnv: "GROQ_API_KEY" }, groq]);
+  assert.deepEqual(
+    profiles.map((profile) => [profile.key, profile.type, profile.apiKey, profile.supportsTools]),
+    [
+      ["claude", "anthropic", "groq-key", true],
+      ["groq", "openai-compatible", "groq-key", true],
+    ],
+  );
+  assert.deepEqual(
+    new ProviderRegistry(profiles, "claude", "m").list().map((provider) => [provider.key, provider.kind]),
+    [
+      ["claude", "native"],
+      ["groq", "openai-compatible"],
+    ],
+    "the default providers are not added to a listed set",
+  );
 });
 
 test("profiles are parsed with their keys, trimmed URLs and capabilities", () => {
-  const [, first, second] = parse([groq, mistral]);
+  const [first, second] = parse([groq, mistral]);
   assert.deepEqual(
     { key: first.key, baseUrl: first.baseUrl, apiKey: first.apiKey, supportsTools: first.supportsTools },
     { key: "groq", baseUrl: "https://api.groq.com/openai/v1", apiKey: "groq-key", supportsTools: true },
@@ -49,8 +74,10 @@ test("invalid profiles refuse to load", () => {
   const rejects = (profiles, pattern, nodeEnv, vars) => assert.throws(() => parse(profiles, nodeEnv, vars), pattern);
   assert.throws(() => parseProviderProfiles("{not json", env, "development"), /JSON array/);
   rejects([groq, groq], /already in use/);
-  rejects([{ ...groq, key: "gemini" }], /already in use/);
-  rejects([{ ...groq, key: "openai" }], /already in use/);
+  rejects([{ ...groq, key: "gemini" }, { key: "gemini", type: "gemini" }], /already in use/);
+  rejects([{ key: "groq", apiKeyEnv: "GROQ_API_KEY" }], /baseUrl is required/);
+  rejects([{ key: "claude", type: "anthropic", baseUrl: "https://example.com" }], /takes only key, type, label and apiKeyEnv/);
+  rejects([{ key: "palm", type: "palm" }], /type/);
   rejects([{ ...groq, key: "Bad Key" }], /key must be/);
   rejects([{ ...groq, baseUrl: "http://api.groq.com/v1" }], /https/);
   rejects([{ ...groq, baseUrl: "ftp://api.groq.com/v1" }], /https/);
@@ -62,28 +89,19 @@ test("invalid profiles refuse to load", () => {
 
 test("http is allowed only for localhost, and never in production", () => {
   const ollama = { key: "ollama", baseUrl: "http://localhost:11434/v1" };
-  assert.equal(parse([ollama])[1].baseUrl, "http://localhost:11434/v1");
-  assert.equal(parse([ollama])[1].apiKey, "", "a keyless local server gets no key");
+  assert.equal(parse([ollama])[0].baseUrl, "http://localhost:11434/v1");
+  assert.equal(parse([ollama])[0].apiKey, "", "a keyless local server gets no key");
   assert.throws(() => parse([ollama], "production"), /not allowed in production/);
 });
 
 test("the default provider must be configured", () => {
   assert.throws(() => new ProviderRegistry(parse([]), "groq", "llama"), /not a configured provider/);
-  const registry = new ProviderRegistry(parse([groq]), "groq", "llama-3.3-70b");
-  assert.deepEqual(
-    registry.list().map((provider) => [provider.key, provider.kind]),
-    [
-      ["gemini", "native"],
-      ["anthropic", "native"],
-      ["openai", "openai-compatible"],
-      ["groq", "openai-compatible"],
-    ],
-  );
+  assert.equal(new ProviderRegistry(parse([groq]), "groq", "llama-3.3-70b").has("groq"), true);
 });
 
 test("two profiles route to their own base URLs and keys; an agent key wins over the profile's", async (t) => {
   const calls = capturePosts(t);
-  const llm = new LLMService(new ProviderRegistry(parse([groq, mistral]), "gemini", "gemini-flash-latest"), null);
+  const llm = new LLMService(new ProviderRegistry(parse([groq, mistral]), "groq", "llama"), null);
 
   assert.equal(await llm.generateContent("groq", "llama", { system: "sys", user: "hi" }), "ok");
   await llm.generateContent("mistral", "mistral-small", { user: "hi" });
@@ -114,10 +132,11 @@ test("a keyless profile sends no Authorization header", async (t) => {
 });
 
 test("resolveModel applies the default provider and model, and rejects incomplete agents", () => {
-  const llm = new LLMService(new ProviderRegistry(parse([groq]), "groq", "llama-3.3-70b"), null);
+  const llm = new LLMService(new ProviderRegistry(parse([groq, mistral]), "groq", "llama-3.3-70b"), null);
   assert.deepEqual(llm.resolveModel({}), { provider: "groq", model: "llama-3.3-70b" });
-  assert.deepEqual(llm.resolveModel({ provider: "openai", model: "gpt-4o" }), { provider: "openai", model: "gpt-4o" });
-  assert.throws(() => llm.resolveModel({ provider: "openai" }), /has no model set/);
+  assert.deepEqual(llm.resolveModel({ provider: "mistral", model: "small" }), { provider: "mistral", model: "small" });
+  assert.throws(() => llm.resolveModel({ provider: "mistral" }), /has no model set/);
+  assert.throws(() => llm.resolveModel({ provider: "openai", model: "gpt-4o" }), /not configured/, "a provider left out of the list is gone");
   assert.throws(() => llm.resolveModel({ provider: "removed", model: "x" }), /not configured/);
 });
 
@@ -137,12 +156,10 @@ test("agent config.reasoningEffort accepts known call kinds and levels only", ()
   assert.equal(createAgentSchema.safeParse(body({ triag: "low" })).success, false, "a typo is refused, not ignored");
 });
 
-test("the built-in OpenAI profile calls tools through the Responses API unless OPENAI_TOOLS_API says chat", () => {
-  assert.equal(parseProviderProfiles("", {}, "development")[0].toolsApi, "responses");
-  assert.equal(parseProviderProfiles("", { OPENAI_TOOLS_API: "chat" }, "development")[0].toolsApi, "chat");
-  assert.throws(() => parseProviderProfiles("", { OPENAI_TOOLS_API: "soap" }, "development"), /OPENAI_TOOLS_API/);
-  assert.equal(parse([groq])[1].toolsApi, "chat", "other vendors default to chat completions");
-  assert.equal(parse([{ ...groq, toolsApi: "responses" }])[1].toolsApi, "responses");
+test("the default OpenAI profile calls tools through the Responses API; a listed profile uses chat unless it says responses", () => {
+  assert.equal(parseProviderProfiles("", {}, "development").find((profile) => profile.key === "openai").toolsApi, "responses");
+  assert.equal(parse([groq])[0].toolsApi, "chat", "other vendors default to chat completions");
+  assert.equal(parse([{ ...groq, toolsApi: "responses" }])[0].toolsApi, "responses");
   assert.throws(() => parse([{ ...groq, toolsApi: "soap" }]), /toolsApi/);
 });
 

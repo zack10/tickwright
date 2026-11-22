@@ -20,6 +20,9 @@ const ask = { role: "user", content: "What does src/a.js export?" };
 const registry = new ProviderRegistry(
   parseProviderProfiles(
     JSON.stringify([
+      { key: "gemini", type: "gemini" },
+      { key: "anthropic", type: "anthropic" },
+      { key: "openai", baseUrl: "https://api.openai.com/v1", supportsTools: true, toolsApi: "responses" },
       { key: "local", baseUrl: "http://localhost:11434/v1" },
       { key: "groq", baseUrl: "https://api.groq.com/openai/v1", supportsTools: true },
     ]),

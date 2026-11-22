@@ -5,7 +5,8 @@ export interface DiffReviewResult {
 
 const SECRET_PATTERNS = [
   /-----BEGIN (?:RSA |EC |OPENSSH |)PRIVATE KEY-----/i,
-  /\b(?:api[_-]?key|secret|token|password)\b\s*[:=]\s*["'][^"']{12,}["']/i,
+  // One unbroken value: a test's made-up "secret\n... ERROR forged" is data, not a key (row 70, c9ab164b).
+  /\b(?:api[_-]?key|secret|token|password)\b\s*[:=]\s*["'][^"'\s\\]{12,}["']/i,
   // GitHub classic, app installation, OAuth, user-to-server, refresh tokens.
   /\bgh[pousr]_[a-z0-9_]{20,}\b/i,
   /\bgithub_pat_[a-z0-9_]{20,}\b/i,

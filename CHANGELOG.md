@@ -52,6 +52,8 @@ Prompt files keep their own versions (`src/prompts/execution/*.vN.md`).
 
 ### Fixed
 
+- **A test's made-up secret no longer blocks the change.** The safety check on the final change took test data such as `secret = "secret
+... ERROR forged"` for a real credential and stopped the run. A value counts as a secret only when it is one unbroken token, the way real keys and passwords are written; known key formats and the repository's own secrets are still refused everywhere.
 - **Plans no longer come back empty when the model ignores its last-call instruction.** At the end of its planning budget the agent may only submit its plan (or the reviewer its verdict); a model that asked to read more files instead ran out of budget with no plan. Such a call is now refused and the model gets one more chance to submit.
 - **A finished ticket is not run again.** Once a ticket's run has opened its pull request, moving the card (for example to Done) or editing it no longer starts a new run with a new plan comment.
 - **A sync no longer fails when the tracker poller picks up the same new ticket at the same moment.** `POST /api/integrations/:id/sync` could answer 409 "Unique constraint violation" because both syncs tried to start the ticket's run; it now returns the run the other sync started. The coding eval also cancels the run of a try that failed, so nothing is left waiting at plan approval.

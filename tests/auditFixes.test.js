@@ -127,6 +127,14 @@ test("H5: diff review catches GitHub app, fine-grained, and Anthropic tokens", (
   }
 });
 
+test("a keyword secret is one unbroken value; text with spaces or escapes in a test is data", () => {
+  assert.equal(reviewDiffSafety('+String secret = "secret\\n2026-01-01 ERROR forged";', ["src/test/java/RunTest.java"]).passed, true);
+  assert.equal(reviewDiffSafety('+password = "a value with spaces in it";', ["tests/a.test.js"]).passed, true);
+  assert.equal(reviewDiffSafety('+password = "Xk9vQ2mP7rT4wZ8a";', ["tests/a.test.js"]).passed, false, "a real-looking one in a test is still refused");
+  assert.equal(reviewDiffSafety('+api_key: "abcdef0123456789abcd"', ["config.yml"]).passed, false);
+  assert.equal(reviewDiffSafety('+const t = "ghp_abcdefghijklmnopqrstuvwxyz123456 in a sentence";', ["tests/a.test.js"]).passed, false, "vendor formats match anywhere");
+});
+
 test("diff review rejects a repository setup secret's value, whatever it looks like", () => {
   const secret = "plain-looking-value-42";
   assert.equal(reviewDiffSafety(`+registry = ${secret}`, ["config.txt"]).passed, true, "no pattern matches it");

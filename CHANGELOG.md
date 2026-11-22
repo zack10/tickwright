@@ -13,6 +13,10 @@ Prompt files keep their own versions (`src/prompts/execution/*.vN.md`).
 
 ## [Unreleased]
 
+### Added
+
+- **See what happened to the agent's pull requests.** Tickwright now checks the draft pull requests it opened (every 5 minutes, `PR_POLL_INTERVAL_SECONDS`) and, once one is merged or closed, records it on the execution: merged as written, merged after a person changed it (with the files they changed), or closed without merging. What was merged is kept next to what the agent published, so the two can be compared. The migration applies on start, with no manual step.
+
 ### Fixed
 
 - **A tracker connection with missing settings is refused when you create it.** `POST /api/integrations` now answers 400 and names what is missing (for Trello: API key, token, board, label, or a valid repository id), instead of accepting the connection and failing quietly at the next poll. Existing connections are not affected.

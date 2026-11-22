@@ -21,6 +21,7 @@ import {
   stopExecutionWorkers,
 } from "./services/executionWorker";
 import { startEnvironmentSweep, stopEnvironmentSweep } from "./services/environmentSweep";
+import { startPullRequestOutcomePolling, stopPullRequestOutcomePolling } from "./services/pullRequestOutcomes";
 import { startOutbox, stopOutbox } from "./services/outboxService";
 import rabbitMQService from "./services/rabbitMQService";
 import taskQueueService from "./services/taskQueueService";
@@ -104,6 +105,7 @@ async function start() {
     );
   }
   startEnvironmentSweep();
+  startPullRequestOutcomePolling();
 
   const server = app.listen(config.port, () => {
     console.log(`Server is running on port ${config.port}`);
@@ -116,6 +118,7 @@ async function start() {
     stopIntegrationPolling();
     stopExecutionWorkers();
     stopEnvironmentSweep();
+    stopPullRequestOutcomePolling();
     await new Promise<void>((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()));
     });

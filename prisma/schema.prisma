@@ -109,6 +109,8 @@ enum ArtifactType {
   LOG
   VERIFICATION
   PULL_REQUEST
+  /// What a person merged, recorded when the agent's pull request is merged (Phase 7).
+  MERGED_DIFF
 }
 
 enum OutboxStatus {

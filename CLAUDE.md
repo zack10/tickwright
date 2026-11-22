@@ -70,6 +70,7 @@ scripts/copy-prompts.js     copies prompts into dist/ at build time
 scripts/trace.js            npm run trace: one execution's steps, model calls (LlmCall), tool calls and edits, read from the database
 tests/
   *.test.js                 unit tests, CommonJS, node:test, run against dist/
+  pipeline/                 the whole pipeline with a scripted model and in-memory tracker and code host (npm run test:pipeline)
   e2e/                      suites and evals that call a RUNNING server
     pipeline.js, helpers.js   shared fixtures, tracker and GitHub helpers, waiting on executions
     codingEval.js           the coding benchmark (npm run eval:coding)
@@ -114,6 +115,7 @@ dotenv -e .env.local -- npx prisma studio               # any prisma CLI command
 # Production stack: evals and live checks run against this, from WSL2 on Windows (docs/guides/PRODUCTION_RUN.md)
 docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
 
+npm run test:pipeline           # free: a ticket to COMPLETED on real Postgres, RabbitMQ and Docker; needs PIPELINE_TEST_DATABASE_URL and PIPELINE_TEST_RABBITMQ_URL (own database and vhost)
 npm run test:e2e                # tests/e2e/* against a RUNNING server, env from .env.e2e
 npm run eval:coding -- --check  # free setup check of the coding benchmark
 npm run eval:coding -- --runs 3 --parallel 4            # the "x3" benchmark: paid, about 25 min
@@ -129,6 +131,7 @@ Facts about testing that are easy to get wrong:
 - A new test file must be added to the explicit list in the `test` script in `package.json`, or it never runs. New e2e files go in the `test:e2e` script.
 - `tests/codingScenarios.test.js` needs Docker and skips itself without it. It proves each benchmark scenario is valid in its grader image; keep it passing when editing scenarios.
 - e2e suites skip themselves when their `E2E_*` variables are unset.
+- `tests/pipeline/` is not in `npm test`: it needs a migrated Postgres and a RabbitMQ that nothing else consumes, so it has its own CI job (`pipeline`) and script. It replaces only the model (a local OpenAI-compatible server in `LLM_PROVIDERS`), the tracker and code-host adapters, and git's clone and push. A change to the prompts' first lines, the tools or the stage events can break its script; fix the script, not the pipeline.
 - Hidden tests of a benchmark scenario must never be pushed to the sandbox repository.
 - A new benchmark language is a new folder under `tests/e2e/coding-scenarios/`, not a code change.
 

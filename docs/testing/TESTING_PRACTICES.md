@@ -20,7 +20,7 @@ Each practice is marked **in place** (the project already does it, keep doing it
 | Lint and build | The code compiles and follows the lint rules | Free, seconds | Every pull request (`npm run verify`) | In place |
 | Unit tests (`tests/*.test.js`) | One rule of one module, on compiled output | Free, a minute | Every pull request | In place |
 | Docker tests (inside the unit suite) | The sandbox, the workspace and the benchmark scenarios behave in real containers | Free, minutes; skipped without Docker | Every pull request (the CI runner has Docker) | In place |
-| Pipeline test with a scripted model | A ticket reaches `COMPLETED` through the real state machine, outbox, approvals, leases and recovery, with no model, tracker or source host | Free, minutes | Every pull request | **To build** (limitation 55, `AUDIT.md` X4) |
+| Pipeline test with a scripted model (`npm run test:pipeline`) | A ticket reaches `COMPLETED` through the real state machine, outbox, approvals and Docker sandbox, with no model, tracker or source host | Free, about a minute | Every pull request (CI job `pipeline`) | Happy path in place; races and recovery still to add (limitation 55, `AUDIT.md` X4) |
 | Live suites (`npm run test:e2e`) | The app works against a real tracker, a real source host and a real model | Cents; needs `.env.e2e` and a running server | Before a release, and after a change to an adapter | In place, run by hand |
 | Coding benchmark x3 (`npm run eval:coding -- --runs 3 --parallel 4`) | An agent change did not make the agent worse | About a dollar, 25 minutes | Before every agent or prompt change is committed | In place |
 | Reference projects (`npm run eval:reference`) | The agent copes with real projects in several stacks | Cents to a dollar per run; 10 runs per ticket | At a phase gate, and to diagnose one project | In place |
@@ -35,7 +35,7 @@ The second-cheapest level that is missing today is the most valuable one to add:
 | --- | --- | --- |
 | Docs only | Nothing | CI green |
 | A route, controller, schema, utility | `npm run verify`, with a new or changed unit test | CI green |
-| The state machine, outbox, worker, queue, leases | `npm run verify`, and the scripted pipeline test once it exists; until then `npm run test:e2e` | CI green |
+| The state machine, outbox, worker, queue, leases | `npm run verify` and `npm run test:pipeline` (CI runs both) | CI green |
 | `workspaceService.ts`, the toolchain, discovery, the sweep | `npm run verify` **with Docker running** (confirm the Docker tests ran and did not skip) | CI green; one reference project that uses the changed path, 10 runs, if the change alters what a run does |
 | A tracker or source-host adapter | `npm run verify`, then `npm run test:e2e` against the real service | CI green |
 | A prompt, the plan step, the run graph, the tools, the policy | `npm run verify`, then the x3 benchmark on an image that contains the change | No drop in pass rate and no new wrong fix against the last recorded x3 |

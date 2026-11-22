@@ -28,6 +28,43 @@ jobs:
       # Lint, build, then unit tests. The scenario-validity tests use the runner's Docker.
       - run: npm run verify
 
+  pipeline:
+    # A ticket to a completed draft PR on a real Postgres, RabbitMQ and Docker, with a scripted
+    # model and in-memory tracker and code host (tests/pipeline). Free: no key, no account.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: pipeline
+          POSTGRES_PASSWORD: pipeline
+          POSTGRES_DB: pipeline
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U pipeline" --health-interval 5s --health-timeout 5s --health-retries 10
+      rabbitmq:
+        image: rabbitmq:3
+        # guest may only connect from inside the container; the runner connects through the port.
+        env:
+          RABBITMQ_DEFAULT_USER: pipeline
+          RABBITMQ_DEFAULT_PASS: pipeline
+        ports: ["5672:5672"]
+        options: --health-cmd "rabbitmq-diagnostics -q ping" --health-interval 10s --health-timeout 10s --health-retries 10
+    env:
+      PIPELINE_TEST_DATABASE_URL: postgresql://pipeline:pipeline@localhost:5432/pipeline
+      PIPELINE_TEST_RABBITMQ_URL: amqp://pipeline:pipeline@localhost:5672
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx prisma migrate deploy
+        env:
+          DATABASE_URL: ${{ env.PIPELINE_TEST_DATABASE_URL }}
+      - run: npm run test:pipeline
+
   changelog:
     # Every PR adds a line under "Unreleased" in CHANGELOG.md, unless it only touches docs
     # or carries the skip-changelog label.

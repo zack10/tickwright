@@ -15,6 +15,10 @@ Prompt files keep their own versions (`src/prompts/execution/*.vN.md`).
 
 ### Added
 
+- **Every change is now checked end to end, for free.** Continuous integration takes a ticket all the way to a completed draft pull request (plan, approvals, the agent's work in its sandbox, verification and review) on a real database, message queue and Docker, with a scripted model instead of a paid one. A change that breaks the pipeline is caught before it is merged, not on a paid run. Run it locally with `npm run test:pipeline`.
+
+### Added
+
 - **See what happened to the agent's pull requests.** Tickwright now checks the draft pull requests it opened (every 5 minutes, `PR_POLL_INTERVAL_SECONDS`) and, once one is merged or closed, records it on the execution: merged as written, merged after a person changed it (with the files they changed), or closed without merging. What was merged is kept next to what the agent published, so the two can be compared. The migration applies on start, with no manual step.
 
 ### Fixed

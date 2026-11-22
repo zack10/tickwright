@@ -73,9 +73,12 @@ export interface ReviewLineComment {
   outdated: boolean;
 }
 
-/** A review that asks for changes (GitHub's "Request changes"; other hosts have their own). */
-export interface ChangeRequest {
+/** A review, or a comment on the pull request's conversation, by one person. */
+export interface ReviewFeedback {
+  /** Unique across reviews and conversation comments of the host. */
   id: string;
+  /** A review that blocks the PR (GitHub's "Request changes"); other feedback is context, not a request. */
+  requestsChanges: boolean;
   author: string;
   /** Automated accounts never count as reviewers. */
   authorIsBot: boolean;
@@ -113,8 +116,8 @@ export interface SourceControlAdapter {
     input: { title: string; head: string; base: string; body: string },
   ): Promise<PullRequestRef>;
   pullRequestOutcome(target: SourceControlTarget, number: number): Promise<PullRequestOutcome>;
-  /** The pull request's reviews that ask for changes, oldest first. */
-  changeRequests(target: SourceControlTarget, number: number): Promise<ChangeRequest[]>;
+  /** The pull request's reviews and conversation comments, oldest first; approvals are not feedback. */
+  reviewFeedback(target: SourceControlTarget, number: number): Promise<ReviewFeedback[]>;
 }
 
 /**

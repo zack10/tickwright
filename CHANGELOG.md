@@ -15,7 +15,7 @@ Prompt files keep their own versions (`src/prompts/execution/*.vN.md`).
 
 ### Added
 
-- **Tickwright now keeps the feedback you give after its pull request opens.** A reply on the ticket from one of the connection's approvers, and a GitHub review submitted with "Request changes" by someone in the repository's new `reviewers` list (with the review's line comments: file, lines, the code you commented on, and your text), are stored on the execution and shown in `GET /api/executions/:id`. Comments from anyone else and from bots are never read. Nothing acts on the feedback yet: the next release makes the agent address it, with your approval of the new diff before anything is pushed. The migration applies on start, with no manual step.
+- **Tickwright now keeps the feedback you give after its pull request opens.** A reply on the ticket from one of the connection's approvers, and the GitHub reviews and PR comments of someone in the repository's new `reviewers` list (with a review's line comments: file, lines, the code you commented on, and your text), are stored on the execution and shown in `GET /api/executions/:id`. Comments from anyone else and from bots are never read. A review submitted with "Request changes" and a ticket reply are marked as asking for a new change; a "Comment" review or a PR comment is kept as context for that change, so a question never starts work on its own. Nothing acts on the feedback yet: the next release makes the agent address it, with your approval of the new diff before anything is pushed. The migrations apply on start, with no manual step.
 
 ### Added
 

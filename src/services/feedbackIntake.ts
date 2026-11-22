@@ -1,7 +1,7 @@
 import { FeedbackSource, Prisma } from "@prisma/client";
 
 import prisma, { json } from "../db";
-import { ChangeRequest, IssueTrackerAdapter, ReviewLineComment } from "../integrations/types";
+import { ReviewFeedback, IssueTrackerAdapter, ReviewLineComment } from "../integrations/types";
 import { SourceControl } from "../integrations/sourceControl";
 import { describeError } from "../utils/safeError";
 import { isAgentComment, isApprover } from "./ticketConversation";
@@ -35,7 +35,7 @@ export const limitLineComments = (comments: ReviewLineComment[]) =>
   }));
 
 /** A code-host login listed as a reviewer; "@name" and case do not matter. Bots never count. */
-export const isListedReviewer = (review: Pick<ChangeRequest, "author" | "authorIsBot">, reviewers: string[]) =>
+export const isListedReviewer = (review: Pick<ReviewFeedback, "author" | "authorIsBot">, reviewers: string[]) =>
   !review.authorIsBot &&
   review.author !== "" &&
   reviewers.some((reviewer) => reviewer.replace(/^@/, "").toLowerCase() === review.author.toLowerCase());
@@ -47,6 +47,8 @@ type FeedbackRow = {
   author: string;
   body: string;
   comments?: ReviewLineComment[];
+  /** Whether it starts a new round of changes (step 4b), or is context for the next one. */
+  requestsChanges: boolean;
   writtenAt: Date;
 };
 
@@ -64,15 +66,15 @@ const store = async (rows: FeedbackRow[]) => {
   return count;
 };
 
-/** The listed reviewers' "Request changes" reviews on an execution's open pull request. */
+/** The listed reviewers' reviews and conversation comments on an execution's open pull request. */
 export const collectReviewFeedback = async (
   execution: { id: string; repository: { reviewers: string[] } },
-  sourceControl: Pick<SourceControl, "changeRequests">,
+  sourceControl: Pick<SourceControl, "reviewFeedback">,
   pullRequest: number,
 ) => {
   const { reviewers } = execution.repository;
   if (!reviewers?.length) return 0;
-  const reviews = (await sourceControl.changeRequests(pullRequest)).filter((review) => isListedReviewer(review, reviewers));
+  const reviews = (await sourceControl.reviewFeedback(pullRequest)).filter((review) => isListedReviewer(review, reviewers));
   return store(
     reviews
       // A review with neither a summary nor line comments asks for nothing in particular.
@@ -81,6 +83,7 @@ export const collectReviewFeedback = async (
         executionId: execution.id,
         source: "PR_REVIEW" as const,
         externalId: review.id,
+        requestsChanges: review.requestsChanges,
         author: review.author,
         body: review.body,
         comments: review.comments,
@@ -127,6 +130,8 @@ export const collectTicketFeedback = async (adapter: IssueTrackerAdapter, tracke
           externalId: `${adapter.externalSystem}:${comment.id}`,
           author: comment.authorName,
           body: comment.text,
+          // A tracker has no "comment only" kind of reply: every approver reply asks for something.
+          requestsChanges: true,
           writtenAt: comment.createdAt,
         })),
       );

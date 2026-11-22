@@ -257,7 +257,7 @@ model Repository {
   /// The source-control connection holding this host's credentials (encrypted config).
   connection           IntegrationConnection? @relation(fields: [connectionId], references: [id], onDelete: SetNull)
   connectionId         String?
-  /// Code-host logins whose "Request changes" reviews on the agent's PRs count as feedback. Empty: none do.
+  /// Code-host logins whose reviews and comments on the agent's PRs count as feedback ("Request changes" starts a new round). Empty: none do.
   reviewers            String[]    @default([])
   verificationConfig   Json
   executionPolicy      Json
@@ -500,6 +500,8 @@ model ExecutionFeedback {
   writtenAt   DateTime
   receivedAt  DateTime       @default(now())
   /// The follow-up execution that addressed it; null while it waits.
+  /// Starts a new round of changes; false for a code-host comment that is context only (a "Comment" review, a conversation comment).
+  requestsChanges Boolean @default(true)
   addressedByExecutionId String?
 
   @@unique([source, externalId])

@@ -8,7 +8,7 @@ process.env.GITHUB_APP_PRIVATE_KEY = require("node:crypto")
   .privateKey.export({ type: "pkcs1", format: "pem" });
 const axios = require("axios");
 const prisma = require("../dist/db").default;
-const { getChangeRequests } = require("../dist/integrations/githubApp");
+const { getReviewFeedback } = require("../dist/integrations/githubApp");
 const {
   MAX_BODY_CHARS,
   MAX_LINE_COMMENTS,
@@ -36,6 +36,7 @@ const stubDatabase = (t, executions = []) => {
 
 const review = (overrides = {}) => ({
   id: "r1",
+  requestsChanges: true,
   author: "alice",
   authorIsBot: false,
   body: "Handle negative numbers too.",
@@ -62,18 +63,28 @@ test("reviews from anyone not listed, from bots, or that ask for nothing are nev
   ];
   const count = await collectReviewFeedback(
     { id: "e1", repository: { reviewers: ["alice"] } },
-    { changeRequests: async (number) => (assert.equal(number, 7), reviews) },
+    { reviewFeedback: async (number) => (assert.equal(number, 7), reviews) },
     7,
   );
   assert.equal(count, 1);
   assert.deepEqual(stored.map((row) => [row.externalId, row.source, row.author]), [["r1", "PR_REVIEW", "alice"]]);
 });
 
+test("a listed reviewer's comment is kept as context and only a request for changes starts work", async (t) => {
+  const stored = stubDatabase(t);
+  await collectReviewFeedback(
+    { id: "e1", repository: { reviewers: ["alice"] } },
+    { reviewFeedback: async () => [review(), review({ id: "comment:5", requestsChanges: false, body: "Why not isRegularFile?" })] },
+    7,
+  );
+  assert.deepEqual(stored.map((row) => [row.externalId, row.requestsChanges]), [["r1", true], ["comment:5", false]]);
+});
+
 test("a repository with no reviewers listed never asks the code host for reviews", async (t) => {
   stubDatabase(t);
-  const changeRequests = t.mock.fn(async () => [review()]);
-  assert.equal(await collectReviewFeedback({ id: "e1", repository: { reviewers: [] } }, { changeRequests }, 7), 0);
-  assert.equal(changeRequests.mock.callCount(), 0);
+  const reviewFeedback = t.mock.fn(async () => [review()]);
+  assert.equal(await collectReviewFeedback({ id: "e1", repository: { reviewers: [] } }, { reviewFeedback }, 7), 0);
+  assert.equal(reviewFeedback.mock.callCount(), 0);
 });
 
 test("stored feedback is capped: its text, the number of line comments, and each excerpt keeps the commented end", async (t) => {
@@ -82,7 +93,7 @@ test("stored feedback is capped: its text, the number of line comments, and each
   const comments = Array.from({ length: 60 }, (_, index) => ({ path: "src/math.js", line: index + 1, code, body: "y".repeat(3000), outdated: false }));
   await collectReviewFeedback(
     { id: "e1", repository: { reviewers: ["alice"] } },
-    { changeRequests: async () => [review({ body: "z".repeat(10_000), comments })] },
+    { reviewFeedback: async () => [review({ body: "z".repeat(10_000), comments })] },
     7,
   );
   const [row] = stored;
@@ -113,7 +124,7 @@ test("on a ticket whose PR is open, only an approver's plain replies after the P
     },
   };
   assert.equal(await collectTicketFeedback(adapter, { repositoryId: "repo-1", approvers: ["@Zack"] }), 1);
-  assert.deepEqual(stored.map((row) => [row.externalId, row.source, row.author, row.body]), [["TRELLO:c1", "TICKET_REPLY", "zack", "Also handle negative numbers."]]);
+  assert.deepEqual(stored.map((row) => [row.externalId, row.source, row.author, row.body, row.requestsChanges]), [["TRELLO:c1", "TICKET_REPLY", "zack", "Also handle negative numbers.", true]]);
 });
 
 test("without approvers on the tracker connection no ticket reply is read", async (t) => {
@@ -123,7 +134,7 @@ test("without approvers on the tracker connection no ticket reply is read", asyn
   assert.equal(fetchComments.mock.callCount(), 0);
 });
 
-test("GitHub's Request-changes reviews come with their line comments, and an outdated comment is marked", async (t) => {
+test("GitHub's reviews and conversation comments are read in order, approvals are not, and an outdated line comment is marked", async (t) => {
   t.mock.method(axios, "post", async () => ({ data: { token: "t" } }));
   t.mock.method(axios, "get", async (url) => {
     if (url.endsWith("/reviews"))
@@ -131,17 +142,28 @@ test("GitHub's Request-changes reviews come with their line comments, and an out
         { id: 1, state: "APPROVED", body: "fine", submitted_at: "2026-11-22T09:00:00Z", user: { login: "bob", type: "User" } },
         { id: 2, state: "CHANGES_REQUESTED", body: "Handle negatives.", submitted_at: "2026-11-22T10:00:00Z", user: { login: "alice", type: "User" } },
         { id: 3, state: "CHANGES_REQUESTED", body: "Bump deps.", submitted_at: "2026-11-22T11:00:00Z", user: { login: "dependabot[bot]", type: "Bot" } },
+        { id: 4, state: "COMMENTED", body: "", submitted_at: "2026-11-22T12:00:00Z", user: { login: "alice", type: "User" } },
+        { id: 5, state: "DISMISSED", body: "old", submitted_at: "2026-11-22T08:00:00Z", user: { login: "alice", type: "User" } },
       ] };
+    if (url.endsWith("/issues/7/comments"))
+      return { data: [{ id: 2, body: "Why this approach?", created_at: "2026-11-22T10:30:00Z", user: { login: "alice", type: "User" } }] };
     if (url.endsWith("/comments"))
       return { data: [
         { pull_request_review_id: 2, path: "src/math.js", line: 1, original_line: 1, start_line: null, original_start_line: null, diff_hunk: "@@ -1 +1 @@\n-a - b\n+a + b", body: "breaks when b < 0" },
         { pull_request_review_id: 2, path: "src/old.js", line: null, original_line: 9, start_line: null, original_start_line: 7, diff_hunk: "@@ old", body: "rename this" },
         { pull_request_review_id: 1, path: "src/math.js", line: 1, original_line: 1, start_line: null, original_start_line: null, diff_hunk: "@@", body: "nit" },
+        { pull_request_review_id: 4, path: "src/math.js", line: 1, original_line: 1, start_line: null, original_start_line: null, diff_hunk: "@@", body: "single line comment" },
       ] };
     throw new Error(`unexpected ${url}`);
   });
-  const requests = await getChangeRequests("i", "acme", "widgets", 7);
-  assert.deepEqual(requests.map((request) => [request.id, request.author, request.authorIsBot]), [["2", "alice", false], ["3", "dependabot[bot]", true]]);
+  const requests = await getReviewFeedback("i", "acme", "widgets", 7);
+  assert.deepEqual(requests.map((request) => [request.id, request.requestsChanges, request.author, request.authorIsBot]), [
+    ["2", true, "alice", false],
+    ["comment:2", false, "alice", false],
+    ["3", true, "dependabot[bot]", true],
+    ["4", false, "alice", false],
+  ]);
+  assert.equal(requests[3].comments[0].body, "single line comment");
   assert.deepEqual(requests[0].comments, [
     { path: "src/math.js", line: 1, startLine: undefined, code: "@@ -1 +1 @@\n-a - b\n+a + b", body: "breaks when b < 0", outdated: false },
     { path: "src/old.js", line: 9, startLine: 7, code: "@@ old", body: "rename this", outdated: true },

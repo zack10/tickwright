@@ -5,7 +5,7 @@ import { z } from "zod";
 
 import { config } from "../config";
 import { NonRetryableError } from "../utils/safeError";
-import { ChangeRequest, PullRequestOutcome, SourceControlAdapter, SourceControlTarget } from "./types";
+import { ReviewFeedback, PullRequestOutcome, SourceControlAdapter, SourceControlTarget } from "./types";
 
 const base64url = (value: string) => Buffer.from(value).toString("base64url");
 const appJwt = () => {
@@ -131,6 +131,7 @@ export const getPullRequestOutcome = async (installationId: string, owner: strin
 };
 
 interface GithubReview { id: number; state: string; body: string | null; submitted_at: string | null; user: { login: string; type: string } | null }
+interface GithubIssueComment { id: number; body: string | null; created_at: string; user: { login: string; type: string } | null }
 interface GithubReviewComment {
   pull_request_review_id: number | null;
   path: string;
@@ -153,15 +154,17 @@ const getAllPages = async <T>(url: string, headers: Record<string, string>) => {
   return items;
 };
 
-export const getChangeRequests = async (installationId: string, owner: string, repo: string, number: number): Promise<ChangeRequest[]> => {
+export const getReviewFeedback = async (installationId: string, owner: string, repo: string, number: number): Promise<ReviewFeedback[]> => {
   const token = await getInstallationToken(installationId);
   const headers = { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" };
   const base = `https://api.github.com/repos/${owner}/${repo}/pulls/${number}`;
-  const reviews = (await getAllPages<GithubReview>(`${base}/reviews`, headers)).filter((review) => review.state === "CHANGES_REQUESTED");
-  if (!reviews.length) return [];
-  const comments = await getAllPages<GithubReviewComment>(`${base}/comments`, headers);
-  return reviews.map((review) => ({
+  // "Comment" reviews also hold single line comments; APPROVED, DISMISSED and PENDING are not feedback.
+  const reviews = (await getAllPages<GithubReview>(`${base}/reviews`, headers)).filter((review) => ["CHANGES_REQUESTED", "COMMENTED"].includes(review.state));
+  const comments = reviews.length ? await getAllPages<GithubReviewComment>(`${base}/comments`, headers) : [];
+  const conversation = await getAllPages<GithubIssueComment>(`https://api.github.com/repos/${owner}/${repo}/issues/${number}/comments`, headers);
+  const fromReviews: ReviewFeedback[] = reviews.map((review) => ({
     id: String(review.id),
+    requestsChanges: review.state === "CHANGES_REQUESTED",
     author: review.user?.login ?? "",
     authorIsBot: review.user?.type !== "User",
     body: review.body ?? "",
@@ -178,6 +181,17 @@ export const getChangeRequests = async (installationId: string, owner: string, r
         outdated: comment.line === null,
       })),
   }));
+  const fromConversation: ReviewFeedback[] = conversation.map((comment) => ({
+    // Issue comment ids are a different sequence from review ids.
+    id: `comment:${comment.id}`,
+    requestsChanges: false,
+    author: comment.user?.login ?? "",
+    authorIsBot: comment.user?.type !== "User",
+    body: comment.body ?? "",
+    submittedAt: new Date(comment.created_at),
+    comments: [],
+  }));
+  return [...fromReviews, ...fromConversation].sort((a, b) => a.submittedAt.getTime() - b.submittedAt.getTime());
 };
 
 const githubConfigSchema = z.object({ installationId: z.string().min(1) });
@@ -210,6 +224,6 @@ export const githubSourceControl: SourceControlAdapter = {
   },
   pullRequestOutcome: async (target, number) =>
     getPullRequestOutcome(installationOf(target), target.repository.owner, target.repository.name, number),
-  changeRequests: async (target, number) =>
-    getChangeRequests(installationOf(target), target.repository.owner, target.repository.name, number),
+  reviewFeedback: async (target, number) =>
+    getReviewFeedback(installationOf(target), target.repository.owner, target.repository.name, number),
 };

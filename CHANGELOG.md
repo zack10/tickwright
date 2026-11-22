@@ -13,6 +13,10 @@ Prompt files keep their own versions (`src/prompts/execution/*.vN.md`).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A tracker connection with missing settings is refused when you create it.** `POST /api/integrations` now answers 400 and names what is missing (for Trello: API key, token, board, label, or a valid repository id), instead of accepting the connection and failing quietly at the next poll. Existing connections are not affected.
+
 ### Changed
 
 - **Ready for code hosts other than GitHub.** Everything specific to a code host (its API, the credentials it needs, where git clones from) now lives in one adapter per host, so supporting GitLab or Bitbucket means adding that adapter and nothing else. When you add a repository you can name its host (`provider`) and a connection that holds the host's credentials (`connectionId`), and `POST /api/integrations` checks a code-host connection's settings when you create it. Existing GitHub repositories keep working unchanged (`githubInstallationId` is still accepted). Repositories with the same owner and name on different hosts no longer clash. The migration applies on start, with no manual step. This is the first step toward the agent answering review requests on its own pull requests (roadmap Phase 7).

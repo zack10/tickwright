@@ -90,6 +90,8 @@ export interface SourceControlAdapter {
 export interface IssueTrackerAdapter {
   type: IntegrationType;
   externalSystem: ExternalSystem;
+  /** Validates a connection's config when it is created. */
+  configSchema: ZodType;
   fetchEligibleItems(config: Record<string, unknown>): Promise<TrackerFetchResult>;
   comment(
     config: Record<string, unknown>,

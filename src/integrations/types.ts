@@ -1,4 +1,4 @@
-import { ExternalSystem, IntegrationType, Prisma } from "@prisma/client";
+import { ExternalSystem, IntegrationType, Prisma, Repository } from "@prisma/client";
 
 /** A ticket from any tracker, in the shape the WorkItem table stores. */
 export interface NormalizedWorkItem {
@@ -34,16 +34,15 @@ export interface TrackerComment {
   createdAt: Date;
 }
 
-/** The repository fields a source-control adapter needs. */
-export interface SourceRepository {
-  owner: string;
-  name: string;
-  githubInstallationId: string;
-}
+/**
+ * A repository as the database returns it (secret columns are omitted by
+ * default). Each adapter reads the host's own fields, such as its credentials.
+ */
+export type SourceRepository = Omit<Repository, "encryptedSetupSecrets" | "encryptedTestSecrets">;
 
 export interface PullRequestRef {
   number: number;
-  html_url: string;
+  url: string;
 }
 
 /**

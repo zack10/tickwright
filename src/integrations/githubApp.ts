@@ -109,8 +109,12 @@ export const githubSourceControl: SourceControlAdapter = {
   branchHead: (repository, branch) =>
     getBaseSha(repository.githubInstallationId, repository.owner, repository.name, branch),
   gitToken: (repository) => getInstallationToken(repository.githubInstallationId),
-  findOpenPullRequest: (repository, head) =>
-    findOpenPullRequest({ installationId: repository.githubInstallationId, owner: repository.owner, repo: repository.name, head }),
-  createDraftPullRequest: (repository, input) =>
-    createDraftPullRequest({ installationId: repository.githubInstallationId, owner: repository.owner, repo: repository.name, ...input }),
+  findOpenPullRequest: async (repository, head) => {
+    const pr = await findOpenPullRequest({ installationId: repository.githubInstallationId, owner: repository.owner, repo: repository.name, head });
+    return pr && { number: pr.number, url: pr.html_url };
+  },
+  createDraftPullRequest: async (repository, input) => {
+    const pr = await createDraftPullRequest({ installationId: repository.githubInstallationId, owner: repository.owner, repo: repository.name, ...input });
+    return { number: pr.number, url: pr.html_url };
+  },
 };

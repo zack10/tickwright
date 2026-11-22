@@ -296,9 +296,10 @@ const publish = async (executionId: string) => {
         executionId,
         type: "PULL_REQUEST",
         name: `PR #${pr.number}`,
-        storagePath: pr.html_url,
+        storagePath: pr.url,
         sha256: hashSnapshot(pr),
-        metadata: { number: pr.number, html_url: pr.html_url },
+        // Stored as html_url, the name older PULL_REQUEST artifacts use.
+        metadata: { number: pr.number, html_url: pr.url },
       },
     });
   }

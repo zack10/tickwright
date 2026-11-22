@@ -41,6 +41,7 @@ src/
     workspaceService.ts     everything that shells out to docker and git: clone, setup, snapshot, sandbox, verify, diff, publish
     environmentSweep.ts     removes what ended runs left behind (containers, snapshots, clones)
     feedbackIntake.ts       stores approvers' ticket replies and listed reviewers' reviews and PR comments on open PRs (ExecutionFeedback); the rules for whose text is read
+    followUps.ts            starts a follow-up round on an open PR from stored feedback; how the feedback is quoted for the agent
     pullRequestOutcomes.ts  records whether the agent's PRs were merged as written, edited or closed (PULL_REQUEST_OUTCOME, MERGED_DIFF)
     setupSecrets.ts         encrypted setup and test secrets of a repository
     rabbitMQService.ts      connection, publish with confirms, subscribe with retry and dead-letter queues
@@ -151,6 +152,7 @@ Facts about testing that are easy to get wrong:
 - **Environment** (`services/toolchain/`). A repository's image, setup and checks come from its approved configuration (`Repository.verificationConfig.toolchain`), else the project's own devcontainer, else a stock universal image plus a discovery step that a person approves once.
 - **Approvals.** `POST /api/executions/:id/approvals/plan|publish` must carry the pending approval's `snapshotHash`. People can also reply on the ticket (`/approve`, `/reject <reason>`, or feedback on a plan) when listed in the tracker connection's `approvers`; those replies go to the same functions as the API. `POST /api/executions/:id/cancel` ends an execution in any non-final state; a running step stops at its next graph node or agent step (`stoppable` in `executionGraph.ts`), so status writes in the graph are conditional on not being `CANCELED`.
 - **Publishing.** A GitHub App pushes from a fresh clone and opens a draft PR only (`integrations/githubApp.ts`, `publishApprovedDiff`).
+- **Follow-up rounds.** Feedback stored on an open PR (`feedbackIntake.ts`: approvers' ticket replies, listed reviewers' reviews) that asks for changes starts a new `Execution` with `parentExecutionId` (`followUps.ts`, `createFollowUpExecution`). It skips the plan step (the root's plan, approved by the request), starts `QUEUED` from the PR branch's head, reads the feedback in its ticket (`follow-up.v1.md`, every line quoted), and still needs publish approval; publishing then adds a commit to the same branch without force. One round runs at a time per PR. The polls read only root executions (`parentExecutionId: null`).
 - **Trackers** implement `IssueTrackerAdapter` (`integrations/types.ts`) and are registered in `trackerRegistry.ts`. Trello is the only one. Trackers and code hosts both give a `configSchema`, which `POST /api/integrations` checks.
 - **Code hosts** implement `SourceControlAdapter` (`integrations/types.ts`) and are registered in `integrations/sourceControl.ts`; callers use `sourceControlFor(repository)`, picked by `Repository.provider`, with credentials from the repository's connection (`connectionId`). The adapter also supplies the git remote that `workspaceService.ts` clones and pushes from. GitHub is the only one.
 

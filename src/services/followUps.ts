@@ -1,0 +1,124 @@
+import { ExecutionFeedback, ExecutionStatus } from "@prisma/client";
+
+import prisma from "../db";
+import { sourceControlFor } from "../integrations/sourceControl";
+import { ReviewLineComment } from "../integrations/types";
+import { EXECUTION_PROMPTS, executionPromptFragment } from "../prompts";
+import { describeError } from "../utils/safeError";
+import { createFollowUpExecution } from "./executionService";
+import { commentOnWorkItem } from "./ingestionService";
+
+/*
+ * Follow-up rounds (roadmap Phase 7, step 4b). Feedback that feedbackIntake.ts
+ * stored on an open pull request starts a new execution on the same branch;
+ * one round runs at a time per pull request, and what arrives meanwhile goes
+ * into the next one.
+ */
+
+const ENDED: ExecutionStatus[] = ["COMPLETED", "BLOCKED", "FAILED", "CANCELED"];
+// Recorded by pullRequestOutcomes.ts once the PR is merged or closed (not imported: that file imports this one).
+const OUTCOME_EVENT = "PULL_REQUEST_OUTCOME";
+// Each item is capped when stored (feedbackIntake.ts); this caps a round's prompt.
+export const MAX_FEEDBACK_PER_ROUND = 20;
+
+const quote = (text: string) =>
+  text
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => `> ${line}`)
+    .join("\n");
+
+const describeLineComment = (comment: ReviewLineComment) =>
+  [
+    `On ${comment.path} line ${comment.startLine && comment.startLine !== comment.line ? `${comment.startLine}-` : ""}${comment.line}${comment.outdated ? " (outdated)" : ""}, the diff the reviewer saw:`,
+    quote(comment.code),
+    "Their comment:",
+    quote(comment.body),
+  ].join("\n");
+
+const SOURCE_NAMES = { PR_REVIEW: "pull request", TICKET_REPLY: "ticket" } as const;
+
+/** The feedback as the agent reads it: every line of people's text is quoted, so none of it can pass for an instruction. */
+export const describeFeedback = (items: Pick<ExecutionFeedback, "source" | "author" | "body" | "comments" | "requestsChanges">[]) =>
+  items
+    .map((item, index) => {
+      const comments = Array.isArray(item.comments) ? (item.comments as unknown as ReviewLineComment[]) : [];
+      return [
+        `Feedback ${index + 1} (${item.requestsChanges ? "request" : "context"}), by ${item.author || "unknown"} on the ${SOURCE_NAMES[item.source]}:`,
+        item.body.trim() ? quote(item.body.trim()) : "",
+        ...comments.map(describeLineComment),
+      ]
+        .filter(Boolean)
+        .join("\n");
+    })
+    .join("\n\n");
+
+/** A follow-up round's ticket: the ticket, then the feedback it addresses. Every prompt of the run reads it. */
+export const followUpTicket = async (execution: { id: string; parentExecutionId: string | null; createdAt: Date }, ticket: string) => {
+  if (!execution.parentExecutionId) return { ticket };
+  const feedback = await prisma.executionFeedback.findMany({
+    where: { addressedByExecutionId: execution.id },
+    orderBy: { writtenAt: "asc" },
+  });
+  const round = await prisma.execution.count({
+    where: { parentExecutionId: execution.parentExecutionId, createdAt: { lte: execution.createdAt } },
+  });
+  const note = executionPromptFragment("followUp", { round: String(round), feedback: describeFeedback(feedback) });
+  return { ticket: `${ticket}\n\n${note}`, followUpPrompt: EXECUTION_PROMPTS.followUp };
+};
+
+/** What a round addresses, as the ticket and the pull request are told. */
+export const formatFollowUpComment = (round: number, items: Pick<ExecutionFeedback, "source" | "author" | "body" | "requestsChanges">[]) =>
+  [
+    `**Working on your feedback (round ${round}).** I'll change the pull request's branch and ask you to approve the new diff before pushing it.`,
+    ...items
+      .filter((item) => item.requestsChanges)
+      .map((item) => `- ${item.author} on the ${SOURCE_NAMES[item.source]}: ${item.body.trim().split("\n")[0].slice(0, 200) || "line comments"}`),
+  ].join("\n");
+
+/**
+ * Starts a round for every pull request that has feedback asking for changes
+ * and no round running. The pull request must still be open on the host:
+ * feedback can be stored before the poll that records a merge.
+ */
+export const startFollowUps = async () => {
+  const roots = await prisma.execution.findMany({
+    where: {
+      parentExecutionId: null,
+      status: "COMPLETED",
+      branchName: { not: null },
+      artifacts: { some: { type: "PULL_REQUEST" } },
+      events: { none: { type: OUTCOME_EVENT } },
+      feedback: { some: { addressedByExecutionId: null, requestsChanges: true } },
+      followUps: { none: { status: { notIn: ENDED } } },
+    },
+    include: {
+      repository: true,
+      workItem: true,
+      artifacts: { where: { type: "PULL_REQUEST" }, orderBy: { createdAt: "asc" }, take: 1 },
+      feedback: { where: { addressedByExecutionId: null }, orderBy: { writtenAt: "asc" }, take: MAX_FEEDBACK_PER_ROUND },
+    },
+  });
+  let started = 0;
+  for (const root of roots)
+    try {
+      const number = (root.artifacts[0]?.metadata as { number?: unknown } | null)?.number;
+      if (typeof number !== "number" || !root.branchName) continue;
+      const sourceControl = await sourceControlFor(root.repository);
+      if ((await sourceControl.pullRequestOutcome(number)).state !== "OPEN") continue;
+      const head = await sourceControl.branchHead(root.branchName);
+      const created = await createFollowUpExecution(root, root.feedback.map((item) => item.id), head);
+      if (!created) continue;
+      started++;
+      const note = formatFollowUpComment(created.round, root.feedback);
+      await commentOnWorkItem(root.projectId, root.workItem, note).catch((error) =>
+        console.error(`Follow-up note on the ticket failed for ${created.execution.id}: ${describeError(error)}`),
+      );
+      await sourceControl.commentOnPullRequest(number, note).catch((error) =>
+        console.error(`Follow-up note on the pull request failed for ${created.execution.id}: ${describeError(error)}`),
+      );
+    } catch (error) {
+      console.error(`Follow-up for execution ${root.id} failed to start: ${describeError(error)}`);
+    }
+  return started;
+};

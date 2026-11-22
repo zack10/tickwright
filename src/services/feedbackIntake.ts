@@ -106,6 +106,8 @@ export const collectTicketFeedback = async (adapter: IssueTrackerAdapter, tracke
   const executions = await prisma.execution.findMany({
     where: {
       repositoryId: String(trackerConfig.repositoryId),
+      // Feedback belongs to the execution that opened the pull request, not to a follow-up round.
+      parentExecutionId: null,
       status: "COMPLETED",
       completedAt: { not: null },
       workItem: { externalSystem: adapter.externalSystem },

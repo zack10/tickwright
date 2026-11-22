@@ -316,6 +316,10 @@ model Execution {
   events         ExecutionEvent[]
   artifacts      Artifact[]
   feedback       ExecutionFeedback[]
+  /// The execution whose pull request this one changes (a follow-up round on feedback); null for the first change.
+  parentExecution   Execution?  @relation("FollowUps", fields: [parentExecutionId], references: [id], onDelete: Cascade)
+  parentExecutionId String?
+  followUps         Execution[] @relation("FollowUps")
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
   completedAt    DateTime?
@@ -323,6 +327,7 @@ model Execution {
   @@index([status, updatedAt])
   @@index([status, leaseUntil])
   @@index([workItemId, createdAt])
+  @@index([parentExecutionId])
 }
 
 model Plan {

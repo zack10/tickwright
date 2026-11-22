@@ -118,6 +118,8 @@ export interface SourceControlAdapter {
   pullRequestOutcome(target: SourceControlTarget, number: number): Promise<PullRequestOutcome>;
   /** The pull request's reviews and conversation comments, oldest first; approvals are not feedback. */
   reviewFeedback(target: SourceControlTarget, number: number): Promise<ReviewFeedback[]>;
+  /** Posts a comment on the pull request's conversation. */
+  commentOnPullRequest(target: SourceControlTarget, number: number, body: string): Promise<void>;
 }
 
 /**

@@ -7,6 +7,7 @@ import { sourceControlFor } from "../integrations/sourceControl";
 import { describeError } from "../utils/safeError";
 import { hashSnapshot } from "./executionService";
 import { collectReviewFeedback } from "./feedbackIntake";
+import { startFollowUps } from "./followUps";
 
 export const OUTCOME_EVENT = "PULL_REQUEST_OUTCOME";
 // shortcut: PRs left open longer than this are never recorded; raise it if teams review that slowly.
@@ -47,6 +48,8 @@ export const filesChangedByPerson = (published: string, merged: string) => {
 export const recordPullRequestOutcomes = async () => {
   const executions = await prisma.execution.findMany({
     where: {
+      // A follow-up round shares its root's pull request; the root records it.
+      parentExecutionId: null,
       status: "COMPLETED",
       completedAt: { gte: new Date(Date.now() - WATCH_DAYS * 86_400_000) },
       artifacts: { some: { type: "PULL_REQUEST" } },
@@ -55,6 +58,7 @@ export const recordPullRequestOutcomes = async () => {
     include: {
       repository: true,
       artifacts: { where: { type: { in: ["PULL_REQUEST", "DIFF"] } }, orderBy: { createdAt: "desc" } },
+      _count: { select: { followUps: { where: { status: "COMPLETED" } } } },
     },
     orderBy: { completedAt: "asc" },
     take: 50,
@@ -74,8 +78,10 @@ export const recordPullRequestOutcomes = async () => {
       // The newest DIFF is the one publish approved and pushed.
       const published = execution.artifacts.find((artifact) => artifact.type === "DIFF");
       const publishedDiff = published ? await fs.readFile(published.storagePath, "utf8").catch(() => undefined) : undefined;
+      const followUpRounds = execution._count.followUps;
+      // shortcut: after follow-up commits the published change is several diffs on moving bases, so it is not compared; combine them with git to compare.
       const personChanged =
-        outcome.diff !== undefined && publishedDiff !== undefined ? filesChangedByPerson(publishedDiff, outcome.diff) : undefined;
+        outcome.diff !== undefined && publishedDiff !== undefined && !followUpRounds ? filesChangedByPerson(publishedDiff, outcome.diff) : undefined;
       let mergedPath: string | undefined;
       if (outcome.diff !== undefined) {
         await fs.mkdir(config.artifactRoot, { recursive: true });
@@ -90,6 +96,7 @@ export const recordPullRequestOutcomes = async () => {
         mergedAsWritten: outcome.state === "MERGED" ? (personChanged ? personChanged.length === 0 : null) : false,
         filesChangedByPerson: personChanged?.slice(0, MAX_LISTED_FILES),
         filesChangedByPersonCount: personChanged?.length,
+        followUpRounds,
       };
       await prisma.$transaction(async (tx) => {
         if (mergedPath && outcome.diff !== undefined)
@@ -121,6 +128,8 @@ export const recordPullRequestOutcomes = async () => {
     } catch (error) {
       console.error(`Pull request outcome check failed for execution ${execution.id}: ${describeError(error)}`);
     }
+  // After the outcomes, so a PR merged since the last poll gets no round.
+  await startFollowUps();
 };
 
 let timer: NodeJS.Timeout | null = null;

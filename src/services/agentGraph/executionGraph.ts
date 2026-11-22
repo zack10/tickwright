@@ -81,6 +81,7 @@ import { ensureDiskSpace } from "../environmentSweep";
 import { fileActionsError } from "./outputFormat";
 import { RepoContext, collectRepoContext, instructionsOf } from "./repoContext";
 import { describeApprovedPlan, storedPlan } from "./planning";
+import { followUpTicket } from "../followUps";
 import { RepositoryPolicy, checkExistingTests, checkRepositoryPolicy, onlyAddsLines } from "./repoPolicy";
 
 const MAX_ATTEMPTS = 3;
@@ -191,7 +192,9 @@ type GraphState = typeof ExecutionGraphState.State;
 
 /** The prompts a mode actually uses, recorded with every run. */
 const promptVersionsFor = (mode: ExecutionAgentMode) => {
-  const { implement, fileFormat, agent, review, reviewer, requirements, ...shared } = EXECUTION_PROMPTS;
+  // followUp is recorded only for follow-up rounds (GRAPH_CONTEXT_LOADED).
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { implement, fileFormat, agent, review, reviewer, requirements, followUp, ...shared } = EXECUTION_PROMPTS;
   return mode === "tool_loop"
     ? { ...shared, agent, reviewer, requirements }
     : { ...shared, implement, fileFormat, review };
@@ -441,13 +444,15 @@ const loadExecutionContext = async (
     where: { id: execution.id },
     data: { baseSha },
   });
+  // A follow-up round's ticket also carries the feedback it addresses.
+  const { ticket, followUpPrompt } = await followUpTicket(execution, `${execution.workItem.title}\n${execution.workItem.description ?? ""}`);
   await graphEvent(execution.id, "GRAPH_CONTEXT_LOADED", {
     repositoryId: execution.repositoryId,
     workItemId: execution.workItemId,
     planTaskId: planTask.id,
     agentMode,
     budget: { maxSteps, maxTokens, maxDurationSeconds: (deadline - Date.now()) / 1000, attemptShare },
-    promptVersions: promptVersionsFor(agentMode),
+    promptVersions: { ...promptVersionsFor(agentMode), ...(followUpPrompt ? { followUp: followUpPrompt } : {}) },
     ...(Object.keys(callModels).length
       ? { callModels: Object.fromEntries(Object.entries(callModels).map(([name, entry]) => [name, `${entry.provider}/${entry.model}`])) }
       : {}),
@@ -465,7 +470,7 @@ const loadExecutionContext = async (
     internalPlan,
     requirements: storedPlan(approvedPlan).requirements,
     ...calls,
-    ticket: `${execution.workItem.title}\n${execution.workItem.description ?? ""}`,
+    ticket,
     agentMode,
     maxSteps,
     maxTokens,

@@ -5,7 +5,7 @@ import { z } from "zod";
 
 import { config } from "../config";
 import { NonRetryableError } from "../utils/safeError";
-import { SourceControlAdapter, SourceControlTarget } from "./types";
+import { PullRequestOutcome, SourceControlAdapter, SourceControlTarget } from "./types";
 
 const base64url = (value: string) => Buffer.from(value).toString("base64url");
 const appJwt = () => {
@@ -108,6 +108,28 @@ export const createDraftPullRequest = async (input: {
   return response.data as { number: number; html_url: string };
 };
 
+export const getPullRequestOutcome = async (installationId: string, owner: string, repo: string, number: number): Promise<PullRequestOutcome> => {
+  const token = await getInstallationToken(installationId);
+  const url = `https://api.github.com/repos/${owner}/${repo}/pulls/${number}`;
+  const headers = { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" };
+  const { data } = await axios.get<{ state: "open" | "closed"; merged_at: string | null; closed_at: string | null }>(url, { headers, timeout: 15000 });
+  if (data.state === "open") return { state: "OPEN" };
+  const closedAt = new Date(data.merged_at ?? data.closed_at ?? Date.now());
+  if (!data.merged_at) return { state: "CLOSED", closedAt };
+  try {
+    const diff = await axios.get<string>(url, {
+      headers: { ...headers, Accept: "application/vnd.github.diff" },
+      responseType: "text",
+      timeout: 30000,
+    });
+    return { state: "MERGED", closedAt, diff: diff.data };
+  } catch (error) {
+    // GitHub answers 406 when a diff is too large to render; the outcome is still worth keeping.
+    if (axios.isAxiosError(error) && error.response?.status === 406) return { state: "MERGED", closedAt };
+    throw error;
+  }
+};
+
 const githubConfigSchema = z.object({ installationId: z.string().min(1) });
 
 /** The connection's installation, else the column repositories had before connections. */
@@ -136,4 +158,6 @@ export const githubSourceControl: SourceControlAdapter = {
     const pr = await createDraftPullRequest({ installationId: installationOf(target), owner: target.repository.owner, repo: target.repository.name, ...input });
     return { number: pr.number, url: pr.html_url };
   },
+  pullRequestOutcome: async (target, number) =>
+    getPullRequestOutcome(installationOf(target), target.repository.owner, target.repository.name, number),
 };

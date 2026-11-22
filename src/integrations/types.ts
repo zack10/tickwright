@@ -52,6 +52,14 @@ export interface PullRequestRef {
   url: string;
 }
 
+/** What happened to a pull request. */
+export interface PullRequestOutcome {
+  state: "OPEN" | "MERGED" | "CLOSED";
+  closedAt?: Date;
+  /** The pull request's changes as merged; undefined when the host cannot give them (too large). */
+  diff?: string;
+}
+
 /** Where git clones from and pushes to, over HTTPS with the adapter's token. */
 export interface GitRemote {
   /** An https:// clone URL; the token is sent to its origin only. */
@@ -80,6 +88,7 @@ export interface SourceControlAdapter {
     target: SourceControlTarget,
     input: { title: string; head: string; base: string; body: string },
   ): Promise<PullRequestRef>;
+  pullRequestOutcome(target: SourceControlTarget, number: number): Promise<PullRequestOutcome>;
 }
 
 /**

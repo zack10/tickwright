@@ -55,6 +55,8 @@ export const config = {
   workspaceRoot: process.env.WORKSPACE_ROOT ?? "workspaces",
   keepWorkspaces: process.env.KEEP_WORKSPACES === "true",
   // TRELLO_POLL_INTERVAL_MS is the pre-adapter name, still honoured.
+  // How often the agent's open pull requests are checked for being merged or closed.
+  pullRequestPollIntervalMs: parsePositiveInt(process.env.PR_POLL_INTERVAL_SECONDS, 300) * 1000,
   integrationPollIntervalMs: parsePositiveInt(
     process.env.INTEGRATION_POLL_INTERVAL_MS ??
       process.env.TRELLO_POLL_INTERVAL_MS,

@@ -40,6 +40,7 @@ src/
     ticketConversation.ts   plan and change comments on the ticket; /approve, /reject, feedback
     workspaceService.ts     everything that shells out to docker and git: clone, setup, snapshot, sandbox, verify, diff, publish
     environmentSweep.ts     removes what ended runs left behind (containers, snapshots, clones)
+    pullRequestOutcomes.ts  records whether the agent's PRs were merged as written, edited or closed (PULL_REQUEST_OUTCOME, MERGED_DIFF)
     setupSecrets.ts         encrypted setup and test secrets of a repository
     rabbitMQService.ts      connection, publish with confirms, subscribe with retry and dead-letter queues
     agentGraph/
@@ -157,7 +158,7 @@ Request flow for the API: `routes/` → `controllers/` (wrapped in `asyncHandler
 - `src/db.ts` exports the Prisma client: the Accelerate client if `DATABASE_URL` starts with `prisma`, otherwise the `@prisma/adapter-pg` driver adapter over a `pg` Pool. `prisma.config.ts` supplies a dummy URL so `prisma generate` works without secrets.
 - `validateProductionConfig()` refuses to boot in production without `API_AUTH_TOKEN`, `CORS_ORIGINS`, `DATABASE_URL` and `ENCRYPTION_KEY`.
 - If RabbitMQ is unavailable outside production, the API still starts in degraded mode.
-- `src/index.ts` wires `securityHeaders` → CORS → `authenticate` → `rateLimit` on `/api`, then starts the loops: RabbitMQ connection, task queue worker, message recovery, execution workers, outbox flusher, tracker polling, environment sweep. The rate limiter is in-process only.
+- `src/index.ts` wires `securityHeaders` → CORS → `authenticate` → `rateLimit` on `/api`, then starts the loops: RabbitMQ connection, task queue worker, message recovery, execution workers, outbox flusher, tracker polling, environment sweep, pull request outcome polling. The rate limiter is in-process only.
 - The HTTP connector (`services/connectors/`) is allowlisted by `MCP_HTTP_ALLOWED_HOSTS`; private IPs are blocked unless `MCP_HTTP_ALLOW_PRIVATE_IPS=true`, and redirects are rejected.
 - Roadmap phases that remove today's limits: language and toolchain, Phase 4; source host, tracker, ticket attachments, target branch, Phase 5; task types and multi-repository work, Phase 6; PR feedback, Phase 7; non-Linux platforms and running the app, Phase 14. From Phase 4 on, each phase is confirmed on the roadmap's reference projects (real projects in different stacks).
 

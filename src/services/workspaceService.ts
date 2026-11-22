@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { config } from "../config";
 import { findSymlink } from "../utils/safePath";
 import type { SandboxLimits } from "./agentGraph/repoPolicy";
+import type { GitRemote } from "../integrations/types";
 import {
   DevcontainerBuild,
   SANDBOX_ROOT,
@@ -76,9 +77,27 @@ export const MODE_PROBE_SCRIPT =
   "if [ -x .git/mode-probe ]; then mode=false; else mode=true; fi; rm -f .git/mode-probe; git config core.fileMode $mode";
 // The token is read from the container env and sent as an HTTP header, so it
 // is never written to .git/config or placed on the docker command line. Only
-// to github.com, and only over HTTPS: a submodule on another host never gets
-// it, and no submodule can use file://, ssh or ext:: transports.
-const AUTH_GIT = `${SAFE_GIT} -c protocol.allow=never -c protocol.https.allow=always -c http.https://github.com/.extraHeader="Authorization: Basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"`;
+// to the remote's origin, and only over HTTPS: a submodule on another host
+// never gets it, and no submodule can use file://, ssh or ext:: transports.
+const AUTH_GIT = `${SAFE_GIT} -c protocol.allow=never -c protocol.https.allow=always -c "http.$GIT_ORIGIN/.extraHeader=Authorization: Basic $(printf '%s:%s' "$GIT_USERNAME" "$GIT_TOKEN" | base64 -w0)"`;
+
+/**
+ * The container env for AUTH_GIT. The remote comes from an adapter and a
+ * self-hosted URL from a connection's config, so it is checked here.
+ */
+export const gitRemoteEnv = (remote: GitRemote) => {
+  let url: URL;
+  try {
+    url = new URL(remote.url);
+  } catch {
+    throw new Error("Git remote is not a URL");
+  }
+  if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash)
+    throw new Error("Git remote must be a plain https:// URL");
+  if (!/^[a-zA-Z0-9._~-]+$/.test(remote.username))
+    throw new Error("Unsafe git user name");
+  return { GIT_REMOTE: url.href, GIT_ORIGIN: url.origin, GIT_USERNAME: remote.username };
+};
 
 // Clone, diff, reset and cleanup only: any image with git and a shell. The
 // repository's own commands run in its toolchain's image instead.
@@ -119,7 +138,7 @@ const dockerArgs = (
   "--network",
   network ? "bridge" : (options.services ?? "none"),
   // `-e NAME` without a value makes docker read it from our process env.
-  ...(withToken ? ["-e", "GITHUB_TOKEN"] : []),
+  ...(withToken ? ["-e", "GIT_TOKEN"] : []),
   ...envArgs(options.env),
   // Values come from our process env (execDocker's secrets), never the command line.
   ...(options.secretNames ?? []).flatMap((name) => ["-e", name]),
@@ -281,20 +300,20 @@ const assertSafeRepo = (...values: string[]) => {
     throw new Error("Unsafe repository identifier");
 };
 
-export const cloneGithubWorkspace = async (
+export const cloneWorkspace = async (
   id: string,
-  owner: string,
-  repo: string,
+  remote: GitRemote,
   sha: string,
   token: string,
 ) => {
-  assertSafeRepo(owner, repo, sha);
+  assertSafeRepo(sha);
+  const env = gitRemoteEnv(remote);
   // Start from an empty directory so a partial earlier clone cannot wedge retries.
   await removeWorkspace(id);
   const root = await createWorkspace(id);
   // Submodules at the commit's recorded revisions; a no-op without .gitmodules.
-  const script = `${AUTH_GIT} clone https://github.com/${owner}/${repo}.git . && ${SAFE_GIT} checkout ${sha} && ${AUTH_GIT} submodule update --init --recursive`;
-  await execDocker(dockerArgs(root, true, true, ["sh", "-c", script]), { GITHUB_TOKEN: token });
+  const script = `${AUTH_GIT} clone "$GIT_REMOTE" . && ${SAFE_GIT} checkout ${sha} && ${AUTH_GIT} submodule update --init --recursive`;
+  await execDocker(dockerArgs(root, true, true, ["sh", "-c", script], { env }), { GIT_TOKEN: token });
   await fs.writeFile(path.join(root, ".git", "mode-probe"), "");
   await runDocker(id, ["sh", "-c", MODE_PROBE_SCRIPT]);
 };
@@ -783,11 +802,11 @@ export const publishApprovedDiff = async (input: {
   message: string;
   branch: string;
   baseSha: string;
-  owner: string;
-  repo: string;
+  remote: GitRemote;
   token: string;
 }) => {
-  assertSafeRepo(input.owner, input.repo, input.baseSha);
+  assertSafeRepo(input.baseSha);
+  const env = gitRemoteEnv(input.remote);
   if (!/^[a-zA-Z0-9_./-]+$/.test(input.branch))
     throw new Error("Unsafe Git identifier");
   const publishId = `${input.executionId}-publish`;
@@ -797,7 +816,7 @@ export const publishApprovedDiff = async (input: {
   await fs.writeFile(path.join(root, "commit-message.txt"), input.message, "utf8");
   const script = [
     `mkdir repo && cd repo`,
-    `${AUTH_GIT} clone https://github.com/${input.owner}/${input.repo}.git .`,
+    `${AUTH_GIT} clone "$GIT_REMOTE" .`,
     `${SAFE_GIT} checkout ${input.baseSha}`,
     `${SAFE_GIT} checkout -b '${input.branch}'`,
     `${SAFE_GIT} apply --index --binary ../changes.diff`,
@@ -809,8 +828,8 @@ export const publishApprovedDiff = async (input: {
   ].join(" && ");
   try {
     await execDocker(
-      dockerArgs(root, true, true, ["sh", "-c", script]),
-      { GITHUB_TOKEN: input.token },
+      dockerArgs(root, true, true, ["sh", "-c", script], { env }),
+      { GIT_TOKEN: input.token },
     );
   } finally {
     await removeWorkspace(publishId);

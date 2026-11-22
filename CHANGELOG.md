@@ -15,7 +15,7 @@ Prompt files keep their own versions (`src/prompts/execution/*.vN.md`).
 
 ### Changed
 
-- **One way to talk to the code host.** Reading branches, cloning and opening the draft pull request now go through a single source-control interface, with GitHub as its first implementation. Nothing changes for you yet; it is the first step toward the agent answering review requests on its own pull requests (roadmap Phase 7) and toward hosts other than GitHub.
+- **Ready for code hosts other than GitHub.** Everything specific to a code host (its API, the credentials it needs, where git clones from) now lives in one adapter per host, so supporting GitLab or Bitbucket means adding that adapter and nothing else. When you add a repository you can name its host (`provider`) and a connection that holds the host's credentials (`connectionId`), and `POST /api/integrations` checks a code-host connection's settings when you create it. Existing GitHub repositories keep working unchanged (`githubInstallationId` is still accepted). Repositories with the same owner and name on different hosts no longer clash. The migration applies on start, with no manual step. This is the first step toward the agent answering review requests on its own pull requests (roadmap Phase 7).
 
 ## [0.2.0] - 2026-11-22
 

@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { ExecutionAgentMode, config } from "../../config";
 import prisma from "../../db";
-import { getSourceControl } from "../../integrations/sourceControl";
+import { sourceControlFor } from "../../integrations/sourceControl";
 import { writeActionsToRoot } from "../../utils/codeWriter";
 import {
   EXECUTION_PROMPTS,
@@ -38,7 +38,7 @@ import {
   changedFiles,
   changes,
   runDocker,
-  cloneGithubWorkspace,
+  cloneWorkspace,
   gitDiff,
   ProgressReporter,
   SetupFailedError,
@@ -381,19 +381,13 @@ const loadExecutionContext = async (
   const internalPlan = describeApprovedPlan(approvedPlan, execution.approvals[0]);
 
   // The commit the plan was made on; a plan submitted through the API has none yet.
-  const sourceControl = getSourceControl(execution.repository);
+  const sourceControl = await sourceControlFor(execution.repository);
   const baseSha =
     execution.baseSha ??
-    (await sourceControl.branchHead(execution.repository, execution.repository.defaultBranch));
-  const githubToken = await sourceControl.gitToken(execution.repository);
+    (await sourceControl.branchHead(execution.repository.defaultBranch));
+  const gitToken = await sourceControl.gitToken();
 
-  await cloneGithubWorkspace(
-    execution.id,
-    execution.repository.owner,
-    execution.repository.name,
-    baseSha,
-    githubToken,
-  );
+  await cloneWorkspace(execution.id, sourceControl.gitRemote(), baseSha, gitToken);
   const agentMode = config.executionAgentMode;
   const budget = (execution.budget ?? {}) as ExecutionBudget;
   // The repository's limits win over the defaults each execution is created with.

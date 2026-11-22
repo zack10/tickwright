@@ -1,8 +1,11 @@
 import axios from "axios";
 import crypto from "node:crypto";
 
+import { z } from "zod";
+
 import { config } from "../config";
-import { SourceControlAdapter } from "./types";
+import { NonRetryableError } from "../utils/safeError";
+import { SourceControlAdapter, SourceControlTarget } from "./types";
 
 const base64url = (value: string) => Buffer.from(value).toString("base64url");
 const appJwt = () => {
@@ -105,16 +108,32 @@ export const createDraftPullRequest = async (input: {
   return response.data as { number: number; html_url: string };
 };
 
+const githubConfigSchema = z.object({ installationId: z.string().min(1) });
+
+/** The connection's installation, else the column repositories had before connections. */
+const installationOf = ({ repository, config }: SourceControlTarget) => {
+  const installationId = githubConfigSchema.safeParse(config).data?.installationId ?? repository.githubInstallationId;
+  if (!installationId)
+    throw new NonRetryableError(`Repository ${repository.owner}/${repository.name} has no GitHub installation id`);
+  return installationId;
+};
+
 export const githubSourceControl: SourceControlAdapter = {
-  branchHead: (repository, branch) =>
-    getBaseSha(repository.githubInstallationId, repository.owner, repository.name, branch),
-  gitToken: (repository) => getInstallationToken(repository.githubInstallationId),
-  findOpenPullRequest: async (repository, head) => {
-    const pr = await findOpenPullRequest({ installationId: repository.githubInstallationId, owner: repository.owner, repo: repository.name, head });
+  type: "GITHUB",
+  configSchema: githubConfigSchema,
+  branchHead: async (target, branch) =>
+    getBaseSha(installationOf(target), target.repository.owner, target.repository.name, branch),
+  gitToken: async (target) => getInstallationToken(installationOf(target)),
+  gitRemote: ({ repository }) => ({
+    url: `https://github.com/${repository.owner}/${repository.name}.git`,
+    username: "x-access-token",
+  }),
+  findOpenPullRequest: async (target, head) => {
+    const pr = await findOpenPullRequest({ installationId: installationOf(target), owner: target.repository.owner, repo: target.repository.name, head });
     return pr && { number: pr.number, url: pr.html_url };
   },
-  createDraftPullRequest: async (repository, input) => {
-    const pr = await createDraftPullRequest({ installationId: repository.githubInstallationId, owner: repository.owner, repo: repository.name, ...input });
+  createDraftPullRequest: async (target, input) => {
+    const pr = await createDraftPullRequest({ installationId: installationOf(target), owner: target.repository.owner, repo: target.repository.name, ...input });
     return { number: pr.number, url: pr.html_url };
   },
 };

@@ -147,6 +147,7 @@ Facts about testing that are easy to get wrong:
 - **Approvals.** `POST /api/executions/:id/approvals/plan|publish` must carry the pending approval's `snapshotHash`. People can also reply on the ticket (`/approve`, `/reject <reason>`, or feedback on a plan) when listed in the tracker connection's `approvers`; those replies go to the same functions as the API. `POST /api/executions/:id/cancel` ends an execution in any non-final state; a running step stops at its next graph node or agent step (`stoppable` in `executionGraph.ts`), so status writes in the graph are conditional on not being `CANCELED`.
 - **Publishing.** A GitHub App pushes from a fresh clone and opens a draft PR only (`integrations/githubApp.ts`, `publishApprovedDiff`).
 - **Trackers** implement `IssueTrackerAdapter` (`integrations/types.ts`) and are registered in `trackerRegistry.ts`. Trello is the only one.
+- **Code hosts** implement `SourceControlAdapter` (`integrations/types.ts`) and are registered in `integrations/sourceControl.ts`; callers use `sourceControlFor(repository)`, picked by `Repository.provider`, with credentials from the repository's connection (`connectionId`). The adapter also supplies the git remote that `workspaceService.ts` clones and pushes from. GitHub is the only one.
 
 Request flow for the API: `routes/` → `controllers/` (wrapped in `asyncHandler`, validated with Zod through `middleware/validate`) → `services/`. Errors are `AppError`; `middleware/errorHandler` formats the response.
 

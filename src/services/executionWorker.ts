@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import { z } from "zod";
 import { config } from "../config";
 import prisma from "../db";
-import { getSourceControl } from "../integrations/sourceControl";
+import { sourceControlFor } from "../integrations/sourceControl";
 import { commentOnWorkItem } from "./ingestionService";
 import { NonRetryableError, describeError } from "../utils/safeError";
 import { discardExecutionRun, runExecutionGraph } from "./agentGraph/executionGraph";
@@ -265,14 +265,14 @@ const publish = async (executionId: string) => {
       );
     if (!execution.baseSha)
       throw new NonRetryableError("Execution has no recorded base SHA");
-    const sourceControl = getSourceControl(repository);
-    const currentBaseSha = await sourceControl.branchHead(repository, repository.defaultBranch);
+    const sourceControl = await sourceControlFor(repository);
+    const currentBaseSha = await sourceControl.branchHead(repository.defaultBranch);
     if (currentBaseSha !== execution.baseSha)
       throw new NonRetryableError(
         "Repository base branch changed after execution; replan is required",
       );
 
-    let pr = await sourceControl.findOpenPullRequest(repository, branch);
+    let pr = await sourceControl.findOpenPullRequest(branch);
     if (!pr) {
       await publishApprovedDiff({
         executionId: execution.id,
@@ -280,11 +280,10 @@ const publish = async (executionId: string) => {
         message: `${execution.workItem.title}\n\nExecution: ${execution.id}\n`,
         branch,
         baseSha: execution.baseSha,
-        owner: repository.owner,
-        repo: repository.name,
-        token: await sourceControl.gitToken(repository),
+        remote: sourceControl.gitRemote(),
+        token: await sourceControl.gitToken(),
       });
-      pr = await sourceControl.createDraftPullRequest(repository, {
+      pr = await sourceControl.createDraftPullRequest({
         head: branch,
         title: execution.workItem.title,
         base: repository.defaultBranch,

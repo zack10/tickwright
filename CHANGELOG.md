@@ -15,6 +15,10 @@ Prompt files keep their own versions (`src/prompts/execution/*.vN.md`).
 
 ### Added
 
+- **Tickwright now keeps the feedback you give after its pull request opens.** A reply on the ticket from one of the connection's approvers, and the GitHub reviews and PR comments of someone in the repository's new `reviewers` list (with a review's line comments: file, lines, the code you commented on, and your text), are stored on the execution and shown in `GET /api/executions/:id`. Comments from anyone else and from bots are never read. A review submitted with "Request changes" and a ticket reply are marked as asking for a new change; a "Comment" review or a PR comment is kept as context for that change, so a question never starts work on its own. Nothing acts on the feedback yet: the next release makes the agent address it, with your approval of the new diff before anything is pushed. The migrations apply on start, with no manual step.
+
+### Added
+
 - **Every change is now checked end to end, for free.** Continuous integration takes a ticket all the way to a completed draft pull request (plan, approvals, the agent's work in its sandbox, verification and review) on a real database, message queue and Docker, with a scripted model instead of a paid one. A change that breaks the pipeline is caught before it is merged, not on a paid run. Run it locally with `npm run test:pipeline`.
 
 ### Added

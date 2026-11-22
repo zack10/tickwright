@@ -6,6 +6,7 @@ import prisma, { json } from "../db";
 import { sourceControlFor } from "../integrations/sourceControl";
 import { describeError } from "../utils/safeError";
 import { hashSnapshot } from "./executionService";
+import { collectReviewFeedback } from "./feedbackIntake";
 
 export const OUTCOME_EVENT = "PULL_REQUEST_OUTCOME";
 // shortcut: PRs left open longer than this are never recorded; raise it if teams review that slowly.
@@ -63,8 +64,12 @@ export const recordPullRequestOutcomes = async () => {
       const pr = execution.artifacts.find((artifact) => artifact.type === "PULL_REQUEST");
       const number = (pr?.metadata as { number?: unknown } | null)?.number;
       if (typeof number !== "number") continue;
-      const outcome = await (await sourceControlFor(execution.repository)).pullRequestOutcome(number);
-      if (outcome.state === "OPEN") continue;
+      const sourceControl = await sourceControlFor(execution.repository);
+      const outcome = await sourceControl.pullRequestOutcome(number);
+      if (outcome.state === "OPEN") {
+        await collectReviewFeedback(execution, sourceControl, number);
+        continue;
+      }
 
       // The newest DIFF is the one publish approved and pushed.
       const published = execution.artifacts.find((artifact) => artifact.type === "DIFF");

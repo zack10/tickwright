@@ -60,6 +60,33 @@ export interface PullRequestOutcome {
   diff?: string;
 }
 
+/** A comment on lines of the pull request's diff, inside a review. */
+export interface ReviewLineComment {
+  path: string;
+  /** The commented line (the last one of a range), in the file as the reviewer saw it. */
+  line: number;
+  startLine?: number;
+  /** The diff around the comment, ending at the commented line, as the reviewer saw it. */
+  code: string;
+  body: string;
+  /** The code changed after the comment was written, so `line` may no longer point at it. */
+  outdated: boolean;
+}
+
+/** A review, or a comment on the pull request's conversation, by one person. */
+export interface ReviewFeedback {
+  /** Unique across reviews and conversation comments of the host. */
+  id: string;
+  /** A review that blocks the PR (GitHub's "Request changes"); other feedback is context, not a request. */
+  requestsChanges: boolean;
+  author: string;
+  /** Automated accounts never count as reviewers. */
+  authorIsBot: boolean;
+  body: string;
+  submittedAt: Date;
+  comments: ReviewLineComment[];
+}
+
 /** Where git clones from and pushes to, over HTTPS with the adapter's token. */
 export interface GitRemote {
   /** An https:// clone URL; the token is sent to its origin only. */
@@ -89,6 +116,8 @@ export interface SourceControlAdapter {
     input: { title: string; head: string; base: string; body: string },
   ): Promise<PullRequestRef>;
   pullRequestOutcome(target: SourceControlTarget, number: number): Promise<PullRequestOutcome>;
+  /** The pull request's reviews and conversation comments, oldest first; approvals are not feedback. */
+  reviewFeedback(target: SourceControlTarget, number: number): Promise<ReviewFeedback[]>;
 }
 
 /**

@@ -7,6 +7,7 @@ import {
 } from "../integrations/trackerRegistry";
 import { createExecution } from "./executionService";
 import { openIntegrationConfig } from "./integrationConfigService";
+import { collectTicketFeedback } from "./feedbackIntake";
 import { handleTicketReplies, signed } from "./ticketConversation";
 
 /**
@@ -67,6 +68,8 @@ export const syncIntegrationConnection = async (connectionId: string) => {
   }
   // Decisions approvers replied on tickets since the last poll.
   await handleTicketReplies(adapter, trackerConfig);
+  // Approvers' feedback on tickets whose pull request is open.
+  await collectTicketFeedback(adapter, trackerConfig);
   await prisma.integrationConnection.update({
     where: { id: connectionId },
     data: { lastSyncedAt: new Date(), lastError: null },

@@ -30,6 +30,7 @@ export const bindSourceControl = (repository: SourceRepository, config: Record<s
     createDraftPullRequest: (input: Parameters<SourceControlAdapter["createDraftPullRequest"]>[1]) =>
       adapter.createDraftPullRequest(target, input),
     pullRequestOutcome: (number: number) => adapter.pullRequestOutcome(target, number),
+    changeRequests: (number: number) => adapter.changeRequests(target, number),
   };
 };
 

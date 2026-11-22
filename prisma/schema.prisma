@@ -83,6 +83,12 @@ enum AttemptStatus {
   CANCELED
 }
 
+/// Where a request for changes to the agent's open pull request came from (Phase 7).
+enum FeedbackSource {
+  TICKET_REPLY
+  PR_REVIEW
+}
+
 enum ApprovalType {
   PLAN
   PUBLISH
@@ -251,6 +257,8 @@ model Repository {
   /// The source-control connection holding this host's credentials (encrypted config).
   connection           IntegrationConnection? @relation(fields: [connectionId], references: [id], onDelete: SetNull)
   connectionId         String?
+  /// Code-host logins whose "Request changes" reviews on the agent's PRs count as feedback. Empty: none do.
+  reviewers            String[]    @default([])
   verificationConfig   Json
   executionPolicy      Json
   /// An environment proposed by discovery and proved by a run, until a person approves it.
@@ -307,6 +315,7 @@ model Execution {
   approvals      Approval[]
   events         ExecutionEvent[]
   artifacts      Artifact[]
+  feedback       ExecutionFeedback[]
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
   completedAt    DateTime?
@@ -473,6 +482,28 @@ model Approval {
   decidedAt    DateTime?
 
   @@index([status, requestedAt])
+}
+
+/// A request for changes to an execution's open pull request, from a person allowed to make it.
+model ExecutionFeedback {
+  id          String         @id @default(uuid())
+  execution   Execution      @relation(fields: [executionId], references: [id], onDelete: Cascade)
+  executionId String
+  source      FeedbackSource
+  /// The tracker comment id or the code host's review id; each is stored once.
+  externalId  String
+  author      String
+  body        String
+  /// A review's line comments: { path, line, startLine, code, body, outdated }[].
+  comments    Json           @default("[]")
+  /// When the person wrote it.
+  writtenAt   DateTime
+  receivedAt  DateTime       @default(now())
+  /// The follow-up execution that addressed it; null while it waits.
+  addressedByExecutionId String?
+
+  @@unique([source, externalId])
+  @@index([executionId, addressedByExecutionId])
 }
 
 model ExecutionEvent {

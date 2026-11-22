@@ -5,7 +5,7 @@ import { z } from "zod";
 
 import { config } from "../config";
 import { NonRetryableError } from "../utils/safeError";
-import { PullRequestOutcome, SourceControlAdapter, SourceControlTarget } from "./types";
+import { ChangeRequest, PullRequestOutcome, SourceControlAdapter, SourceControlTarget } from "./types";
 
 const base64url = (value: string) => Buffer.from(value).toString("base64url");
 const appJwt = () => {
@@ -130,6 +130,56 @@ export const getPullRequestOutcome = async (installationId: string, owner: strin
   }
 };
 
+interface GithubReview { id: number; state: string; body: string | null; submitted_at: string | null; user: { login: string; type: string } | null }
+interface GithubReviewComment {
+  pull_request_review_id: number | null;
+  path: string;
+  line: number | null;
+  original_line: number | null;
+  start_line: number | null;
+  original_start_line: number | null;
+  diff_hunk: string;
+  body: string;
+}
+
+// shortcut: reads the first 300 reviews and review comments; enough for one PR's rounds, page further if a PR ever has more.
+const getAllPages = async <T>(url: string, headers: Record<string, string>) => {
+  const items: T[] = [];
+  for (let page = 1; page <= 3; page++) {
+    const { data } = await axios.get<T[]>(url, { headers, params: { per_page: 100, page }, timeout: 15000 });
+    items.push(...data);
+    if (data.length < 100) break;
+  }
+  return items;
+};
+
+export const getChangeRequests = async (installationId: string, owner: string, repo: string, number: number): Promise<ChangeRequest[]> => {
+  const token = await getInstallationToken(installationId);
+  const headers = { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" };
+  const base = `https://api.github.com/repos/${owner}/${repo}/pulls/${number}`;
+  const reviews = (await getAllPages<GithubReview>(`${base}/reviews`, headers)).filter((review) => review.state === "CHANGES_REQUESTED");
+  if (!reviews.length) return [];
+  const comments = await getAllPages<GithubReviewComment>(`${base}/comments`, headers);
+  return reviews.map((review) => ({
+    id: String(review.id),
+    author: review.user?.login ?? "",
+    authorIsBot: review.user?.type !== "User",
+    body: review.body ?? "",
+    submittedAt: new Date(review.submitted_at ?? Date.now()),
+    comments: comments
+      .filter((comment) => comment.pull_request_review_id === review.id)
+      .map((comment) => ({
+        path: comment.path,
+        // GitHub drops `line` once later commits change the commented code.
+        line: comment.line ?? comment.original_line ?? 0,
+        startLine: comment.start_line ?? comment.original_start_line ?? undefined,
+        code: comment.diff_hunk,
+        body: comment.body,
+        outdated: comment.line === null,
+      })),
+  }));
+};
+
 const githubConfigSchema = z.object({ installationId: z.string().min(1) });
 
 /** The connection's installation, else the column repositories had before connections. */
@@ -160,4 +210,6 @@ export const githubSourceControl: SourceControlAdapter = {
   },
   pullRequestOutcome: async (target, number) =>
     getPullRequestOutcome(installationOf(target), target.repository.owner, target.repository.name, number),
+  changeRequests: async (target, number) =>
+    getChangeRequests(installationOf(target), target.repository.owner, target.repository.name, number),
 };

@@ -40,6 +40,7 @@ src/
     ticketConversation.ts   plan and change comments on the ticket; /approve, /reject, feedback
     workspaceService.ts     everything that shells out to docker and git: clone, setup, snapshot, sandbox, verify, diff, publish
     environmentSweep.ts     removes what ended runs left behind (containers, snapshots, clones)
+    feedbackIntake.ts       stores approvers' ticket replies and listed reviewers' "Request changes" reviews on open PRs (ExecutionFeedback); the rules for whose text is read
     pullRequestOutcomes.ts  records whether the agent's PRs were merged as written, edited or closed (PULL_REQUEST_OUTCOME, MERGED_DIFF)
     setupSecrets.ts         encrypted setup and test secrets of a repository
     rabbitMQService.ts      connection, publish with confirms, subscribe with retry and dead-letter queues

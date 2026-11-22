@@ -13,6 +13,7 @@ import {
   requestPlanRevision,
   submitPlan,
 } from "../services/executionService";
+import { getSourceControlAdapter } from "../integrations/sourceControl";
 import { syncIntegrationConnection } from "../services/ingestionService";
 import { sealSetupSecrets, sealTestSecrets } from "../services/setupSecrets";
 import {
@@ -27,16 +28,27 @@ export const createRepository = asyncHandler(
       owner,
       name,
       defaultBranch,
+      provider,
+      connectionId,
       githubInstallationId,
       verificationConfig,
       executionPolicy,
     } = req.body;
+    if (!getSourceControlAdapter(provider))
+      throw AppError.badRequest(`No source-control adapter for provider ${provider}`);
+    if (connectionId) {
+      const connection = await prisma.integrationConnection.findUnique({ where: { id: connectionId } });
+      if (!connection || connection.projectId !== projectId || connection.type !== provider)
+        throw AppError.badRequest(`connectionId must be a ${provider} connection of this project`);
+    }
     const repository = await prisma.repository.create({
       data: {
         projectId,
         owner,
         name,
         defaultBranch,
+        provider,
+        connectionId,
         githubInstallationId,
         verificationConfig,
         executionPolicy,
@@ -117,6 +129,10 @@ export const listRepositories = asyncHandler(
 export const createIntegration = asyncHandler(
   async (req: Request, res: Response) => {
     const { config: secretConfig, projectId, type, name } = req.body;
+    // A source-control connection's config is the host's credentials; its adapter knows their shape.
+    const checked = getSourceControlAdapter(type)?.configSchema.safeParse(secretConfig);
+    if (checked && !checked.success)
+      throw AppError.badRequest(`Invalid ${type} connection config: ${checked.error.issues.map((issue) => `${issue.path.join(".")} ${issue.message}`).join("; ")}`);
     const connection = await prisma.integrationConnection.create({
       data: {
         projectId,

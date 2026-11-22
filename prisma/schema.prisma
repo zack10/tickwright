@@ -239,11 +239,16 @@ model Repository {
   id                   String      @id @default(uuid())
   project              Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
   projectId            String
+  /// The source-control adapter that serves this repository (an IntegrationType value).
   provider             String      @default("GITHUB")
   owner                String
   name                 String
   defaultBranch        String      @default("main")
-  githubInstallationId String
+  /// GitHub only, from before connections held host credentials; a connection's config takes precedence.
+  githubInstallationId String?
+  /// The source-control connection holding this host's credentials (encrypted config).
+  connection           IntegrationConnection? @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+  connectionId         String?
   verificationConfig   Json
   executionPolicy      Json
   /// An environment proposed by discovery and proved by a run, until a person approves it.
@@ -257,7 +262,7 @@ model Repository {
   createdAt            DateTime    @default(now())
   updatedAt            DateTime    @updatedAt
 
-  @@unique([owner, name])
+  @@unique([provider, owner, name])
   @@index([projectId, active])
 }
 
@@ -274,6 +279,7 @@ model IntegrationConnection {
   lastError       String?
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
+  repositories    Repository[]
 
   @@unique([projectId, type, name])
   @@index([type, enabled])

@@ -3,12 +3,7 @@ import fs from "node:fs/promises";
 import { z } from "zod";
 import { config } from "../config";
 import prisma from "../db";
-import {
-  createDraftPullRequest,
-  findOpenPullRequest,
-  getBaseSha,
-  getInstallationToken,
-} from "../integrations/githubApp";
+import { sourceControlFor } from "../integrations/sourceControl";
 import { commentOnWorkItem } from "./ingestionService";
 import { NonRetryableError, describeError } from "../utils/safeError";
 import { discardExecutionRun, runExecutionGraph } from "./agentGraph/executionGraph";
@@ -270,24 +265,14 @@ const publish = async (executionId: string) => {
       );
     if (!execution.baseSha)
       throw new NonRetryableError("Execution has no recorded base SHA");
-    const currentBaseSha = await getBaseSha(
-      repository.githubInstallationId,
-      repository.owner,
-      repository.name,
-      repository.defaultBranch,
-    );
+    const sourceControl = await sourceControlFor(repository);
+    const currentBaseSha = await sourceControl.branchHead(repository.defaultBranch);
     if (currentBaseSha !== execution.baseSha)
       throw new NonRetryableError(
         "Repository base branch changed after execution; replan is required",
       );
 
-    const pullRequestInput = {
-      installationId: repository.githubInstallationId,
-      owner: repository.owner,
-      repo: repository.name,
-      head: branch,
-    };
-    let pr = await findOpenPullRequest(pullRequestInput);
+    let pr = await sourceControl.findOpenPullRequest(branch);
     if (!pr) {
       await publishApprovedDiff({
         executionId: execution.id,
@@ -295,12 +280,11 @@ const publish = async (executionId: string) => {
         message: `${execution.workItem.title}\n\nExecution: ${execution.id}\n`,
         branch,
         baseSha: execution.baseSha,
-        owner: repository.owner,
-        repo: repository.name,
-        token: await getInstallationToken(repository.githubInstallationId),
+        remote: sourceControl.gitRemote(),
+        token: await sourceControl.gitToken(),
       });
-      pr = await createDraftPullRequest({
-        ...pullRequestInput,
+      pr = await sourceControl.createDraftPullRequest({
+        head: branch,
         title: execution.workItem.title,
         base: repository.defaultBranch,
         body: `Automated draft for ${execution.workItem.sourceUrl ?? execution.workItem.id}\n\nExecution: ${execution.id}\n\n${describeVerification(diffArtifact.metadata)}\n\nHuman review is required.`,
@@ -311,9 +295,10 @@ const publish = async (executionId: string) => {
         executionId,
         type: "PULL_REQUEST",
         name: `PR #${pr.number}`,
-        storagePath: pr.html_url,
+        storagePath: pr.url,
         sha256: hashSnapshot(pr),
-        metadata: { number: pr.number, html_url: pr.html_url },
+        // Stored as html_url, the name older PULL_REQUEST artifacts use.
+        metadata: { number: pr.number, html_url: pr.url },
       },
     });
   }

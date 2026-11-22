@@ -13,6 +13,10 @@ Prompt files keep their own versions (`src/prompts/execution/*.vN.md`).
 
 ## [Unreleased]
 
+### Changed
+
+- **Ready for code hosts other than GitHub.** Everything specific to a code host (its API, the credentials it needs, where git clones from) now lives in one adapter per host, so supporting GitLab or Bitbucket means adding that adapter and nothing else. When you add a repository you can name its host (`provider`) and a connection that holds the host's credentials (`connectionId`), and `POST /api/integrations` checks a code-host connection's settings when you create it. Existing GitHub repositories keep working unchanged (`githubInstallationId` is still accepted). Repositories with the same owner and name on different hosts no longer clash. The migration applies on start, with no manual step. This is the first step toward the agent answering review requests on its own pull requests (roadmap Phase 7).
+
 ## [0.2.0] - 2026-11-22
 
 Covers the rest of roadmap Phase 4, which is finished (its gate was met on 2026-11-21): repositories in any language, with their environment found or configured, the agent working with tools by default, a reviewer, and cancel and trace for executions. **Breaking:** `OPENAI_BASE_URL` and `OPENAI_TOOLS_API` are removed, and a set `LLM_PROVIDERS` is now the whole list (see Changed). Migrations apply on start, with no manual step.

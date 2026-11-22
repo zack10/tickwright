@@ -1,4 +1,5 @@
-import { ExternalSystem, IntegrationType, Prisma } from "@prisma/client";
+import { ExternalSystem, IntegrationType, Prisma, Repository } from "@prisma/client";
+import { ZodType } from "zod";
 
 /** A ticket from any tracker, in the shape the WorkItem table stores. */
 export interface NormalizedWorkItem {
@@ -32,6 +33,53 @@ export interface TrackerComment {
   authorName: string;
   text: string;
   createdAt: Date;
+}
+
+/**
+ * A repository as the database returns it (secret columns are omitted by
+ * default). Each adapter reads the host's own fields from it.
+ */
+export type SourceRepository = Omit<Repository, "encryptedSetupSecrets" | "encryptedTestSecrets">;
+
+/** What an adapter call works on: the repository and its connection's decrypted config ({} without one). */
+export interface SourceControlTarget {
+  repository: SourceRepository;
+  config: Record<string, unknown>;
+}
+
+export interface PullRequestRef {
+  number: number;
+  url: string;
+}
+
+/** Where git clones from and pushes to, over HTTPS with the adapter's token. */
+export interface GitRemote {
+  /** An https:// clone URL; the token is sent to its origin only. */
+  url: string;
+  /** The user name paired with the token in HTTP Basic auth (each host has its own). */
+  username: string;
+}
+
+/**
+ * Adapter for a source-control host (GitHub today). Every host-specific
+ * detail lives in it: API calls, the shape of its connection config, and the
+ * git remote. Register it in sourceControl.ts; nothing else changes.
+ */
+export interface SourceControlAdapter {
+  /** Repository.provider and IntegrationConnection.type of this host. */
+  type: IntegrationType;
+  /** Validates a connection's config when it is created. */
+  configSchema: ZodType;
+  /** The commit a branch points at. */
+  branchHead(target: SourceControlTarget, branch: string): Promise<string>;
+  /** A short-lived token for git over HTTPS (clone and push). */
+  gitToken(target: SourceControlTarget): Promise<string>;
+  gitRemote(target: SourceControlTarget): GitRemote;
+  findOpenPullRequest(target: SourceControlTarget, head: string): Promise<PullRequestRef | undefined>;
+  createDraftPullRequest(
+    target: SourceControlTarget,
+    input: { title: string; head: string; base: string; body: string },
+  ): Promise<PullRequestRef>;
 }
 
 /**

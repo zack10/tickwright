@@ -49,6 +49,8 @@ export const config = {
   // Auth is only skipped when explicitly disabled outside production.
   authDisabled: process.env.AUTH_DISABLED === "true",
   apiAuthActor: process.env.API_AUTH_ACTOR ?? "api-token:default",
+  githubAppId: process.env.GITHUB_APP_ID ?? "",
+  githubAppPrivateKey: process.env.GITHUB_APP_PRIVATE_KEY ?? "",
   artifactRoot: process.env.ARTIFACT_ROOT ?? "artifacts",
   workspaceRoot: process.env.WORKSPACE_ROOT ?? "workspaces",
   keepWorkspaces: process.env.KEEP_WORKSPACES === "true",

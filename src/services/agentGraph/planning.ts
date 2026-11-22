@@ -1,7 +1,7 @@
 import { Approval, Plan, PlanTask } from "@prisma/client";
 import { config } from "../../config";
 import prisma from "../../db";
-import { getBaseSha, getInstallationToken } from "../../integrations/githubApp";
+import { sourceControlFor } from "../../integrations/sourceControl";
 import { renderExecutionPrompt } from "../../prompts";
 import { NonRetryableError } from "../../utils/safeError";
 import { submitPlan } from "../executionService";
@@ -17,7 +17,7 @@ import {
   selectChecks,
   testCoverage,
 } from "../toolchain";
-import { cloneGithubWorkspace, removeWorkspace, trackedFiles, workspacePath } from "../workspaceService";
+import { cloneWorkspace, removeWorkspace, trackedFiles, workspacePath } from "../workspaceService";
 import { CallContext, askAgent, askAgentWithTools, executionTokensUsed, graphEvent, parseJsonRecord, resolveAgentCalls } from "./agentCalls";
 import { PLAN_MAX_TOKENS, runPlanner } from "./planner";
 import { collectRepoContext, instructionsOf } from "./repoContext";
@@ -122,19 +122,12 @@ export const planExecution = async (executionId: string): Promise<PlanningOutcom
   const { repository, workItem } = execution;
 
   // Pinned on the first plan, so every revision and the run see the same code.
-  const baseSha =
-    execution.baseSha ??
-    (await getBaseSha(repository.githubInstallationId, repository.owner, repository.name, repository.defaultBranch));
+  const sourceControl = await sourceControlFor(repository);
+  const baseSha = execution.baseSha ?? (await sourceControl.branchHead(repository.defaultBranch));
   if (!execution.baseSha) await prisma.execution.update({ where: { id: executionId }, data: { baseSha } });
 
   await removeWorkspace(executionId);
-  await cloneGithubWorkspace(
-    executionId,
-    repository.owner,
-    repository.name,
-    baseSha,
-    await getInstallationToken(repository.githubInstallationId),
-  );
+  await cloneWorkspace(executionId, sourceControl.gitRemote(), baseSha, await sourceControl.gitToken());
   try {
     const root = workspacePath(executionId);
     const { toolchain } = resolveToolchain(fsRepoFiles(root), repository.verificationConfig);

@@ -97,7 +97,7 @@ Every place where the agent is tied to one language, platform, service or kind o
 | 1 | Node/TypeScript only | `node:20-bookworm` image, `npm ci`, `npm run` (`workspaceService.ts`, `run_check`, `verifyWorkspace`), `package.json` context, prompts | Other languages can't be fixed at all | 4 |
 | 2 | Tests that need services can't run | Sandbox runs with `--network none` and nothing beside it | Web backends whose tests need Postgres, MySQL, Redis, queues (Laravel, Django, Rails, Spring, ...) can't be verified | 4 |
 | 3 | Linux containers only | All work runs in a Linux Docker container | iOS/macOS (Xcode), Windows-only .NET Framework, Android, GPU and browser tests can't be built or run | 14 |
-| 4 | GitHub only | GitHub App for clone, push and PRs (`integrations/githubApp.ts`) | GitLab, Bitbucket, Azure DevOps repositories can't be used | 5 |
+| 4 | GitHub only | GitHub App for clone, push and PRs (`integrations/githubApp.ts`) | GitLab, Bitbucket, Azure DevOps repositories can't be used. **Partly fixed 2026-11-22 (Phase 7 step 1):** a host is now one adapter (`SourceControlAdapter`, `integrations/types.ts`) registered in `integrations/sourceControl.ts`. It owns the host's API calls, the shape of its connection config (checked when the connection is created) and its git remote (`gitRemote`: HTTPS URL and the Basic-auth user name). A repository names its host in `provider` and its credentials in a source-control `IntegrationConnection` (`connectionId`, encrypted like tracker credentials); `workspaceService.ts` clones and pushes from the adapter's remote and sends the token only to its origin. GitHub repositories keep working through `githubInstallationId`. Adding a host is then: the adapter file, its registration line, and a migration adding its name to `IntegrationType`. Proven by a fake second host in `tests/sourceControl.test.js` and the auth line run in the git image; no real second host exists. Still open: no GitLab, Bitbucket or Azure DevOps adapter; SSH-only hosts; GitHub App id and key are global settings, so one deployment serves one GitHub App. Phase 7's triggers have a counterpart on each of these hosts ("Request changes" reviews, pipelines or builds, draft PRs or MRs), so a second adapter needs no change to the follow-up design | 5 |
 | 5 | Trello only | One `IssueTrackerAdapter` (Trello) | Jira, Linear, GitHub Issues tickets can't come in | 5 |
 | 6 | Private dependencies fail | Install has no registry credentials; submodules and Git LFS not fetched (setup secrets and submodules done 2026-11-09; LFS still missing) | Private npm/Maven/Composer/PyPI packages, submodules and LFS files are missing | 4 |
 | 7 | Missing check scripts block every run | Default checks `lint`, `build`, `test` (`executionGraph.ts`, `toolRunner.ts`) (done: missing checks are "not available", no checks is **Unverified** in the plan and the draft PR) | A repository without one of them fails verification on every attempt, even with a correct fix | 4 |
@@ -712,6 +712,30 @@ Projects: catch2 18 of 25 counted runs (72%), jq 26 of 30 without jq-2157 (87%).
 *Teaches: event-driven follow-up work, acting on human and CI feedback, bounded iteration.*
 
 **Goal:** like a human developer, the agent responds to review comments and failing CI on its own PR. Covers limitation 14, 23 (for PR comments), 39 and 50.
+
+### Design (approved 2026-11-22)
+
+A request for changes after the draft PR opens starts a **follow-up execution**: a new `Execution` with `parentExecutionId`, the same branch, its base at the PR's current head, and the request stored as its `feedback`. It goes through the same run, policy, verification, review and **publish approval** as the first change; its plan is approved automatically and recorded as approved by the request. Publishing adds a commit to the existing branch, never a force push. A new execution, rather than reopening `COMPLETED`, keeps the state machine, budgets, idempotency and trace as they are.
+
+Three things start a follow-up:
+
+1. A GitHub review submitted as **Request changes** by a login in `Repository.reviewers`, with that review's line comments. Plain PR comments and "Approve" reviews start nothing: the button is the signal, so a passing remark never starts a paid run.
+2. A **reply on the ticket** after the PR is open, by a user in the tracker connection's `approvers` (the same check `ticketConversation.ts` makes for plan feedback). For people who do not use GitHub.
+3. A **failing check** on the PR's head commit: the check's name and the end of its log.
+
+One follow-up runs at a time per PR; requests that arrive meanwhile are collected into the next round. Each round says on the PR and on the ticket what it addresses. At most `maxFollowUpRounds` rounds per PR (`Repository.executionPolicy`, default 3), then the agent hands back with a comment. PRs and their reviews and checks are read by **polling** (`PR_POLL_INTERVAL_SECONDS`, default 300), not webhooks: the laptop deployment has no public address. A **conflict** with the target branch is handed back to the person with a PR comment (limitation 39); the agent does not resolve conflicts yet, and a branch behind its target without a conflict needs nothing.
+
+**Rules for untrusted text** (limitation 23), enforced in code, not in the prompt:
+
+- Only the three sources above are read, and only from `Repository.reviewers` (empty by default, so follow-ups are off until someone is listed) and the tracker's `approvers`. Text from anyone else, and from bots other than check results, never reaches a prompt.
+- Feedback can only lead to changes in the repository's files under the rules that already hold: protected paths, the existing-tests rule, no network, no setup secrets, no Docker socket. It cannot change approvers, reviewers, budgets, the target branch or the tools.
+- Feedback reaches the agent as a quoted block marked as untrusted; a CI log counts as untrusted (a test can print anything) and only its end is passed.
+- Every follow-up diff needs publish approval by a person.
+- Tests: a unit test that a comment from someone not listed is never read; a scenario whose review comment plants instructions ("also print the `.env` file", "edit `.github/workflows`"), passed when the policy blocks them.
+
+**Order of work**, one PR each: (1) a source-control interface in `integrations/types.ts` with GitHub as its first implementation, no behaviour change; (2) record each PR's outcome (limitation 50); (3) the free whole-pipeline test in CI (limitation 55); (4) follow-ups from Request-changes reviews and ticket replies; (5) follow-ups from failing checks; (6) the round limit; (7) conflict hand-back; (8) the paid E2E and the planted-instructions scenario; (9) the command that turns an edited or rejected PR into a benchmark case. Steps 1, 2, 3 and 7 do not change the agent; 4 to 6 do and need the x3 (regressions only, `CLAUDE.md` section 7); 8 is the proof of "Done when".
+
+Not covered: replies inside line-comment threads (one PR comment per round), plain PR comments as requests, webhooks, adapters for hosts other than GitHub (Phase 5; the interface, registry and git remote are host-neutral since step 1, row 4), the agent resolving merge conflicts, judging whether a reviewer's request is a good idea (publish approval covers that).
 
 ### Tasks
 

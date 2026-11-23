@@ -15,6 +15,8 @@ Prompt files keep their own versions (`src/prompts/execution/*.vN.md`).
 
 ### Added
 
+- **Tickwright stops after 3 follow-up rounds on a pull request and hands it back to you.** Once a pull request has had its rounds, new reviews, replies or failed checks no longer start another; Tickwright says so once on the pull request and the ticket. The feedback is kept: raise `maxFollowUpRounds` in the repository's execution policy (0 turns rounds off) and the next check acts on it. A round that fixed a failed check now commits as "Fix the failing check".
+
 - **Tickwright now fixes its pull request when a CI check fails on it.** Once every check on the pull request's latest commit has finished, a check that failed or timed out starts a new round, like a review that requests changes: the agent gets the check's name and the part of its log where it failed, fixes the cause in the code, and asks you to approve the diff before pushing it. A check that was already failing before the agent's change is ignored. As with reviews, this is on only for repositories with someone in `reviewers`. The migration applies on start, with no manual step.
 
 ### Changed

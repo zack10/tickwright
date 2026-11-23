@@ -82,6 +82,10 @@ export const markExecutionFailed = async (
   await notifyTracker(executionId, failureNote(executionId, stage, error));
 };
 
+/** A round's commit title says what it answered: a failed check (PR #12's round said "review feedback") or people's feedback. */
+export const followUpCommitTitle = (feedback: { source: string }[]) =>
+  feedback.length && feedback.every((item) => item.source === "CI_CHECK") ? "Fix the failing check" : "Address review feedback";
+
 /**
  * The ticket's note on a failure. Only messages Tickwright wrote itself are
  * quoted: command and provider output can hold secrets, so other failures
@@ -294,7 +298,7 @@ const publish = async (executionId: string) => {
       await publishApprovedDiff({
         executionId: execution.id,
         diff,
-        message: `Address review feedback: ${execution.workItem.title}\n\nExecution: ${execution.id}\n`,
+        message: `${followUpCommitTitle(await prisma.executionFeedback.findMany({ where: { addressedByExecutionId: execution.id }, select: { source: true } }))}: ${execution.workItem.title}\n\nExecution: ${execution.id}\n`,
         branch,
         baseSha: execution.baseSha,
         remote: sourceControl.gitRemote(),

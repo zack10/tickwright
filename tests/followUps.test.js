@@ -102,3 +102,52 @@ test("feedback on a pull request that is no longer open starts no round", async 
   assert.deepEqual(query.feedback, { some: { addressedByExecutionId: null, requestsChanges: true } });
   assert.deepEqual(query.followUps, { none: { status: { notIn: ["COMPLETED", "BLOCKED", "FAILED", "CANCELED"] } } });
 });
+
+test("a pull request that used its rounds starts no more, and both the PR and the ticket are told once", async (t) => {
+  const prComments = [];
+  registerSourceControlAdapter({
+    type: "GITHUB",
+    configSchema: { safeParse: () => ({ success: true }) },
+    pullRequestOutcome: async () => ({ state: "OPEN" }),
+    branchHead: async () => "abc",
+    commentOnPullRequest: async (_target, number, body) => void prComments.push({ number, body }),
+  });
+  const real = { execution: prisma.execution, plan: prisma.plan, executionEvent: prisma.executionEvent };
+  const counted = [];
+  const events = [];
+  prisma.execution = {
+    findMany: async () => [{
+      id: "root",
+      projectId: "p",
+      branchName: "agent/root",
+      repository: { provider: "GITHUB", connectionId: null, executionPolicy: { maxFollowUpRounds: 2 } },
+      workItem: {},
+      artifacts: [{ metadata: { number: 9 } }],
+      feedback: [item({ id: "f1" })],
+    }],
+    count: async (args) => (counted.push(args.where), 2),
+    findUniqueOrThrow: async () => ({ correlationId: "c" }),
+  };
+  prisma.executionEvent = {
+    count: async () => events.length,
+    findFirst: async () => null,
+    create: async (args) => void events.push(args.data),
+  };
+  prisma.plan = { findFirst: async () => assert.fail("no round may be created past the limit") };
+  t.after(() => Object.assign(prisma, real));
+  assert.equal(await startFollowUps(), 0);
+  assert.equal(await startFollowUps(), 0);
+  // A canceled round was never paid for, so it does not count.
+  assert.deepEqual(counted[0], { parentExecutionId: "root", status: { not: "CANCELED" } });
+  assert.deepEqual(events.map((event) => [event.type, event.payload]), [["FOLLOW_UP_LIMIT_REACHED", { rounds: 2, limit: 2 }]]);
+  assert.equal(prComments.length, 1, "told once, not on every poll");
+  assert.match(prComments[0].body, /I've made 2 follow-up rounds on this pull request, the limit for this repository/);
+  assert.match(prComments[0].body, /raise `maxFollowUpRounds`/);
+});
+
+test("a round's commit says a failing check was fixed only when checks are all it answered", () => {
+  const { followUpCommitTitle } = require("../dist/services/executionWorker");
+  assert.equal(followUpCommitTitle([{ source: "CI_CHECK" }, { source: "CI_CHECK" }]), "Fix the failing check");
+  assert.equal(followUpCommitTitle([{ source: "CI_CHECK" }, { source: "PR_REVIEW" }]), "Address review feedback");
+  assert.equal(followUpCommitTitle([]), "Address review feedback");
+});

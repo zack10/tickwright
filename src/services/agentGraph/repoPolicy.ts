@@ -22,7 +22,7 @@ export interface RepositoryPolicy {
   checkTimeoutSeconds?: number;
   /** Largest file edit_file may write, in bytes; default GENERATED_CODE_MAX_FILE_BYTES (500,000). */
   maxFileBytes?: number;
-  /** Follow-up rounds per pull request before the agent hands back; default DEFAULT_MAX_FOLLOW_UP_ROUNDS (3), 0 turns them off. */
+  /** Follow-up rounds per pull request before the agent hands back; default DEFAULT_MAX_FOLLOW_UP_ROUNDS (20), 0 turns them off. */
   maxFollowUpRounds?: number;
 }
 

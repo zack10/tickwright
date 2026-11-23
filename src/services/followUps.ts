@@ -21,8 +21,8 @@ const ENDED: ExecutionStatus[] = ["COMPLETED", "BLOCKED", "FAILED", "CANCELED"];
 const OUTCOME_EVENT = "PULL_REQUEST_OUTCOME";
 // Each item is capped when stored (feedbackIntake.ts); this caps a round's prompt.
 export const MAX_FEEDBACK_PER_ROUND = 20;
-// Rounds per pull request unless Repository.executionPolicy.maxFollowUpRounds says otherwise; a check the agent cannot fix would start one after every push.
-export const DEFAULT_MAX_FOLLOW_UP_ROUNDS = 3;
+// Rounds per pull request unless Repository.executionPolicy.maxFollowUpRounds says otherwise; a check the agent cannot fix would start one after every push. 20 so people's own review cycles are rarely cut short (chosen 2026-11-23).
+export const DEFAULT_MAX_FOLLOW_UP_ROUNDS = 20;
 const ROUND_LIMIT_EVENT = "FOLLOW_UP_LIMIT_REACHED";
 
 /** The note posted once when a pull request has used its rounds. */

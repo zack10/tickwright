@@ -283,8 +283,15 @@ test("a ticket goes from the tracker to a completed draft PR through every stage
     for (;;) {
       const execution = await prisma.execution.findFirst({ where });
       if (execution && wanted.includes(execution.status)) return execution;
-      if (execution && ["FAILED", "BLOCKED", "CANCELED"].includes(execution.status))
-        assert.fail(`execution ended ${execution.status} waiting for ${wanted}: ${execution.lastError}\nmodel calls: ${JSON.stringify(model.calls.filter((c) => c.error))}`);
+      if (execution && ["FAILED", "BLOCKED", "CANCELED"].includes(execution.status)) {
+        // The graph's own record says why (a failed verification on CI's Linux runner showed only the model error).
+        const events = await prisma.executionEvent.findMany({ where: { executionId: execution.id, type: { startsWith: "GRAPH_" } }, orderBy: { sequence: "asc" } });
+        const record = events
+          .filter((event) => !["GRAPH_AGENT_STEP", "GRAPH_STEP_PROGRESS"].includes(event.type))
+          .map((event) => `${event.type} ${JSON.stringify(event.payload).slice(0, 1500)}`)
+          .join("\n");
+        assert.fail(`execution ${execution.id} ended ${execution.status} waiting for ${wanted}: ${execution.lastError}\nmodel calls: ${JSON.stringify(model.calls.filter((c) => c.error))}\nevents:\n${record}`);
+      }
       if (Date.now() > until) assert.fail(`timed out waiting for ${wanted}; status ${execution?.status}`);
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }

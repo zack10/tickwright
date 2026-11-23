@@ -234,6 +234,8 @@ test("a ticket goes from the tracker to a completed draft PR through every stage
     git(scratch, "clone", "-q", sourceRepo, root);
     git(root, "checkout", "-q", sha);
   };
+  // The clone above is the host user's, so the setup fallback's checkout must be too: in a root container it left files the agent could not edit on Linux.
+  workspace.checkoutCommit = async (id, sha) => git(workspace.workspacePath(id), "checkout", "-f", "-q", sha);
   // A push is a commit on the branch in the local repository, so the next round can clone it.
   workspace.publishApprovedDiff = async (input) => {
     published.push(input);

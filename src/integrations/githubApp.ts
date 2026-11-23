@@ -112,8 +112,19 @@ export const getPullRequestOutcome = async (installationId: string, owner: strin
   const token = await getInstallationToken(installationId);
   const url = `https://api.github.com/repos/${owner}/${repo}/pulls/${number}`;
   const headers = { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" };
-  const { data } = await axios.get<{ state: "open" | "closed"; merged_at: string | null; closed_at: string | null }>(url, { headers, timeout: 15000 });
-  if (data.state === "open") return { state: "OPEN" };
+  const { data } = await axios.get<{
+    state: "open" | "closed";
+    merged_at: string | null;
+    closed_at: string | null;
+    // null while GitHub is still computing it; the next poll reads it.
+    mergeable?: boolean | null;
+    head?: { sha: string };
+    base?: { ref: string };
+  }>(url, { headers, timeout: 15000 });
+  if (data.state === "open")
+    return data.mergeable === false && data.head && data.base
+      ? { state: "OPEN", conflict: { head: data.head.sha, base: data.base.ref } }
+      : { state: "OPEN" };
   const closedAt = new Date(data.merged_at ?? data.closed_at ?? Date.now());
   if (!data.merged_at) return { state: "CLOSED", closedAt };
   try {

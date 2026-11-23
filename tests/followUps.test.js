@@ -151,3 +151,25 @@ test("a round's commit says a failing check was fixed only when checks are all i
   assert.equal(followUpCommitTitle([{ source: "CI_CHECK" }, { source: "PR_REVIEW" }]), "Address review feedback");
   assert.equal(followUpCommitTitle([]), "Address review feedback");
 });
+
+test("a merge conflict is handed back on the PR and the ticket once per commit of the branch, and the agent does not try to resolve it", async (t) => {
+  const { handBackConflict, formatConflictComment } = require("../dist/services/followUps");
+  const real = { execution: prisma.execution, executionEvent: prisma.executionEvent };
+  const events = [];
+  prisma.execution = { findUniqueOrThrow: async () => ({ correlationId: "c" }) };
+  prisma.executionEvent = {
+    count: async (args) => events.filter((event) => event.payload.head === args.where.payload.equals).length,
+    findFirst: async () => null,
+    create: async (args) => void events.push(args.data),
+  };
+  t.after(() => Object.assign(prisma, real));
+  const comments = [];
+  const host = { commentOnPullRequest: async (number, body) => void comments.push({ number, body }) };
+  const root = { id: "root", projectId: "p", workItem: {} };
+  assert.equal(await handBackConflict(root, host, 9, { head: "h1", base: "main" }), true);
+  assert.equal(await handBackConflict(root, host, 9, { head: "h1", base: "main" }), false, "the same commit is not told twice");
+  assert.equal(await handBackConflict(root, host, 9, { head: "h2", base: "main" }), true, "a new conflict after the branch moved is told again");
+  assert.equal(comments.length, 2);
+  assert.match(comments[0].body, /merge conflict with `main`.*I don't resolve conflicts myself/);
+  assert.doesNotMatch(formatConflictComment("main"), /Node|npm|JavaScript/);
+});

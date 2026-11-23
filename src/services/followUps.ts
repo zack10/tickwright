@@ -25,6 +25,37 @@ export const MAX_FEEDBACK_PER_ROUND = 20;
 export const DEFAULT_MAX_FOLLOW_UP_ROUNDS = 20;
 const ROUND_LIMIT_EVENT = "FOLLOW_UP_LIMIT_REACHED";
 
+const CONFLICT_EVENT = "PULL_REQUEST_CONFLICT";
+
+/** The note posted when the pull request's branch conflicts with its target. */
+export const formatConflictComment = (base: string) =>
+  `**This pull request has a merge conflict with \`${base}\`.** I don't resolve conflicts myself: ` +
+  `merge \`${base}\` into the branch or rebase it, and fix the conflicting files. Feedback after that works as before.`;
+
+/**
+ * Hands a conflict back to the person on the pull request and the ticket,
+ * once per commit of the branch: a person's fix moves the branch, and a later
+ * conflict is told again. The agent does not resolve conflicts (roadmap Phase 7).
+ */
+export const handBackConflict = async (
+  root: { id: string; projectId: string; workItem: Parameters<typeof commentOnWorkItem>[1] },
+  sourceControl: Pick<Awaited<ReturnType<typeof sourceControlFor>>, "commentOnPullRequest">,
+  number: number,
+  conflict: { head: string; base: string },
+) => {
+  const told = await prisma.executionEvent.count({ where: { executionId: root.id, type: CONFLICT_EVENT, payload: { path: ["head"], equals: conflict.head } } });
+  if (told) return false;
+  await graphEvent(root.id, CONFLICT_EVENT, conflict);
+  const note = formatConflictComment(conflict.base);
+  await commentOnWorkItem(root.projectId, root.workItem, note).catch((error) =>
+    console.error(`Conflict note on the ticket failed for ${root.id}: ${describeError(error)}`),
+  );
+  await sourceControl.commentOnPullRequest(number, note).catch((error) =>
+    console.error(`Conflict note on the pull request failed for ${root.id}: ${describeError(error)}`),
+  );
+  return true;
+};
+
 /** The note posted once when a pull request has used its rounds. */
 export const formatRoundLimitComment = (rounds: number) =>
   (rounds

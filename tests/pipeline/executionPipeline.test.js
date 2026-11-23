@@ -209,6 +209,7 @@ test("a ticket goes from the tracker to a completed draft PR through every stage
   const prComments = [];
   let prState = "OPEN";
   let reviews = [];
+  let conflict;
   const checksByCommit = {};
   registerSourceControlAdapter({
     type: "GITHUB",
@@ -222,7 +223,7 @@ test("a ticket goes from the tracker to a completed draft PR through every stage
       pullRequests.push(pr);
       return pr;
     },
-    pullRequestOutcome: async () => (prState === "OPEN" ? { state: "OPEN" } : { state: "MERGED", closedAt: new Date(), diff: published.at(-1)?.diff }),
+    pullRequestOutcome: async () => (prState === "OPEN" ? { state: "OPEN", ...(conflict ? { conflict } : {}) } : { state: "MERGED", closedAt: new Date(), diff: published.at(-1)?.diff }),
     reviewFeedback: async () => reviews,
     commitChecks: async (_target, sha) => checksByCommit[sha] ?? { pending: false, failed: [] },
     commentOnPullRequest: async (_target, number, body) => void prComments.push({ number, body }),
@@ -415,6 +416,13 @@ test("a ticket goes from the tracker to a completed draft PR through every stage
   await recordPullRequestOutcomes();
   assert.equal(await prisma.execution.count({ where: followUpRound }), 2);
   assert.equal(prComments.filter((comment) => /the limit for this repository/.test(comment.body)).length, 1);
+  // The target branch moved and the PR now conflicts with it: handed back once, with no round.
+  conflict = { head: git(sourceRepo, "rev-parse", `agent/${root.id}`), base: "main" };
+  await recordPullRequestOutcomes();
+  await recordPullRequestOutcomes();
+  assert.equal(prComments.filter((comment) => /merge conflict with `main`/.test(comment.body)).length, 1);
+  assert.equal(await prisma.execution.count({ where: followUpRound }), 2);
+  conflict = undefined;
 
   // The merged PR's outcome is recorded on the execution that opened it.
   prState = "MERGED";

@@ -58,6 +58,8 @@ export interface PullRequestOutcome {
   closedAt?: Date;
   /** The pull request's changes as merged; undefined when the host cannot give them (too large). */
   diff?: string;
+  /** OPEN only: set when the branch conflicts with its target (the branch's head commit, the target's name); absent while the host has not worked it out. */
+  conflict?: { head: string; base: string };
 }
 
 /** A comment on lines of the pull request's diff, inside a review. */

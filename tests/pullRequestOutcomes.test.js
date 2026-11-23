@@ -156,6 +156,11 @@ test("GitHub reports open, closed and merged pull requests, and a merge too larg
   });
   replies.push({ state: "open", merged_at: null, closed_at: null });
   assert.deepEqual(await getPullRequestOutcome("i", "acme", "widgets", 1), { state: "OPEN" });
+  // A conflict is reported with the branch head it was found on; "not worked out yet" (null) is no conflict.
+  replies.push({ state: "open", merged_at: null, closed_at: null, mergeable: false, head: { sha: "h1" }, base: { ref: "main" } });
+  assert.deepEqual(await getPullRequestOutcome("i", "acme", "widgets", 1), { state: "OPEN", conflict: { head: "h1", base: "main" } });
+  replies.push({ state: "open", merged_at: null, closed_at: null, mergeable: null, head: { sha: "h1" }, base: { ref: "main" } });
+  assert.deepEqual(await getPullRequestOutcome("i", "acme", "widgets", 1), { state: "OPEN" });
   replies.push({ state: "closed", merged_at: null, closed_at: "2026-11-21T10:00:00Z" });
   assert.deepEqual(await getPullRequestOutcome("i", "acme", "widgets", 1), { state: "CLOSED", closedAt: new Date("2026-11-21T10:00:00Z") });
   replies.push({ state: "closed", merged_at: "2026-11-21T11:00:00Z", closed_at: "2026-11-21T11:00:00Z" }, "diff text");

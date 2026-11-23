@@ -25,6 +25,12 @@ export class NonRetryableError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "NonRetryableError";
-    Object.setPrototypeOf(this, NonRetryableError.prototype);
+    // new.target: a subclass (SetupFailedError) keeps its own prototype.
+    Object.setPrototypeOf(this, new.target.prototype);
   }
+}
+
+/** A NonRetryableError whose message Tickwright wrote itself, with no command or provider output in it, so the ticket can show it. */
+export class ReportableError extends NonRetryableError {
+  name = "ReportableError";
 }

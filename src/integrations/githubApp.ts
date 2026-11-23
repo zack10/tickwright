@@ -4,8 +4,8 @@ import crypto from "node:crypto";
 import { z } from "zod";
 
 import { config } from "../config";
-import { NonRetryableError } from "../utils/safeError";
-import { ReviewFeedback, PullRequestOutcome, SourceControlAdapter, SourceControlTarget } from "./types";
+import { NonRetryableError, describeError } from "../utils/safeError";
+import { CommitChecks, ReviewFeedback, PullRequestOutcome, SourceControlAdapter, SourceControlTarget } from "./types";
 
 const base64url = (value: string) => Buffer.from(value).toString("base64url");
 const appJwt = () => {
@@ -139,6 +139,84 @@ export const commentOnPullRequest = async (installationId: string, owner: string
   });
 };
 
+interface GithubCheckRun {
+  id: number;
+  name: string;
+  status: string;
+  conclusion: string | null;
+  details_url: string | null;
+  html_url: string | null;
+  app: { slug: string } | null;
+  output: { title: string | null; summary: string | null; text: string | null } | null;
+}
+
+const FAILED_CONCLUSIONS = ["failure", "timed_out"];
+const MAX_CHECK_OUTPUT = 3000;
+// shortcut: reads 10 failed checks of a commit; a commit failing more is one problem spread wide, read more if that ever matters.
+const MAX_FAILED_CHECKS = 10;
+
+// The words test tools and compilers of many stacks print, in capitals, where something failed.
+const FAILURE_LINE = /\b(ERROR|FAIL|FAILED|FAILURE|FATAL)\b/;
+
+/**
+ * Where an Actions job failed: the step that ended in the last "##[error]"
+ * line, since the end of a log is the cleanup steps; without one, the end.
+ * A long step keeps the part from its first line reporting a failure, and
+ * its end (the summary): the start of a step is build output and the middle
+ * stack traces (PR #10 of dynamic-csv-batch-processor: the failing test sat
+ * in the middle of a 27,000-character step). Timestamps and colour codes are
+ * dropped to keep the excerpt short.
+ */
+export const failureExcerpt = (log: string, max = MAX_CHECK_OUTPUT) => {
+  const lines = log
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b\[[0-9;]*m/g, "")
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\d{4}-\d\d-\d\dT[\d:.]+Z /, ""));
+  const lastError = lines.map((line) => line.startsWith("##[error]")).lastIndexOf(true);
+  // The end matters most when there is no error line to anchor the step.
+  if (lastError < 0) return lines.join("\n").trimEnd().slice(-max);
+  const stepStart = Math.max(0, lines.slice(0, lastError).map((line) => line.startsWith("##[group]Run ")).lastIndexOf(true));
+  const step = lines.slice(stepStart, lastError + 1);
+  const failure = step.findIndex((line, index) => index > 0 && !line.startsWith("##[") && FAILURE_LINE.test(line));
+  // The step's command line, then from a few lines before its first failure.
+  const from = failure > 0 ? Math.max(1, failure - 3) : 1;
+  const focus = [step[0], ...(from > 1 ? ["[...]"] : []), ...step.slice(from)].join("\n").trimEnd();
+  if (focus.length <= max) return focus;
+  const half = Math.floor(max / 2);
+  return `${focus.slice(0, half)}\n[${focus.length - 2 * half} characters cut]\n${focus.slice(-half)}`;
+};
+
+export const getCommitChecks = async (installationId: string, owner: string, repo: string, sha: string): Promise<CommitChecks> => {
+  const token = await getInstallationToken(installationId);
+  const headers = { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" };
+  // shortcut: reads the first 100 check runs and no legacy commit statuses; page and add /status if a repository relies on them.
+  const { data } = await axios.get<{ check_runs: GithubCheckRun[] }>(`https://api.github.com/repos/${owner}/${repo}/commits/${sha}/check-runs`, {
+    headers,
+    params: { per_page: 100, filter: "latest" },
+    timeout: 15000,
+  });
+  const runs = data.check_runs;
+  const failedRuns = runs.filter((run) => run.status === "completed" && FAILED_CONCLUSIONS.includes(run.conclusion ?? "")).slice(0, MAX_FAILED_CHECKS);
+  const failed = await Promise.all(
+    failedRuns.map(async (run) => {
+      const summary = [run.output?.title, run.output?.summary, run.output?.text].filter(Boolean).join("\n");
+      const job = run.app?.slug === "github-actions" ? /\/job\/(\d+)/.exec(run.details_url ?? "")?.[1] : undefined;
+      let output = summary.slice(-MAX_CHECK_OUTPUT);
+      if (job)
+        try {
+          const log = await axios.get<string>(`https://api.github.com/repos/${owner}/${repo}/actions/jobs/${job}/logs`, { headers, responseType: "text", timeout: 30000 });
+          output = failureExcerpt(log.data);
+        } catch (error) {
+          // Logs expire or need a permission the App may lack; the summary is still worth reading.
+          console.error(`Log of check ${run.name} on ${owner}/${repo}@${sha} could not be read: ${describeError(error)}`);
+        }
+      return { id: String(run.id), name: run.name, conclusion: run.conclusion ?? "failure", output: output || "No output was available.", url: run.html_url ?? undefined };
+    }),
+  );
+  return { pending: runs.some((run) => run.status !== "completed"), failed };
+};
+
 interface GithubReview { id: number; state: string; body: string | null; submitted_at: string | null; user: { login: string; type: string } | null }
 interface GithubIssueComment { id: number; body: string | null; created_at: string; user: { login: string; type: string } | null }
 interface GithubReviewComment {
@@ -233,6 +311,7 @@ export const githubSourceControl: SourceControlAdapter = {
   },
   pullRequestOutcome: async (target, number) =>
     getPullRequestOutcome(installationOf(target), target.repository.owner, target.repository.name, number),
+  commitChecks: async (target, sha) => getCommitChecks(installationOf(target), target.repository.owner, target.repository.name, sha),
   commentOnPullRequest: async (target, number, body) =>
     commentOnPullRequest(installationOf(target), target.repository.owner, target.repository.name, number, body),
   reviewFeedback: async (target, number) =>

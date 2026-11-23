@@ -6,6 +6,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { config } from "../config";
 import { findSymlink } from "../utils/safePath";
+import { NonRetryableError } from "../utils/safeError";
 import type { SandboxLimits } from "./agentGraph/repoPolicy";
 import type { GitRemote } from "../integrations/types";
 import {
@@ -387,8 +388,12 @@ export const removeEnvironmentSnapshot = async (id: string) => {
   await withImageLock(() => exec("docker", ["rmi", "-f", snapshotImage(id)]).catch(() => undefined));
 };
 
-/** Starting the image or running the setup command failed; the message is its output. */
-export class SetupFailedError extends Error {
+/**
+ * Starting the image or running the setup command failed; the message is its
+ * output. Not retried: the same command on the same commit fails the same way
+ * (round 4b2fc2b7 ran a setup that runs the tests three times on a red commit).
+ */
+export class SetupFailedError extends NonRetryableError {
   name = "SetupFailedError";
 }
 
@@ -744,6 +749,12 @@ export const restoreClone = async (id: string) => {
   await runDocker(id, [...SAFE_GIT_ARGS, "reset", "--hard", "--quiet"]);
   await runDocker(id, [...SAFE_GIT_ARGS, "clean", "-ffdx", "--quiet"]);
   await fs.writeFile(path.join(workspacePath(id), ".git", "info", "exclude"), "");
+};
+/** Moves the workspace to another commit of its clone, keeping untracked and ignored files (what setup made). */
+// shortcut: submodules stay at the first commit's revisions; update them here if a project's setup depends on them.
+export const checkoutCommit = async (id: string, sha: string) => {
+  assertSafeRepo(sha);
+  await runDocker(id, [...SAFE_GIT_ARGS, "checkout", "-f", "--quiet", sha]);
 };
 export const gitDiff = async (id: string) => {
   await runDocker(id, [...SAFE_GIT_ARGS, "add", "-N", "."]);

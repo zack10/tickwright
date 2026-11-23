@@ -61,7 +61,17 @@ const scriptedReply = (body) => {
   const done = body.messages.filter((message) => message.role === "tool").length;
   const user = body.messages.filter((message) => message.role === "user").map((message) => message.content).join("\n");
   const followUp = /follow-up round 1 /.test(user);
+  const checkRound = /follow-up round 2 /.test(user);
   const call = (name, args) => ({ tool_calls: [{ id: `call-${name}-${done}`, type: "function", function: { name, arguments: JSON.stringify(args) } }] });
+  if (tools.includes("finish") && checkRound) {
+    const steps = [
+      () => call("skip_reproduction", { reason: "The lint check asks for a comment; no test can show it." }),
+      () => call("edit_file", { path: "src/math.js", oldText: "exports.subtract", newText: "// Subtracts b from a.\nexports.subtract" }),
+      () => call("run_check", { check: "test" }),
+      () => call("finish", { status: "done", summary: "subtract() has the comment the lint check asks for." }),
+    ];
+    if (steps[done]) return steps[done]();
+  }
   if (!tools.length && system.startsWith("Decide whether this ticket"))
     return { content: JSON.stringify({ decision: "proceed", reason: "A change to src/math.js." }) };
   if (!tools.length && system.startsWith("List what this ticket itself requires"))
@@ -87,7 +97,7 @@ const scriptedReply = (body) => {
       summary: "add() now adds; a test shows it.",
     });
   }
-  if (tools.includes("finish") && followUp) {
+  if (tools.includes("finish") && followUp && !checkRound) {
     const steps = [
       () => call("edit_file", { path: "test/subtract.test.js", oldText: "", newText: SUBTRACT_TEST }),
       () => call("run_check", { check: "test" }),
@@ -97,7 +107,7 @@ const scriptedReply = (body) => {
     ];
     if (steps[done]) return steps[done]();
   }
-  if (tools.includes("finish") && !followUp) {
+  if (tools.includes("finish") && !followUp && !checkRound) {
     const steps = [
       () => call("edit_file", { path: "test/sum.test.js", oldText: "", newText: NEW_TEST }),
       () => call("run_check", { check: "test" }),
@@ -199,6 +209,7 @@ test("a ticket goes from the tracker to a completed draft PR through every stage
   const prComments = [];
   let prState = "OPEN";
   let reviews = [];
+  const checksByCommit = {};
   registerSourceControlAdapter({
     type: "GITHUB",
     configSchema: { safeParse: () => ({ success: true }) },
@@ -213,6 +224,7 @@ test("a ticket goes from the tracker to a completed draft PR through every stage
     },
     pullRequestOutcome: async () => (prState === "OPEN" ? { state: "OPEN" } : { state: "MERGED", closedAt: new Date(), diff: published.at(-1)?.diff }),
     reviewFeedback: async () => reviews,
+    commitChecks: async (_target, sha) => checksByCommit[sha] ?? { pending: false, failed: [] },
     commentOnPullRequest: async (_target, number, body) => void prComments.push({ number, body }),
   });
   // git's two network calls: clone from the local repository, and record the push.
@@ -251,7 +263,7 @@ test("a ticket goes from the tracker to a completed draft PR through every stage
       name: `widgets-${path.basename(scratch)}`,
       githubInstallationId: "fake",
       // An approved environment: discovery is skipped, and the image is small.
-      verificationConfig: { toolchain: { language: "JavaScript", image: "node:20-bookworm", setup: null, checks: { test: ["node", "--test"] } } },
+      verificationConfig: { toolchain: { language: "JavaScript", image: "node:20-bookworm", setup: ["sh", "-c", "test ! -f SETUP_BREAKS"], checks: { test: ["node", "--test"] } } },
       executionPolicy: {},
     },
   });
@@ -360,11 +372,38 @@ test("a ticket goes from the tracker to a completed draft PR through every stage
   await recordPullRequestOutcomes();
   assert.equal(await prisma.execution.count({ where: followUpRound }), 1);
 
+  // A person pushes a commit that breaks setup (as a setup that runs the tests breaks on a red commit), and a check fails on it.
+  git(sourceRepo, "checkout", "-q", `agent/${root.id}`);
+  fs.writeFileSync(path.join(sourceRepo, "SETUP_BREAKS"), "");
+  git(sourceRepo, "add", "SETUP_BREAKS");
+  git(sourceRepo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "break setup");
+  git(sourceRepo, "checkout", "-q", "main");
+  const roundTwoBase = git(sourceRepo, "rev-parse", `agent/${root.id}`);
+  checksByCommit[roundTwoBase] = { pending: false, failed: [{ id: "run-7", name: "lint", conclusion: "failure", output: "src/math.js:2 exports.subtract has no comment above it\n##[error]Process completed with exit code 1." }] };
+  await recordPullRequestOutcomes();
+  const checkRound = { parentExecutionId: root.id, baseSha: roundTwoBase };
+  let roundTwo = await waitFor(["AWAITING_PUBLISH_APPROVAL"], 10, checkRound);
+  // Setup failed on the round's commit, passed on the PR's first base, and the agent worked on the round's commit.
+  const fallbacks = await prisma.executionEvent.findMany({ where: { type: "GRAPH_SETUP_FALLBACK", execution: { OR: [{ id: root.id }, { parentExecutionId: root.id }] } } });
+  assert.deepEqual(fallbacks.map((event) => [event.executionId, event.payload.roundSha]), [[roundTwo.id, roundTwoBase]]);
+  const checkPrompt = model.prompts.find((text) => text.includes("follow-up round 2 "));
+  assert.match(checkPrompt, /Feedback 1 \(request\), from the check "lint" on the pull request's latest commit:\n> The check "lint" ended with "failure"/);
+  assert.match(checkPrompt, /> src\/math\.js:2 exports\.subtract has no comment above it/);
+  assert.match(prComments.at(-1).body, /round 2[\s\S]*The check "lint" failed on the latest commit/);
+  await approve(roundTwo, "PUBLISH");
+  roundTwo = await waitFor(["COMPLETED"], 3, checkRound);
+  assert.equal(published.length, 3);
+  assert.equal(published[2].baseSha, roundTwoBase);
+  assert.match(published[2].diff, /\+\/\/ Subtracts b from a\./);
+  // The same failure on the same commit is not read again; the new head has no failure, so nothing starts.
+  await recordPullRequestOutcomes();
+  assert.equal(await prisma.execution.count({ where: followUpRound }), 2);
+
   // The merged PR's outcome is recorded on the execution that opened it.
   prState = "MERGED";
   await recordPullRequestOutcomes();
   const outcome = await prisma.executionEvent.findFirstOrThrow({ where: { executionId: root.id, type: "PULL_REQUEST_OUTCOME" } });
   assert.equal(outcome.payload.state, "MERGED");
-  assert.equal(outcome.payload.followUpRounds, 1);
+  assert.equal(outcome.payload.followUpRounds, 2);
   assert.equal(await prisma.executionEvent.count({ where: { executionId: followUp.id, type: "PULL_REQUEST_OUTCOME" } }), 0);
 });

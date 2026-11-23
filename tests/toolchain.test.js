@@ -688,3 +688,32 @@ test("default test-file patterns follow common conventions across ecosystems", (
   assert.equal(isTestFile(custom, "checks/a.sh"), true);
   assert.equal(isTestFile(custom, "src/a.test.ts"), false, "configured patterns replace the defaults");
 });
+
+test("a failed setup is not retried, and the ticket is told setup failed without quoting its output", () => {
+  const { SetupFailedError } = require("../dist/services/workspaceService");
+  const { NonRetryableError } = require("../dist/utils/safeError");
+  const { failureNote } = require("../dist/services/executionWorker");
+  const error = new SetupFailedError("docker run failed\nSETUP_TOKEN=abc123");
+  assert.ok(error instanceof SetupFailedError && error instanceof NonRetryableError);
+  assert.equal(error.name, "SetupFailedError");
+  const note = failureNote("e1", "run", error);
+  assert.match(note, /setup command failed, so the agent never started/);
+  assert.doesNotMatch(note, /abc123|docker run failed/);
+  assert.match(note, /`npm run trace -- e1`/);
+  assert.equal(failureNote("e1", "run", new Error("token abc123")), "Execution e1 failed during run. The details are in Tickwright: `npm run trace -- e1`");
+  // A reason Tickwright wrote itself is shown as it is.
+  const { ReportableError } = require("../dist/utils/safeError");
+  const refused = new ReportableError("The pull request is no longer open; nothing was pushed");
+  assert.ok(refused instanceof NonRetryableError);
+  assert.equal(failureNote("e1", "publish", refused), "Execution e1 failed during publish: The pull request is no longer open; nothing was pushed.");
+});
+
+test("in a follow-up round a check that passed when the pull request started must pass again, while older failures may still fail", () => {
+  const { oldFailures } = require("../dist/services/agentGraph/executionGraph");
+  const baseline = [
+    { check: "test", passed: false, output: "1 failed" },
+    { check: "lint", passed: false, output: "old warning" },
+  ];
+  assert.deepEqual(Object.keys(oldFailures(baseline)), ["test", "lint"]);
+  assert.deepEqual(oldFailures(baseline, [{ check: "test", passed: true }, { check: "lint", passed: false }]), { lint: "old warning" });
+});

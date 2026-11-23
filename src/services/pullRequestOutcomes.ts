@@ -6,7 +6,7 @@ import prisma, { json } from "../db";
 import { sourceControlFor } from "../integrations/sourceControl";
 import { describeError } from "../utils/safeError";
 import { hashSnapshot } from "./executionService";
-import { collectReviewFeedback } from "./feedbackIntake";
+import { collectCheckFeedback, collectReviewFeedback } from "./feedbackIntake";
 import { startFollowUps } from "./followUps";
 
 export const OUTCOME_EVENT = "PULL_REQUEST_OUTCOME";
@@ -72,6 +72,7 @@ export const recordPullRequestOutcomes = async () => {
       const outcome = await sourceControl.pullRequestOutcome(number);
       if (outcome.state === "OPEN") {
         await collectReviewFeedback(execution, sourceControl, number);
+        if (execution.branchName) await collectCheckFeedback(execution, sourceControl, await sourceControl.branchHead(execution.branchName));
         continue;
       }
 

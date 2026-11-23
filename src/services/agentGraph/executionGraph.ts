@@ -42,6 +42,7 @@ import {
   gitDiff,
   ProgressReporter,
   SetupFailedError,
+  checkoutCommit,
   prepareVerification,
   setupWorkspace,
   buildEnvironmentImage,
@@ -249,11 +250,31 @@ const describeFixed = (fixed: FixedEnvironment) =>
 const reportProgress = (executionId: string): ProgressReporter => (progress) =>
   graphEvent(executionId, "GRAPH_STEP_PROGRESS", progress);
 
+/**
+ * The checks that failed before the agent changed anything, which verification
+ * lets fail again. In a follow-up round a check that passed when the pull
+ * request started is the round's to fix, not an old failure (52f6e03e passed
+ * verification with its tests never green).
+ */
+export const oldFailures = (
+  baseline: Array<{ check: string; passed: boolean; output: string }>,
+  atStart?: Array<{ check: string; passed: boolean }>,
+) => {
+  const passedAtStart = new Set(atStart?.filter((result) => result.passed).map((result) => result.check));
+  return Object.fromEntries(
+    baseline
+      .filter((result) => !result.passed && !passedAtStart.has(result.check))
+      .map((result) => [result.check, result.output.slice(-2000)]),
+  );
+};
+
 const prepareEnvironment = async (
   executionId: string,
   repository: Omit<Repository, "encryptedSetupSecrets" | "encryptedTestSecrets">,
   resolution: ToolchainResolution,
   ask: (prompt: RenderedPrompt) => Promise<string>,
+  /** A follow-up round's fallback: a commit setup passed on (the pull request's first base), and the round's own commit. */
+  fallback?: { setupSha: string; roundSha: string },
 ): Promise<{ toolchain: Toolchain; setup: SetupResult; environmentProposal?: ProposedEnvironment } | { notFound: string }> => {
   await ensureDiskSpace();
   const checksFor = (toolchain: Toolchain) => selectChecks(toolchain, repository.verificationConfig).run;
@@ -269,7 +290,16 @@ const prepareEnvironment = async (
     ...(timeout ? { setupTimeoutMs: timeout * 1000 } : {}),
   };
   const setUp = async (toolchain: Toolchain) => {
-    const setup = await setupWorkspace(executionId, toolchain, checksFor(toolchain), setupOptions);
+    const setup = await setupWorkspace(executionId, toolchain, checksFor(toolchain), setupOptions).catch(async (error) => {
+      if (!(error instanceof SetupFailedError) || !fallback) throw error;
+      // A setup that runs the tests fails on the red commit a check round starts from (4b2fc2b7); any build tool's setup passed on the first base.
+      await graphEvent(executionId, "GRAPH_SETUP_FALLBACK", { setupSha: fallback.setupSha, roundSha: fallback.roundSha });
+      await restoreClone(executionId);
+      await checkoutCommit(executionId, fallback.setupSha);
+      const fromBase = await setupWorkspace(executionId, toolchain, checksFor(toolchain), setupOptions);
+      await checkoutCommit(executionId, fallback.roundSha);
+      return fromBase;
+    });
     return { toolchain: { ...toolchain, image: setup.image }, setup };
   };
   // The project's Dockerfile is the image; discovery and setup run in what it builds.
@@ -422,18 +452,25 @@ const loadExecutionContext = async (
   const ask = (prompt: RenderedPrompt) =>
     askAgent({ ...state, ...calls, maxTokens }, prompt);
   // Later commands run in the snapshot taken after setup and the baseline checks.
+  const root = execution.parentExecutionId
+    ? await prisma.execution.findUnique({ where: { id: execution.parentExecutionId }, select: { baseSha: true } })
+    : null;
   const prepared = await prepareEnvironment(
     execution.id,
     execution.repository,
     resolution,
     ask,
+    root?.baseSha ? { setupSha: root.baseSha, roundSha: baseSha } : undefined,
   );
   if ("notFound" in prepared) return { lastFailure: prepared.notFound, route: "blocked" as GraphRoute };
   const { toolchain, setup, environmentProposal } = prepared;
-  // Failures here existed before the agent changed anything.
-  const failingBefore = Object.fromEntries(
-    setup.baseline.filter((result) => !result.passed).map((result) => [result.check, result.output.slice(-2000)]),
-  );
+  const started = execution.parentExecutionId
+    ? await prisma.executionEvent.findFirst({
+        where: { executionId: execution.parentExecutionId, type: "GRAPH_BASELINE_CHECKED" },
+        orderBy: { sequence: "desc" },
+      })
+    : null;
+  const failingBefore = oldFailures(setup.baseline, (started?.payload as { results?: { check: string; passed: boolean }[] } | null)?.results);
   await graphEvent(execution.id, "GRAPH_BASELINE_CHECKED", {
     results: setup.baseline.map(({ check, passed }) => ({ check, passed })),
     failing: setup.baseline.filter((result) => !result.passed).map((result) => result.check),

@@ -169,3 +169,95 @@ test("GitHub's reviews and conversation comments are read in order, approvals ar
     { path: "src/old.js", line: 9, startLine: 7, code: "@@ old", body: "rename this", outdated: true },
   ]);
 });
+
+const { collectCheckFeedback } = require("../dist/services/feedbackIntake");
+const { failureExcerpt, getCommitChecks } = require("../dist/integrations/githubApp");
+
+/** A code host whose commits have the given checks; records which commits were asked about. */
+const checksHost = (byCommit) => {
+  const asked = [];
+  return { asked, commitChecks: async (sha) => (asked.push(sha), byCommit[sha] ?? { pending: false, failed: [] }) };
+};
+const failed = (name, output = "AssertionError: 1 !== 2") => ({ id: `run-${name}`, name, conclusion: "failure", output });
+const root = (overrides = {}) => ({ id: "e1", baseSha: "base", repository: { reviewers: ["alice"] }, ...overrides });
+
+test("a check that failed on the PR's latest commit is stored once per commit, and one that failed before the change is not", async (t) => {
+  const stored = stubDatabase(t);
+  prisma.execution = { count: async () => 0 };
+  const host = checksHost({ head: { pending: false, failed: [failed("test"), failed("lint")] }, base: { pending: false, failed: [failed("lint")] } });
+  assert.equal(await collectCheckFeedback(root(), host, "head"), 1);
+  assert.deepEqual(stored.map((row) => [row.externalId, row.source, row.author, row.requestsChanges]), [["head:test", "CI_CHECK", "test", true]]);
+  assert.match(stored[0].body, /^The check "test" ended with "failure" on commit head\. Where it failed in its output:\nAssertionError: 1 !== 2$/);
+});
+
+test("checks of the same name that failed on one commit are one item, saying how many failed", async (t) => {
+  const stored = stubDatabase(t);
+  prisma.execution = { count: async () => 0 };
+  const twice = checksHost({ head: { pending: false, failed: [{ ...failed("test"), id: "run-1" }, { ...failed("test"), id: "run-2" }] } });
+  assert.equal(await collectCheckFeedback(root(), twice, "head"), 1);
+  assert.equal(stored[0].externalId, "head:test");
+  assert.match(stored[0].body, /\(2 runs of it failed; the first one's output\)/);
+});
+
+test("checks are not read while any is still running, while a round runs, or before a reviewer is listed", async (t) => {
+  stubDatabase(t);
+  let running = 0;
+  prisma.execution = { count: async () => running };
+  const pending = checksHost({ head: { pending: true, failed: [failed("test")] } });
+  assert.equal(await collectCheckFeedback(root(), pending, "head"), 0);
+  running = 1;
+  const busy = checksHost({ head: { pending: false, failed: [failed("test")] } });
+  assert.equal(await collectCheckFeedback(root(), busy, "head"), 0);
+  assert.deepEqual(busy.asked, [], "a running round is about to change the head");
+  running = 0;
+  const off = checksHost({ head: { pending: false, failed: [failed("test")] } });
+  assert.equal(await collectCheckFeedback(root({ repository: { reviewers: [] } }), off, "head"), 0);
+  assert.deepEqual(off.asked, []);
+});
+
+test("an Actions log is cut where the job failed, without timestamps or colours, not at its cleanup steps", () => {
+  const log = [
+    "2026-11-22T23:16:40.1Z ##[group]Run mvn test",
+    "2026-11-22T23:16:41.2Z \u001b[31m[ERROR] BlueprintTest.fails expected:<1> but was:<2>\u001b[0m",
+    "2026-11-22T23:16:41.3Z ##[error]Process completed with exit code 1.",
+    "2026-11-22T23:16:43.0Z Post job cleanup.",
+    "2026-11-22T23:16:43.1Z Cleaning up orphan processes",
+  ].join("\n");
+  assert.equal(failureExcerpt(log), "##[group]Run mvn test\n[ERROR] BlueprintTest.fails expected:<1> but was:<2>\n##[error]Process completed with exit code 1.");
+  // A long failing step keeps where the failure is named (its start) and its summary (its end).
+  const long = ["##[group]Run actions/checkout@v4", "checked out", "##[group]Run mvn test", "FAIL SizeTest expected: <a: p> but was: <a>", ...Array(400).fill("\tat some.Frame(Frame.java:1)"), "Tests run: 45, Failures: 1", "##[error]Process completed with exit code 1."].join("\n");
+  const excerpt = failureExcerpt(long, 1000);
+  assert.ok(excerpt.startsWith("##[group]Run mvn test\nFAIL SizeTest expected: <a: p> but was: <a>"), "starts at the failing step");
+  assert.ok(excerpt.endsWith("Tests run: 45, Failures: 1\n##[error]Process completed with exit code 1."));
+  assert.match(excerpt, /\n\[\d+ characters cut\]\n/);
+  assert.ok(excerpt.length < 1050);
+  assert.doesNotMatch(excerpt, /checked out/, "earlier steps are left out");
+  // Build output first, the failure in the middle: the excerpt starts just before the first failure line.
+  const buried = ["##[group]Run mvn verify", ...Array(300).fill("[INFO] Downloading a dependency"), "[INFO] Running SizeTest", "[ERROR] SizeTest.names <<< FAILURE!", "expected: <a: p> but was: <a>", ...Array(300).fill("\tat some.Frame(Frame.java:1)"), "##[error]Process completed with exit code 1."].join("\n");
+  const found = failureExcerpt(buried, 1000);
+  assert.ok(found.startsWith("##[group]Run mvn verify\n[...]\n"), found.slice(0, 80));
+  assert.match(found.slice(0, 500), /\[ERROR\] SizeTest\.names <<< FAILURE!\nexpected: <a: p> but was: <a>/);
+  assert.equal(failureExcerpt("x".repeat(5000) + "\nend", 100).length, 100);
+  assert.ok(failureExcerpt("no error marker\nlast line").endsWith("last line"));
+});
+
+test("GitHub's failed check runs come with their job's log or their summary; neutral and running ones are not failures", async (t) => {
+  t.mock.method(axios, "post", async () => ({ data: { token: "t" } }));
+  t.mock.method(axios, "get", async (url) => {
+    if (url.endsWith("/commits/abc/check-runs"))
+      return { data: { check_runs: [
+        { id: 1, name: "test", status: "completed", conclusion: "failure", app: { slug: "github-actions" }, details_url: "https://github.com/a/w/actions/runs/9/job/11", html_url: "h1", output: { title: null, summary: null, text: null } },
+        { id: 2, name: "Qodana", status: "completed", conclusion: "neutral", app: { slug: "github-actions" }, details_url: "https://github.com/a/w/runs/2", html_url: "h2", output: { title: "2 problems", summary: "", text: null } },
+        { id: 3, name: "lint", status: "completed", conclusion: "timed_out", app: { slug: "other-ci" }, details_url: "https://ci.example/3", html_url: "h3", output: { title: "Timed out", summary: "after 10 minutes", text: null } },
+        { id: 4, name: "build", status: "in_progress", conclusion: null, app: { slug: "github-actions" }, details_url: null, html_url: "h4", output: null },
+      ] } };
+    if (url.endsWith("/actions/jobs/11/logs")) return { data: "2026-11-22T23:16:41.2Z boom\n2026-11-22T23:16:41.3Z ##[error]exit 1\n2026-11-22T23:16:43.0Z cleanup" };
+    throw new Error(`unexpected ${url}`);
+  });
+  const checks = await getCommitChecks("i", "acme", "widgets", "abc");
+  assert.equal(checks.pending, true);
+  assert.deepEqual(checks.failed, [
+    { id: "1", name: "test", conclusion: "failure", output: "boom\n##[error]exit 1", url: "h1" },
+    { id: "3", name: "lint", conclusion: "timed_out", output: "Timed out\nafter 10 minutes", url: "h3" },
+  ]);
+});

@@ -87,6 +87,8 @@ enum AttemptStatus {
 enum FeedbackSource {
   TICKET_REPLY
   PR_REVIEW
+  /// A check (CI job) that failed on the pull request's latest commit; its author is the check's name.
+  CI_CHECK
 }
 
 enum ApprovalType {

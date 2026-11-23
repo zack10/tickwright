@@ -5,13 +5,13 @@ import { config } from "../config";
 import prisma from "../db";
 import { sourceControlFor } from "../integrations/sourceControl";
 import { commentOnWorkItem } from "./ingestionService";
-import { NonRetryableError, describeError } from "../utils/safeError";
+import { NonRetryableError, ReportableError, describeError } from "../utils/safeError";
 import { discardExecutionRun, runExecutionGraph } from "./agentGraph/executionGraph";
 import { planExecution } from "./agentGraph/planning";
 import { ExecutionCanceledError, hashSnapshot } from "./executionService";
 import { formatPlanComment, formatPublishComment, signed } from "./ticketConversation";
 import rabbitMQService from "./rabbitMQService";
-import { describeVerification, publishApprovedDiff } from "./workspaceService";
+import { SetupFailedError, describeVerification, publishApprovedDiff } from "./workspaceService";
 
 const TERMINAL: ExecutionStatus[] = ["COMPLETED", "BLOCKED", "FAILED", "CANCELED"];
 const RUN_STATES: ExecutionStatus[] = ["RUNNING", "VERIFYING"];
@@ -79,10 +79,20 @@ export const markExecutionFailed = async (
     console.error(`Cleanup failed for ${executionId}: ${describeError(cleanupError)}`),
   );
   await appendEvent(executionId, "EXECUTION_FAILED", { stage, reason });
-  await notifyTracker(
-    executionId,
-    `Execution ${executionId} failed during ${stage}. Review the execution evidence.`,
-  );
+  await notifyTracker(executionId, failureNote(executionId, stage, error));
+};
+
+/**
+ * The ticket's note on a failure. Only messages Tickwright wrote itself are
+ * quoted: command and provider output can hold secrets, so other failures
+ * say where the details are.
+ */
+export const failureNote = (executionId: string, stage: string, error: unknown) => {
+  const details = `The details are in Tickwright: \`npm run trace -- ${executionId}\``;
+  if (error instanceof ReportableError) return `Execution ${executionId} failed during ${stage}: ${error.message}.`;
+  if (error instanceof SetupFailedError)
+    return `Execution ${executionId} failed during ${stage}: the repository's setup command failed, so the agent never started. ${details}`;
+  return `Execution ${executionId} failed during ${stage}. ${details}`;
 };
 
 const executionMessage = z.object({
@@ -272,15 +282,15 @@ const publish = async (executionId: string) => {
     // shortcut: a crash between a follow-up's push and its PULL_REQUEST artifact fails the retry here; mark the push in the commit to resume it.
     const currentBaseSha = await sourceControl.branchHead(followUp ? branch : repository.defaultBranch);
     if (currentBaseSha !== execution.baseSha)
-      throw new NonRetryableError(
+      throw new ReportableError(
         followUp
           ? "The pull request's branch changed after this round started; nothing was pushed, so give the feedback again for a new round"
-          : "Repository base branch changed after execution; replan is required",
+          : "The base branch changed after the change was made; nothing was pushed, so the ticket needs a new plan",
       );
 
     let pr = await sourceControl.findOpenPullRequest(branch);
     if (followUp) {
-      if (!pr) throw new NonRetryableError("The pull request is no longer open; nothing was pushed");
+      if (!pr) throw new ReportableError("The pull request is no longer open; nothing was pushed");
       await publishApprovedDiff({
         executionId: execution.id,
         diff,

@@ -87,6 +87,24 @@ export interface ReviewFeedback {
   comments: ReviewLineComment[];
 }
 
+/** A check (a CI job) on a commit that finished without passing. */
+export interface FailedCheck {
+  /** Unique among the commit's checks on the host. */
+  id: string;
+  name: string;
+  /** The host's word for how it ended, e.g. "failure" or "timed_out". */
+  conclusion: string;
+  /** Where it failed in its own output (the end of its log, or its summary). Untrusted: a test can print anything. */
+  output: string;
+  url?: string;
+}
+
+/** A commit's checks: whether any is still running, and the ones that failed. */
+export interface CommitChecks {
+  pending: boolean;
+  failed: FailedCheck[];
+}
+
 /** Where git clones from and pushes to, over HTTPS with the adapter's token. */
 export interface GitRemote {
   /** An https:// clone URL; the token is sent to its origin only. */
@@ -120,6 +138,8 @@ export interface SourceControlAdapter {
   reviewFeedback(target: SourceControlTarget, number: number): Promise<ReviewFeedback[]>;
   /** Posts a comment on the pull request's conversation. */
   commentOnPullRequest(target: SourceControlTarget, number: number, body: string): Promise<void>;
+  /** The checks that ran on a commit. */
+  commitChecks(target: SourceControlTarget, sha: string): Promise<CommitChecks>;
 }
 
 /**

@@ -1,4 +1,4 @@
-import { FeedbackSource, Prisma } from "@prisma/client";
+import { ExecutionStatus, FeedbackSource, Prisma } from "@prisma/client";
 
 import prisma, { json } from "../db";
 import { ReviewFeedback, IssueTrackerAdapter, ReviewLineComment } from "../integrations/types";
@@ -89,6 +89,47 @@ export const collectReviewFeedback = async (
         comments: review.comments,
         writtenAt: review.submittedAt,
       })),
+  );
+};
+
+const ENDED: ExecutionStatus[] = ["COMPLETED", "BLOCKED", "FAILED", "CANCELED"];
+
+/**
+ * Checks that failed on the pull request's latest commit (`head`), once all
+ * of them finished, so one round covers all of a commit's failures. A check
+ * that fails on the commit the change started from was broken before it and
+ * is skipped. Off, like reviews, until the repository lists a reviewer, and
+ * not read while a round runs: that round is about to change the head.
+ */
+export const collectCheckFeedback = async (
+  execution: { id: string; baseSha: string | null; repository: { reviewers: string[] } },
+  sourceControl: Pick<SourceControl, "commitChecks">,
+  head: string,
+) => {
+  if (!execution.repository.reviewers?.length) return 0;
+  if (await prisma.execution.count({ where: { parentExecutionId: execution.id, status: { notIn: ENDED } } })) return 0;
+  const checks = await sourceControl.commitChecks(head);
+  if (checks.pending || !checks.failed.length) return 0;
+  const before = execution.baseSha ? await sourceControl.commitChecks(execution.baseSha) : undefined;
+  const failingBefore = new Set(before?.failed.map((check) => check.name));
+  // One item per name: workflows often run a job of the same name (PR #10 of dynamic-csv-batch-processor had two "test").
+  const byName = new Map<string, { check: (typeof checks.failed)[number]; count: number }>();
+  for (const check of checks.failed.filter((check) => !failingBefore.has(check.name))) {
+    const seen = byName.get(check.name);
+    if (seen) seen.count++;
+    else byName.set(check.name, { check, count: 1 });
+  }
+  return store(
+    [...byName.values()].map(({ check, count }) => ({
+      executionId: execution.id,
+      source: "CI_CHECK" as const,
+      // Per commit and name: the same check failing again after a round is new feedback.
+      externalId: `${head}:${check.name}`,
+      author: check.name,
+      body: `The check "${check.name}" ended with "${check.conclusion}" on commit ${head.slice(0, 12)}${count > 1 ? ` (${count} runs of it failed; the first one's output)` : ""}. Where it failed in its output:\n${check.output}`,
+      requestsChanges: true,
+      writtenAt: new Date(),
+    })),
   );
 };
 

@@ -266,7 +266,8 @@ test("a ticket goes from the tracker to a completed draft PR through every stage
       githubInstallationId: "fake",
       // An approved environment: discovery is skipped, and the image is small.
       verificationConfig: { toolchain: { language: "JavaScript", image: "node:20-bookworm", setup: ["sh", "-c", "test ! -f SETUP_BREAKS"], checks: { test: ["node", "--test"] } } },
-      executionPolicy: {},
+      // Two rounds: the review's and the check's; a third request gets the hand-back note.
+      executionPolicy: { maxFollowUpRounds: 2 },
     },
   });
   repositoryId = repository.id;
@@ -403,10 +404,17 @@ test("a ticket goes from the tracker to a completed draft PR through every stage
   roundTwo = await waitFor(["COMPLETED"], 3, checkRound);
   assert.equal(published.length, 3);
   assert.equal(published[2].baseSha, roundTwoBase);
+  assert.match(published[2].message, /^Fix the failing check: /);
   assert.match(published[2].diff, /\+\/\/ Subtracts b from a\./);
   // The same failure on the same commit is not read again; the new head has no failure, so nothing starts.
   await recordPullRequestOutcomes();
   assert.equal(await prisma.execution.count({ where: followUpRound }), 2);
+  // A third request: the rounds are used up, so the PR and the ticket are told once and no round starts.
+  reviews = [...reviews, { id: "review-3", requestsChanges: true, author: "alice", authorIsBot: false, body: "Rename add() to sum().", submittedAt: new Date(), comments: [] }];
+  await recordPullRequestOutcomes();
+  await recordPullRequestOutcomes();
+  assert.equal(await prisma.execution.count({ where: followUpRound }), 2);
+  assert.equal(prComments.filter((comment) => /the limit for this repository/.test(comment.body)).length, 1);
 
   // The merged PR's outcome is recorded on the execution that opened it.
   prState = "MERGED";

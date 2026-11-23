@@ -5,6 +5,7 @@ import { sourceControlFor } from "../integrations/sourceControl";
 import { ReviewLineComment } from "../integrations/types";
 import { EXECUTION_PROMPTS, executionPromptFragment } from "../prompts";
 import { describeError } from "../utils/safeError";
+import { graphEvent } from "./agentGraph/agentCalls";
 import { createFollowUpExecution } from "./executionService";
 import { commentOnWorkItem } from "./ingestionService";
 
@@ -20,6 +21,16 @@ const ENDED: ExecutionStatus[] = ["COMPLETED", "BLOCKED", "FAILED", "CANCELED"];
 const OUTCOME_EVENT = "PULL_REQUEST_OUTCOME";
 // Each item is capped when stored (feedbackIntake.ts); this caps a round's prompt.
 export const MAX_FEEDBACK_PER_ROUND = 20;
+// Rounds per pull request unless Repository.executionPolicy.maxFollowUpRounds says otherwise; a check the agent cannot fix would start one after every push. 20 so people's own review cycles are rarely cut short (chosen 2026-11-23).
+export const DEFAULT_MAX_FOLLOW_UP_ROUNDS = 20;
+const ROUND_LIMIT_EVENT = "FOLLOW_UP_LIMIT_REACHED";
+
+/** The note posted once when a pull request has used its rounds. */
+export const formatRoundLimitComment = (rounds: number) =>
+  (rounds
+    ? `**I've made ${rounds} follow-up round${rounds === 1 ? "" : "s"} on this pull request, the limit for this repository.** `
+    : "**Follow-up rounds are turned off for this repository.** ") +
+  "Over to you: change the branch yourself, or raise `maxFollowUpRounds` in the repository's execution policy and I'll act on the feedback that is waiting.";
 
 const quote = (text: string) =>
   text
@@ -117,6 +128,23 @@ export const startFollowUps = async () => {
       if (typeof number !== "number" || !root.branchName) continue;
       const sourceControl = await sourceControlFor(root.repository);
       if ((await sourceControl.pullRequestOutcome(number)).state !== "OPEN") continue;
+      // Every round that ran counts, failed or blocked ones too (each was paid for); a canceled one does not.
+      const rounds = await prisma.execution.count({ where: { parentExecutionId: root.id, status: { not: "CANCELED" } } });
+      const limit = (root.repository.executionPolicy as { maxFollowUpRounds?: number } | null)?.maxFollowUpRounds ?? DEFAULT_MAX_FOLLOW_UP_ROUNDS;
+      if (rounds >= limit) {
+        // Once per count of rounds: raising the limit and using it up again hands back again.
+        const told = await prisma.executionEvent.count({ where: { executionId: root.id, type: ROUND_LIMIT_EVENT, payload: { path: ["rounds"], equals: rounds } } });
+        if (told) continue;
+        await graphEvent(root.id, ROUND_LIMIT_EVENT, { rounds, limit });
+        const note = formatRoundLimitComment(rounds);
+        await commentOnWorkItem(root.projectId, root.workItem, note).catch((error) =>
+          console.error(`Round limit note on the ticket failed for ${root.id}: ${describeError(error)}`),
+        );
+        await sourceControl.commentOnPullRequest(number, note).catch((error) =>
+          console.error(`Round limit note on the pull request failed for ${root.id}: ${describeError(error)}`),
+        );
+        continue;
+      }
       const head = await sourceControl.branchHead(root.branchName);
       const created = await createFollowUpExecution(root, root.feedback.map((item) => item.id), head);
       if (!created) continue;

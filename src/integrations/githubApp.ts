@@ -130,6 +130,15 @@ export const getPullRequestOutcome = async (installationId: string, owner: strin
   }
 };
 
+export const commentOnPullRequest = async (installationId: string, owner: string, repo: string, number: number, body: string) => {
+  const token = await getInstallationToken(installationId);
+  // A pull request's conversation is its issue's comments.
+  await axios.post(`https://api.github.com/repos/${owner}/${repo}/issues/${number}/comments`, { body }, {
+    headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" },
+    timeout: 15000,
+  });
+};
+
 interface GithubReview { id: number; state: string; body: string | null; submitted_at: string | null; user: { login: string; type: string } | null }
 interface GithubIssueComment { id: number; body: string | null; created_at: string; user: { login: string; type: string } | null }
 interface GithubReviewComment {
@@ -224,6 +233,8 @@ export const githubSourceControl: SourceControlAdapter = {
   },
   pullRequestOutcome: async (target, number) =>
     getPullRequestOutcome(installationOf(target), target.repository.owner, target.repository.name, number),
+  commentOnPullRequest: async (target, number, body) =>
+    commentOnPullRequest(installationOf(target), target.repository.owner, target.repository.name, number, body),
   reviewFeedback: async (target, number) =>
     getReviewFeedback(installationOf(target), target.repository.owner, target.repository.name, number),
 };

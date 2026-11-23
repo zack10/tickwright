@@ -18,6 +18,8 @@ export const EXECUTION_PROMPTS = {
   reviewer: "reviewer.v10",
   discover: "discover.v4",
   fileFormat: "file-format.v1",
+  // Added to the ticket of a follow-up round, so every prompt of the run reads the feedback.
+  followUp: "follow-up.v1",
 } as const;
 
 export type ExecutionPromptName = keyof typeof EXECUTION_PROMPTS;
@@ -96,13 +98,15 @@ export const renderPromptVersion = (
 };
 
 /** A fragment is plain text without sections, shared between prompts. */
-export const promptFragment = (version: string) =>
-  fill(version, [readPromptFile(version).trim()], {})[0];
+export const promptFragment = (version: string, variables: Record<string, string> = {}) =>
+  fill(version, [readPromptFile(version).trim()], variables)[0];
+
+type FragmentName = "fileFormat" | "followUp";
 
 export const renderExecutionPrompt = (
-  name: Exclude<ExecutionPromptName, "fileFormat">,
+  name: Exclude<ExecutionPromptName, FragmentName>,
   variables: Record<string, string>,
 ) => renderPromptVersion(EXECUTION_PROMPTS[name], variables);
 
-export const executionPromptFragment = (name: "fileFormat") =>
-  promptFragment(EXECUTION_PROMPTS[name]);
+export const executionPromptFragment = (name: FragmentName, variables: Record<string, string> = {}) =>
+  promptFragment(EXECUTION_PROMPTS[name], variables);

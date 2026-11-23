@@ -69,13 +69,14 @@ const stubDatabase = (t, executions) => {
       create: async ({ data }) => saved.events.push(data),
     },
   };
-  prisma.execution = { findMany: async () => executions };
+  // The follow-up query (it filters on feedback) finds nothing here; followUps.test.js covers it.
+  prisma.execution = { findMany: async (args) => (args.where.feedback ? [] : executions) };
   prisma.$transaction = async (fn) => fn(tx);
   t.after(() => Object.assign(prisma, real));
   return saved;
 };
 
-const execution = (id, number) => {
+const execution = (id, number, followUpRounds = 0) => {
   const diffPath = path.join(artifactRoot, `${id}.diff`);
   fs.writeFileSync(diffPath, published);
   return {
@@ -86,8 +87,19 @@ const execution = (id, number) => {
       { type: "PULL_REQUEST", metadata: { number, html_url: `https://host/pr/${number}` } },
       { type: "DIFF", storagePath: diffPath },
     ],
+    _count: { followUps: followUpRounds },
   };
 };
+
+test("after follow-up commits the merged PR is recorded, but not compared with one round's diff", async (t) => {
+  outcomes.set(6, { state: "MERGED", closedAt: new Date("2026-11-22T10:00:00Z"), diff: rendered });
+  const saved = stubDatabase(t, [execution("e6", 6, 1)]);
+  await recordPullRequestOutcomes();
+  const [{ payload }] = saved.events;
+  assert.equal(payload.state, "MERGED");
+  assert.equal(payload.mergedAsWritten, null);
+  assert.equal(payload.followUpRounds, 1);
+});
 
 test("a merged pull request records whether it was merged as written, and keeps the merged diff", async (t) => {
   outcomes.set(1, { state: "MERGED", closedAt: new Date("2026-11-20T10:00:00Z"), diff: rendered });

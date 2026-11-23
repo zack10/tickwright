@@ -804,6 +804,8 @@ export const publishApprovedDiff = async (input: {
   baseSha: string;
   remote: GitRemote;
   token: string;
+  /** A follow-up round adds a commit to a branch people review, so it never replaces what is there. */
+  followUp?: boolean;
 }) => {
   assertSafeRepo(input.baseSha);
   const env = gitRemoteEnv(input.remote);
@@ -822,9 +824,9 @@ export const publishApprovedDiff = async (input: {
     `${SAFE_GIT} apply --index --binary ../changes.diff`,
     // The ticket's title, not a fixed "bug fix": tickets are any kind of change.
     `${SAFE_GIT} -c user.name='Tickwright' -c user.email='tickwright@localhost' commit --no-verify --cleanup=verbatim -F ../commit-message.txt`,
-    // Force is safe: the branch is owned by this execution, and a retry after
-    // a partial publish must be able to replace its own earlier push.
-    `${AUTH_GIT} push --no-verify --force origin 'HEAD:refs/heads/${input.branch}'`,
+    // Force is safe for a first change: the branch is owned by this execution, and a retry after
+    // a partial publish must be able to replace its own earlier push. A follow-up only fast-forwards.
+    `${AUTH_GIT} push --no-verify${input.followUp ? "" : " --force"} origin 'HEAD:refs/heads/${input.branch}'`,
   ].join(" && ");
   try {
     await execDocker(

@@ -9,7 +9,7 @@ import { NonRetryableError, describeError } from "../utils/safeError";
 import { discardExecutionRun, runExecutionGraph } from "./agentGraph/executionGraph";
 import { planExecution } from "./agentGraph/planning";
 import { ExecutionCanceledError, hashSnapshot } from "./executionService";
-import { formatPlanComment, formatPublishComment } from "./ticketConversation";
+import { formatPlanComment, formatPublishComment, signed } from "./ticketConversation";
 import rabbitMQService from "./rabbitMQService";
 import { describeVerification, publishApprovedDiff } from "./workspaceService";
 
@@ -197,7 +197,7 @@ const run = async (executionId: string) => {
   });
   const execution = await prisma.execution.findUnique({
     where: { id: executionId },
-    select: { status: true, lastError: true },
+    select: { status: true, lastError: true, parentExecutionId: true },
   });
   if (execution?.status === "BLOCKED")
     await notifyTracker(
@@ -214,7 +214,7 @@ const run = async (executionId: string) => {
     const files = diff
       ? [...new Set([...(await fs.readFile(diff.storagePath, "utf8")).matchAll(/^diff --git a\/\S+ b\/(\S+)$/gm)].map((match) => match[1]))]
       : [];
-    await notifyTracker(executionId, formatPublishComment(files, describeVerification(diff?.metadata)));
+    await notifyTracker(executionId, formatPublishComment(files, describeVerification(diff?.metadata), execution.parentExecutionId !== null));
   }
 };
 
@@ -242,7 +242,10 @@ const publish = async (executionId: string) => {
     );
 
   const { repository } = execution;
-  const branch = `agent/${execution.id}`;
+  // A follow-up round pushes to the branch and pull request its root opened.
+  const followUp = execution.parentExecutionId !== null;
+  const branch = followUp ? execution.branchName : `agent/${execution.id}`;
+  if (!branch) throw new NonRetryableError("Follow-up execution has no branch");
   const existingPr = execution.artifacts.find(
     (artifact) => artifact.type === "PULL_REQUEST",
   );
@@ -266,14 +269,33 @@ const publish = async (executionId: string) => {
     if (!execution.baseSha)
       throw new NonRetryableError("Execution has no recorded base SHA");
     const sourceControl = await sourceControlFor(repository);
-    const currentBaseSha = await sourceControl.branchHead(repository.defaultBranch);
+    // shortcut: a crash between a follow-up's push and its PULL_REQUEST artifact fails the retry here; mark the push in the commit to resume it.
+    const currentBaseSha = await sourceControl.branchHead(followUp ? branch : repository.defaultBranch);
     if (currentBaseSha !== execution.baseSha)
       throw new NonRetryableError(
-        "Repository base branch changed after execution; replan is required",
+        followUp
+          ? "The pull request's branch changed after this round started; nothing was pushed, so give the feedback again for a new round"
+          : "Repository base branch changed after execution; replan is required",
       );
 
     let pr = await sourceControl.findOpenPullRequest(branch);
-    if (!pr) {
+    if (followUp) {
+      if (!pr) throw new NonRetryableError("The pull request is no longer open; nothing was pushed");
+      await publishApprovedDiff({
+        executionId: execution.id,
+        diff,
+        message: `Address review feedback: ${execution.workItem.title}\n\nExecution: ${execution.id}\n`,
+        branch,
+        baseSha: execution.baseSha,
+        remote: sourceControl.gitRemote(),
+        token: await sourceControl.gitToken(),
+        followUp: true,
+      });
+      // The push is done: a failed comment must not fail it.
+      await sourceControl
+        .commentOnPullRequest(pr.number, signed(`Pushed a commit for the feedback above.\n\n${describeVerification(diffArtifact.metadata)}`))
+        .catch((error) => console.error(`Pull request comment failed for ${execution.id}: ${describeError(error)}`));
+    } else if (!pr) {
       await publishApprovedDiff({
         executionId: execution.id,
         diff,
@@ -317,7 +339,9 @@ const publish = async (executionId: string) => {
   });
   await notifyTracker(
     executionId,
-    `Draft pull request created: ${prUrl}\nExecution: ${executionId}`,
+    followUp
+      ? `Pushed a commit for your feedback to ${prUrl}\nExecution: ${executionId}`
+      : `Draft pull request created: ${prUrl}\nExecution: ${executionId}`,
   );
 };
 

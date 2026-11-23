@@ -71,6 +71,13 @@ export class ExecutionCanceledError extends Error {
   }
 }
 
+const defaultBudget = () => ({
+  maxAttempts: 3,
+  maxChangedFiles: 20,
+  maxDurationSeconds: config.executionMaxDurationSeconds,
+  maxTokens: config.executionMaxTokens,
+});
+
 export const createExecution = async (input: {
   projectId: string;
   workItemId: string;
@@ -90,12 +97,7 @@ export const createExecution = async (input: {
         repositoryId: input.repositoryId,
         idempotencyKey,
         correlationId: crypto.randomUUID(),
-        budget: {
-          maxAttempts: 3,
-          maxChangedFiles: 20,
-          maxDurationSeconds: config.executionMaxDurationSeconds,
-          maxTokens: config.executionMaxTokens,
-        },
+        budget: defaultBudget(),
       },
     });
     await event(
@@ -118,6 +120,98 @@ export const createExecution = async (input: {
     return execution;
   }).catch(alreadyCreated(idempotencyKey));
 };
+
+/**
+ * A follow-up round on the pull request `root` opened: a new execution on the
+ * same branch, starting from the branch's head, that addresses `feedbackIds`.
+ * Its plan is the root's, approved by the request itself, so it goes straight
+ * to the run; the person still approves its diff before anything is pushed.
+ * Returns undefined when another poll started this round first.
+ */
+export const createFollowUpExecution = async (
+  root: { id: string; projectId: string; workItemId: string; repositoryId: string; branchName: string | null; correlationId: string },
+  feedbackIds: string[],
+  headSha: string,
+) => {
+  if (!root.branchName) throw new Error(`Execution ${root.id} has no published branch`);
+  const rootPlan = await prisma.plan.findFirst({
+    where: { executionId: root.id, status: "APPROVED" },
+    include: { tasks: true },
+    orderBy: { version: "desc" },
+  });
+  const rootTask = rootPlan?.tasks[0];
+  if (!rootPlan || !rootTask) throw new Error(`Execution ${root.id} has no approved plan`);
+  const round = (await prisma.execution.count({ where: { parentExecutionId: root.id } })) + 1;
+  const summary = `Change the open pull request as its feedback asks (follow-up round ${round}); what the ticket requires must still hold.`;
+  const snapshotHash = hashSnapshot({ root: root.id, round, feedbackIds, headSha });
+  // The round number in the key: two polls starting the same round cannot both succeed.
+  const idempotencyKey = `${root.id}:follow-up:${round}`;
+  return prisma
+    .$transaction(async (tx) => {
+      const execution = await tx.execution.create({
+        data: {
+          projectId: root.projectId,
+          workItemId: root.workItemId,
+          repositoryId: root.repositoryId,
+          parentExecutionId: root.id,
+          status: "QUEUED",
+          baseSha: headSha,
+          branchName: root.branchName,
+          idempotencyKey,
+          correlationId: crypto.randomUUID(),
+          budget: defaultBudget(),
+        },
+      });
+      const plan = await tx.plan.create({
+        data: {
+          executionId: execution.id,
+          version: 1,
+          status: "APPROVED",
+          summary,
+          acceptanceCriteria: json(rootPlan.acceptanceCriteria),
+          estimates: { taskCount: 1 },
+          snapshotHash,
+        },
+      });
+      await tx.planTask.create({
+        data: {
+          planId: plan.id,
+          key: rootTask.key,
+          title: rootTask.title,
+          description: rootTask.description,
+          type: rootTask.type,
+          // The root's examples and requirements still hold; its questions were settled by its approval.
+          expectedOutput: json({ ...(rootTask.expectedOutput as Record<string, unknown>), summary, questions: [] }),
+        },
+      });
+      await tx.approval.create({
+        data: { executionId: execution.id, type: "PLAN", snapshotHash, status: "APPROVED", actor: "feedback", decidedAt: new Date() },
+      });
+      const claimed = await tx.executionFeedback.updateMany({
+        where: { id: { in: feedbackIds }, executionId: root.id, addressedByExecutionId: null },
+        data: { addressedByExecutionId: execution.id },
+      });
+      if (claimed.count !== feedbackIds.length) throw new FollowUpTakenError();
+      await event(tx, execution.id, "FOLLOW_UP_CREATED", { parentExecutionId: root.id, round, feedbackIds, baseSha: headSha }, execution.correlationId);
+      await event(tx, root.id, "FOLLOW_UP_STARTED", { executionId: execution.id, round }, root.correlationId);
+      await tx.outboxEvent.create({
+        data: {
+          topic: "execution.run",
+          aggregateId: execution.id,
+          payload: { executionId: execution.id, correlationId: execution.correlationId },
+        },
+      });
+      return { execution, round };
+    })
+    .catch((error: unknown) => {
+      if (error instanceof FollowUpTakenError) return undefined;
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") return undefined;
+      throw error;
+    });
+};
+
+/** The feedback was claimed by a round another poll started at the same time. */
+class FollowUpTakenError extends Error {}
 
 /**
  * Two syncs of one connection (the tracker poller and POST .../sync) can create the

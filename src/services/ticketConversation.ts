@@ -57,12 +57,14 @@ export const formatPlanComment = (
     .join("\n\n");
 
 /** `verification` is what the checks and the reviewer found (describeVerification). */
-export const formatPublishComment = (files: string[], verification: string) =>
+export const formatPublishComment = (files: string[], verification: string, followUp = false) =>
   [
-    "**The change is ready.**",
+    followUp ? "**The change for your feedback is ready.**" : "**The change is ready.**",
     files.length ? `**Changed:** ${files.join(", ")}` : "",
     verification,
-    "Reply `/approve` to open a draft pull request, or `/reject <reason>` to stop.",
+    followUp
+      ? "Reply `/approve` to push it to the pull request, or `/reject <reason>` to leave the pull request as it is."
+      : "Reply `/approve` to open a draft pull request, or `/reject <reason>` to stop.",
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -130,6 +132,7 @@ export const handleTicketReplies = async (adapter: IssueTrackerAdapter, trackerC
     },
   });
   for (const execution of executions) {
+    const publishing = execution.parentExecutionId ? "Approved. I'm pushing it to the pull request." : "Approved. I'm opening the draft pull request.";
     const approval = execution.approvals[0];
     if (!approval) continue;
     const say = (text: string) => adapter.comment(trackerConfig, execution.workItem.externalId, signed(text));
@@ -161,7 +164,7 @@ export const handleTicketReplies = async (adapter: IssueTrackerAdapter, trackerC
           await decideApproval(execution.id, approval.type, approved, approval.snapshotHash, actor, note);
           await say(
             approved
-              ? approval.type === "PLAN" ? "Plan approved. I'm starting on the change." : "Approved. I'm opening the draft pull request."
+              ? approval.type === "PLAN" ? "Plan approved. I'm starting on the change." : publishing
               : `Stopped: the ${what} was rejected${note ? ` (${note})` : ""}.`,
           );
         }

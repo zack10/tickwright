@@ -99,8 +99,28 @@ export const describeFeedback = (items: Pick<ExecutionFeedback, "source" | "auth
     })
     .join("\n\n");
 
+/**
+ * The test files the pull request changed before this round, as the round's
+ * prompts list them: the reviewer and the failure analysis otherwise judge
+ * them as the repository's locked tests (dynamic-csv PR #17, round c106c31f).
+ */
+export const describeOwnTests = (changes: { status: string; file: string }[]) =>
+  changes
+    .map((change) =>
+      change.status === "A"
+        ? `- ${change.file}: added by this pull request`
+        : change.status === "D"
+          ? `- ${change.file}: deleted by this pull request`
+          : `- ${change.file}: was there before the pull request, which added or changed lines in it; only the lines it had before are locked`,
+    )
+    .join("\n") || "- none: every test file is as it was before the pull request";
+
 /** A follow-up round's ticket: the ticket, then the feedback it addresses. Every prompt of the run reads it. */
-export const followUpTicket = async (execution: { id: string; parentExecutionId: string | null; createdAt: Date }, ticket: string) => {
+export const followUpTicket = async (
+  execution: { id: string; parentExecutionId: string | null; createdAt: Date },
+  ticket: string,
+  ownTests: { status: string; file: string }[] = [],
+) => {
   if (!execution.parentExecutionId) return { ticket };
   const feedback = await prisma.executionFeedback.findMany({
     where: { addressedByExecutionId: execution.id },
@@ -109,7 +129,7 @@ export const followUpTicket = async (execution: { id: string; parentExecutionId:
   const round = await prisma.execution.count({
     where: { parentExecutionId: execution.parentExecutionId, createdAt: { lte: execution.createdAt } },
   });
-  const note = executionPromptFragment("followUp", { round: String(round), feedback: describeFeedback(feedback) });
+  const note = executionPromptFragment("followUp", { round: String(round), ownTests: describeOwnTests(ownTests), feedback: describeFeedback(feedback) });
   return { ticket: `${ticket}\n\n${note}`, followUpPrompt: EXECUTION_PROMPTS.followUp };
 };
 

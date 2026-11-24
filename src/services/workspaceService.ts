@@ -795,6 +795,16 @@ export const changes = async (id: string): Promise<FileChange[]> => {
 export const baseFileContent = async (id: string, file: string, commit = "HEAD") =>
   (await runDocker(id, [...SAFE_GIT_ARGS, "show", `${commit}:${file}`])).stdout;
 
+/** Files the checked-out commit changed since `commit`, as committed (the working tree is not read). */
+export const committedChangesSince = async (id: string, commit: string): Promise<FileChange[]> => {
+  const fields = (await runDocker(id, [...SAFE_GIT_ARGS, "diff", "--name-status", "--no-renames", "-z", "--no-ext-diff", commit, "HEAD"])).stdout
+    .split("\0")
+    .filter(Boolean);
+  const result: FileChange[] = [];
+  for (let index = 0; index + 1 < fields.length; index += 2) result.push({ status: fields[index], file: fields[index + 1] });
+  return result;
+};
+
 /** Files in the checked-out commit, whatever the index or working tree hold now. */
 export const trackedFiles = async (id: string, commit = "HEAD") =>
   (await runDocker(id, [...SAFE_GIT_ARGS, "ls-tree", "-r", "-z", "--name-only", commit])).stdout

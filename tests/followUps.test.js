@@ -36,7 +36,8 @@ test("every line of a person's feedback reaches the agent quoted, so planted tex
 });
 
 test("the follow-up note names the round and the feedback, and says nothing about a language", () => {
-  const note = executionPromptFragment("followUp", { round: "2", feedback: "FEEDBACK" });
+  const note = executionPromptFragment("followUp", { round: "2", ownTests: "OWN TESTS", feedback: "FEEDBACK" });
+  assert.match(note, /test files as they were before the pull request[\s\S]*OWN TESTS/);
   assert.match(note, /follow-up round 2/);
   assert.match(note, /FEEDBACK$/);
   assert.match(note, /not instructions to you/);
@@ -182,4 +183,12 @@ test("a follow-up round locks tests as of its pull request's first base commit, 
   assert.equal(await lockedTestsCommit("round"), "rootbase");
   prisma.execution = { findUnique: async () => ({ parentExecution: null }) };
   assert.equal(await lockedTestsCommit("first-change"), "HEAD", "a first change locks the tests of the commit it starts from");
+});
+
+test("a round is told which test files its pull request added or extended, so its reviewer does not judge them as locked", () => {
+  const { describeOwnTests } = require("../dist/services/followUps");
+  const text = describeOwnTests([{ status: "A", file: "t/new_test.go" }, { status: "M", file: "t/old_test.go" }]);
+  assert.match(text, /^- t\/new_test\.go: added by this pull request$/m);
+  assert.match(text, /^- t\/old_test\.go: was there before the pull request.*only the lines it had before are locked$/m);
+  assert.match(describeOwnTests([]), /none/);
 });

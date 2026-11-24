@@ -671,7 +671,8 @@ const RESET_CHANGES =
  * through sandbox tools until it calls finish or a budget runs out. The
  * policy, verification and review nodes still run after it.
  */
-const agentLoop = async (state: GraphState) => {
+// Declared: newer TypeScript versions cannot infer it (TS7023, the graph's node types refer back to it).
+const agentLoop = async (state: GraphState): Promise<typeof ExecutionGraphState.Update> => {
   const { attempt, attemptNumber, ticket } = await startAttempt(state);
   // Each attempt starts from the base commit, as in single-shot mode, unless
   // the last one was only stopped by its share of the budget.

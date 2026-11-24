@@ -30,6 +30,7 @@ import { RequestedTest, ReviewVerdict, SANDBOX_TOOLS, agentTestCheck, describeRe
 import { REVIEW_MAX_TOKENS, reviewOutcome, runReviewer } from "./reviewer";
 import {
   executionToolContext,
+  lockedTestsCommit,
   prismaToolCallRecorder,
   runRecordedTool,
 } from "../sandbox/toolRunner";
@@ -828,18 +829,22 @@ const enforceRepositoryPolicy = async (
   const diff = await changes(state.executionId);
   const files = diff.map((change) => change.file);
   // An existing test file may gain lines (a new test added to the project's list); nothing else.
+  // In a follow-up round "existing" means before the PR: tests the PR added are the agent's own.
+  const lockedAt = await lockedTestsCommit(state.executionId);
+  const locked = lockedAt === "HEAD" ? undefined : new Set(await trackedFiles(state.executionId, lockedAt));
+  const testChanges = locked ? diff.filter((change) => locked.has(change.file)) : diff;
   const extended = new Set<string>();
-  for (const change of diff)
+  for (const change of testChanges)
     if (change.status === "M" && isTestFile(toolchain, change.file)) {
       const now = (await runDocker(state.executionId, ["cat", "--", change.file])).stdout;
-      if (onlyAddsLines(await baseFileContent(state.executionId, change.file), now)) extended.add(change.file);
+      if (onlyAddsLines(await baseFileContent(state.executionId, change.file, lockedAt), now)) extended.add(change.file);
     }
   const violation =
     checkRepositoryPolicy(
       files,
       execution.repository.executionPolicy as RepositoryPolicy | null,
       toolchain.protectedPaths,
-    ) ?? checkExistingTests(diff, (file) => isTestFile(toolchain, file), (file) => extended.has(file));
+    ) ?? checkExistingTests(testChanges, (file) => isTestFile(toolchain, file), (file) => extended.has(file));
 
   if (violation) {
     if (!state.attemptId) throw new Error("Execution graph is missing attempt");

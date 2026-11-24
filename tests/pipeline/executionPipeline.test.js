@@ -103,6 +103,9 @@ const scriptedReply = (body) => {
       () => call("run_check", { check: "test" }),
       () => call("edit_file", { path: "src/math.js", oldText: "a + b;", newText: "a + b;\nexports.subtract = (a, b) => a - b;" }),
       () => call("run_check", { check: "test" }),
+      // The PR's own test may change in a round; a test from before the PR may not.
+      () => call("edit_file", { path: "test/sum.test.js", oldText: "two plus three is five", newText: "2 + 3 is 5" }),
+      () => call("edit_file", { path: "test/zero.test.js", oldText: "zero plus zero", newText: "0 + 0" }),
       () => call("finish", { status: "done", summary: "subtract() added next to add(), as the review asked." }),
     ];
     if (steps[done]) return steps[done]();
@@ -375,7 +378,13 @@ test("a ticket goes from the tracker to a completed draft PR through every stage
   assert.equal(published[1].baseSha, roundOneHead);
   assert.equal(published[1].followUp, true);
   assert.match(published[1].diff, /\+exports\.subtract = \(a, b\) => a - b;/);
-  assert.doesNotMatch(published[1].diff, /sum\.test\.js/, "only this round's change is pushed");
+  assert.doesNotMatch(published[1].diff, /^\+.*two plus three is five/m, "only this round's change is pushed");
+  assert.match(published[1].diff, /^\+.*2 \+ 3 is 5/m, "a test the PR added can be changed in a round");
+  assert.doesNotMatch(published[1].diff, /zero\.test\.js/, "a test from before the PR cannot");
+  assert.equal(
+    await prisma.toolCall.count({ where: { name: "edit_file", status: "DENIED", input: { path: ["path"], equals: "test/zero.test.js" } } }),
+    1,
+  );
   assert.equal(pullRequests.length, 1);
   assert.match(prComments.at(-1).body, /Pushed a commit for the feedback above/);
   assert.match(ticketComments.at(-1), /Pushed a commit for your feedback to https:\/\/code-host\.invalid/);

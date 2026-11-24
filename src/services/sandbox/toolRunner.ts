@@ -74,6 +74,15 @@ export const runRecordedTool = async (
   return outcome;
 };
 
+/**
+ * The commit whose test files are locked. A follow-up round starts at the PR's
+ * head, but tests the PR itself added are the agent's own work under review and
+ * may change; tests from before the PR may not (dynamic-csv PR #15, round 1).
+ */
+export const lockedTestsCommit = async (executionId: string) =>
+  (await prisma.execution.findUnique({ where: { id: executionId }, select: { parentExecution: { select: { baseSha: true } } } }))
+    ?.parentExecution?.baseSha ?? "HEAD";
+
 /** The tool context for an execution, from its repository's settings and toolchain. */
 export const executionToolContext = async (
   executionId: string,
@@ -87,6 +96,8 @@ export const executionToolContext = async (
   // The sandbox has them as env; only masking needs the values here.
   const secrets = Object.values(await testSecretsOf(repository.id));
   const baseFiles = new Set(await trackedFiles(executionId));
+  const lockedAt = await lockedTestsCommit(executionId);
+  const lockedFiles = lockedAt === "HEAD" ? baseFiles : new Set(await trackedFiles(executionId, lockedAt));
   // An attempt that continues from kept changes already passed the gate.
   const newTest = (await changedFiles(executionId)).some((file) => isTestFile(toolchain, file) && !baseFiles.has(file));
   return {
@@ -102,8 +113,8 @@ export const executionToolContext = async (
     // What the agent's commands write is its change: visible in the diff and policed there.
     runCommand: (command, timeoutMs) => execInSandbox(executionId, ["sh", "-c", command], timeoutMs, secrets),
     isTestFile: (file) => isTestFile(toolchain, file),
-    isBaseFile: (file) => baseFiles.has(file),
-    baseContent: (file) => baseFileContent(executionId, file),
+    isBaseFile: (file) => lockedFiles.has(file),
+    baseContent: (file) => baseFileContent(executionId, file, lockedAt),
     reproduction: { shown: newTest, newTest },
     limits: {
       maxOutputChars: policy?.maxToolOutputChars,

@@ -366,6 +366,7 @@ test("a ticket goes from the tracker to a completed draft PR through every stage
   assert.ok(agentPrompt, "the run's prompts carry the follow-up note");
   assert.match(agentPrompt, /> Also export subtract\(a, b\)\./);
   assert.match(agentPrompt, /^- test\/sum\.test\.js: added by this pull request$/m, "the round is told which tests are its PR's own");
+  assert.match(agentPrompt, /"firstChange": \{/, "the round reads the first change's plan as context, not as its target");
   assert.match(agentPrompt, /On src\/math\.js line 1, the diff the reviewer saw:\n> @@ -1 \+1 @@/);
   assert.doesNotMatch(model.prompts.join("\n"), /mallory|\.env file/);
   const feedback = await prisma.executionFeedback.findMany({ where: { executionId: root.id } });

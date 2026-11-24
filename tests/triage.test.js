@@ -66,3 +66,13 @@ test("the approved plan carries the ticket's stated requirements, numbered, so t
   assert.equal(numberedRequirements(["a", "b"]), "1. a\n2. b");
   assert.match(numberedRequirements([]), /^None/);
 });
+
+// Dynamic-csv PRs #20, #23, #27: 7 of 7 rejections held a round to the first plan's example, which the review had replaced.
+test("a follow-up round gets the first change's plan under firstChange, so none of its examples or requirements is the round's target", () => {
+  const plan = stored(1, { ...planFromReply({ summary: "Name the file.", expectedBehaviour: ["old message"], filesToEdit: ["f"] }, "t"), requirements: ["Keep the old message"] }, "h");
+  const round = JSON.parse(describeApprovedPlan(plan, undefined, true));
+  assert.deepEqual(Object.keys(round), ["firstChange"]);
+  assert.deepEqual(round.firstChange.expectedBehaviour, ["old message"]);
+  assert.deepEqual(round.firstChange.requirements, ["1. Keep the old message"]);
+  assert.deepEqual(JSON.parse(describeApprovedPlan(plan, undefined)).expectedBehaviour, ["old message"], "a first change keeps its plan at the top level");
+});

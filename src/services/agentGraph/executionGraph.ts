@@ -413,7 +413,7 @@ const loadExecutionContext = async (
   const approvedPlan = execution.plans[0];
   const planTask = approvedPlan?.tasks[0];
   if (!planTask) throw new Error("Approved plan has no task");
-  const internalPlan = describeApprovedPlan(approvedPlan, execution.approvals[0]);
+  const internalPlan = describeApprovedPlan(approvedPlan, execution.approvals[0], Boolean(execution.parentExecutionId));
 
   // The commit the plan was made on; a plan submitted through the API has none yet.
   const sourceControl = await sourceControlFor(execution.repository);
@@ -510,7 +510,8 @@ const loadExecutionContext = async (
     baseSha,
     planTaskId: planTask.id,
     internalPlan,
-    requirements: storedPlan(approvedPlan).requirements,
+    // The first change's requirements are already met on the PR; a round answers its feedback, not them.
+    requirements: execution.parentExecutionId ? [] : storedPlan(approvedPlan).requirements,
     ...calls,
     ticket,
     agentMode,

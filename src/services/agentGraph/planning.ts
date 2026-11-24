@@ -240,20 +240,19 @@ const listRequirements = async (ctx: CallContext, ticket: string) => {
 };
 
 /** The approved plan as the run's agent, analysis and reviewer read it, with the approver's note. */
-export const describeApprovedPlan = (plan: Plan & { tasks: PlanTask[] }, approval: Approval | undefined) => {
+export const describeApprovedPlan = (plan: Plan & { tasks: PlanTask[] }, approval: Approval | undefined, followUpRound = false) => {
   // The questions were for the person; approving the plan settled them.
   const { summary, expectedBehaviour, filesToEdit, risk, testStrategy, requirements } = storedPlan(plan);
-  return JSON.stringify(
-    {
-      summary,
-      expectedBehaviour,
-      filesToEdit,
-      risk,
-      testStrategy,
-      ...(requirements.length ? { requirements: requirements.map((requirement, index) => `${index + 1}. ${requirement}`) } : {}),
-      ...(approval?.comment ? { approverNote: approval.comment } : {}),
-    },
-    null,
-    2,
-  );
+  const described = {
+    summary,
+    expectedBehaviour,
+    filesToEdit,
+    risk,
+    testStrategy,
+    ...(requirements.length ? { requirements: requirements.map((requirement, index) => `${index + 1}. ${requirement}`) } : {}),
+    ...(approval?.comment ? { approverNote: approval.comment } : {}),
+  };
+  // A round's plan is the first change's, already on the PR: kept out of the top level so its
+  // examples are not this round's target (7 of 7 rejections on dynamic-csv PRs #20, #23, #27).
+  return JSON.stringify(followUpRound ? { firstChange: described } : described, null, 2);
 };

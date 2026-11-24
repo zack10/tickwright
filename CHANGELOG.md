@@ -40,6 +40,7 @@ Prompt files keep their own versions (`src/prompts/execution/*.vN.md`).
 
 ### Fixed
 
+- **A follow-up round is judged by your feedback, not by the first change's plan.** When your review asked for something different from what the first change planned (a new error message, say), the round's reviewer could reject it for not matching the old plan. A round now reads that plan as the first change's, already on the pull request, and your feedback wins where they differ.
 - **Follow-up rounds no longer stop because their reviewer mistakes the pull request's own tests for yours.** A round is now told which test files its pull request added or changed. Its reviewer then judges changes to those tests as part of the work, not as changes to your repository's existing tests.
 - **Follow-up rounds can update the tests their own pull request added.** When a reviewer asked for behaviour that the pull request's first commit had already tested, the round stopped, because it was not allowed to change that test. Tests that were in your repository before the pull request stay protected as before.
 - **A tracker connection with missing settings is refused when you create it.** `POST /api/integrations` now answers 400 and names what is missing (for Trello: API key, token, board, label, or a valid repository id), instead of accepting the connection and failing quietly at the next poll. Existing connections are not affected.

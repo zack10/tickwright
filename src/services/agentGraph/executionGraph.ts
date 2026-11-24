@@ -36,6 +36,7 @@ import {
 } from "../sandbox/toolRunner";
 import {
   baseFileContent,
+  committedChangesSince,
   changedFiles,
   changes,
   runDocker,
@@ -483,7 +484,10 @@ const loadExecutionContext = async (
     data: { baseSha },
   });
   // A follow-up round's ticket also carries the feedback it addresses.
-  const { ticket, followUpPrompt } = await followUpTicket(execution, `${execution.workItem.title}\n${execution.workItem.description ?? ""}`);
+  const ownTests = root?.baseSha
+    ? (await committedChangesSince(execution.id, root.baseSha)).filter((change) => isTestFile(toolchain, change.file))
+    : [];
+  const { ticket, followUpPrompt } = await followUpTicket(execution, `${execution.workItem.title}\n${execution.workItem.description ?? ""}`, ownTests);
   await graphEvent(execution.id, "GRAPH_CONTEXT_LOADED", {
     repositoryId: execution.repositoryId,
     workItemId: execution.workItemId,

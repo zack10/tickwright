@@ -15,6 +15,7 @@ Prompt files keep their own versions (`src/prompts/execution/*.vN.md`).
 
 ### Added
 
+- **A pull request you corrected can become a test case for the agent.** After you edit the agent's pull request, add a test that shows what was wrong, and merge it, `npm run case:from-pr -- <execution id>` saves the ticket, the starting commit, your fix, your tests and the agent's change under `scratch/pr-cases/`. `npm run eval:reference -- case/<name> --check` proves the case for free (your tests fail without a fix, pass with yours and fail on the agent's), and the same command without `--check` runs the agent on it again. Only GitHub repositories with an approved environment (image and checks) are supported.
 - **Tickwright tells you when its pull request has a merge conflict.** When the target branch has moved and the agent's pull request no longer merges cleanly, a note on the pull request and the ticket says so and asks you to merge or rebase. Tickwright does not resolve conflicts itself. A branch that is only behind, without a conflict, needs nothing.
 - **Tickwright stops after 20 follow-up rounds on a pull request and hands it back to you.** Once a pull request has had its rounds, new reviews, replies or failed checks no longer start another; Tickwright says so once on the pull request and the ticket. The feedback is kept: raise `maxFollowUpRounds` in the repository's execution policy (0 turns rounds off) and the next check acts on it. A round that fixed a failed check now commits as "Fix the failing check".
 

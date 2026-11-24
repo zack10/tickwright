@@ -173,3 +173,13 @@ test("a merge conflict is handed back on the PR and the ticket once per commit o
   assert.match(comments[0].body, /merge conflict with `main`.*I don't resolve conflicts myself/);
   assert.doesNotMatch(formatConflictComment("main"), /Node|npm|JavaScript/);
 });
+
+test("a follow-up round locks tests as of its pull request's first base commit, so it may change the tests that pull request added", async (t) => {
+  const { lockedTestsCommit } = require("../dist/services/sandbox/toolRunner");
+  const real = prisma.execution;
+  t.after(() => (prisma.execution = real));
+  prisma.execution = { findUnique: async () => ({ parentExecution: { baseSha: "rootbase" } }) };
+  assert.equal(await lockedTestsCommit("round"), "rootbase");
+  prisma.execution = { findUnique: async () => ({ parentExecution: null }) };
+  assert.equal(await lockedTestsCommit("first-change"), "HEAD", "a first change locks the tests of the commit it starts from");
+});

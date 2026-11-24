@@ -40,6 +40,7 @@ Prompt files keep their own versions (`src/prompts/execution/*.vN.md`).
 
 ### Fixed
 
+- **Follow-up rounds can update the tests their own pull request added.** When a reviewer asked for behaviour that the pull request's first commit had already tested, the round stopped, because it was not allowed to change that test. Tests that were in your repository before the pull request stay protected as before.
 - **A tracker connection with missing settings is refused when you create it.** `POST /api/integrations` now answers 400 and names what is missing (for Trello: API key, token, board, label, or a valid repository id), instead of accepting the connection and failing quietly at the next poll. Existing connections are not affected.
 
 ### Changed

@@ -67,6 +67,8 @@ const execFileAsync = promisify(execFile);
 const PROJECTS_FILE = path.join(__dirname, "reference-projects", "projects.json");
 const TICKETS_DIR = path.join(__dirname, "reference-projects", "tickets");
 const CACHE_DIR = path.resolve(__dirname, "..", "..", "scratch", "reference-cache");
+// Gitignored: a case holds code of the repository its pull request was in.
+const CASES_DIR = path.resolve(__dirname, "..", "..", "scratch", "pr-cases");
 const REPORT_DIR = path.resolve(__dirname, "..", "..", "docs", "testing");
 // The plan step clones the repository and makes the triage and plan calls.
 const PLAN_TIMEOUT_MS = envInt("E2E_PLAN_TIMEOUT_MS", 600_000);
@@ -80,7 +82,11 @@ const docker = (args, options = {}) =>
   execFileAsync("docker", args, { maxBuffer: 50_000_000, timeout: 900_000, ...options });
 
 /** The benchmark instance a project is built from, downloaded once into scratch/. */
-const loadInstance = async ({ source }) => {
+const loadInstance = async ({ source, case: definition }) => {
+  if (definition) {
+    const [org, repo] = definition.repository.split("/");
+    return { org, repo, base: { sha: definition.baseSha }, resolved_issues: [definition.ticket], fix_patch: definition.fix };
+  }
   const file = path.join(CACHE_DIR, source.file.replace(/\//g, "__"));
   if (!fs.existsSync(file)) {
     const url = `https://huggingface.co/datasets/${source.dataset}/resolve/main/${source.file}`;
@@ -99,27 +105,161 @@ const loadInstance = async ({ source }) => {
   return instance;
 };
 
-/** The project's tracked files at the base commit, read from the benchmark image (no network needed). */
+/** The tracked files of a commit in a git directory, as { mode, content: Buffer }. */
+const readTree = async (dir, commit) => {
+  // "<mode> <type> <sha>\t<path>" at the base commit: the mode keeps executable scripts executable.
+  const { stdout: listed } = await execFileAsync("git", ["-C", dir, "ls-tree", "-r", "-z", commit], { maxBuffer: 50_000_000 });
+  const files = new Map();
+  for (const entry of listed.split("\0").filter(Boolean)) {
+    const [info, file] = entry.split("\t");
+    // The stored blob, not a checked-out file: git on Windows may convert line endings. Submodules are not blobs.
+    const [mode, type, sha] = info.split(" ");
+    if (type !== "blob") continue;
+    const { stdout: content } = await execFileAsync("git", ["-C", dir, "cat-file", "blob", sha], { encoding: "buffer", maxBuffer: 50_000_000 });
+    files.set(file, { mode, content });
+  }
+  return files;
+};
+
+// A case's base files, fetched once per run of the script.
+const caseTrees = new Map();
+
+/** The project's tracked files at the base commit: from the benchmark image (no network needed), or a case's repository. */
 const projectFiles = async (project, instance) => {
+  if (project.case) return caseFiles(project.case);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reference-"));
   const { stdout: container } = await docker(["create", project.grader.image]);
   try {
     // Only the git data: the working tree can hold build output with symlinks Windows can't create.
     await docker(["cp", `${container.trim()}:${project.grader.workdir}/.git`, path.join(dir, ".git")]);
-    // "<mode> <type> <sha>\t<path>" at the base commit: the mode keeps executable scripts executable.
-    const { stdout: listed } = await execFileAsync("git", ["-C", dir, "ls-tree", "-r", "-z", instance.base.sha], { maxBuffer: 50_000_000 });
-    const files = new Map();
-    for (const entry of listed.split("\0").filter(Boolean)) {
-      const [info, file] = entry.split("\t");
-      // The stored blob, not a checked-out file: git on Windows may convert line endings. Submodules are not blobs.
-      const [mode, type, sha] = info.split(" ");
-      if (type !== "blob") continue;
-      const { stdout: content } = await execFileAsync("git", ["-C", dir, "cat-file", "blob", sha], { encoding: "buffer", maxBuffer: 50_000_000 });
-      files.set(file, { mode, content });
-    }
-    return files;
+    return await readTree(dir, instance.base.sha);
   } finally {
     await docker(["rm", "-f", container.trim()]).catch(() => undefined);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+/** Cases written by `npm run case:from-pr`, as projects named case/<folder>. */
+const loadCases = () =>
+  (fs.existsSync(CASES_DIR) ? fs.readdirSync(CASES_DIR) : [])
+    .filter((folder) => fs.existsSync(path.join(CASES_DIR, folder, "case.json")))
+    .map((folder) => {
+      const dir = path.join(CASES_DIR, folder);
+      const definition = JSON.parse(fs.readFileSync(path.join(dir, "case.json"), "utf8"));
+      const read = (file) => fs.readFileSync(path.join(dir, file), "utf8");
+      const [, title, body] = /^# (.*)\n\n?([\s\S]*)$/.exec(read("ticket.md").replace(/\r\n/g, "\n")) ?? [];
+      const toolchain = definition.environment?.toolchain ?? {};
+      return {
+        id: `case/${folder}`,
+        language: toolchain.language ?? "not configured",
+        environment: definition.environment,
+        executionPolicy: definition.executionPolicy,
+        // shortcut: grading needs a configured image; a devcontainer or the default image would need the app's resolution.
+        grader: { image: toolchain.image },
+        case: {
+          ...definition,
+          dir,
+          ticket: { number: definition.pullRequest, title, body: body.trim() },
+          fix: read("fix.patch"),
+          hidden: read("hidden.patch"),
+          agent: definition.agentPatches.map(read),
+        },
+      };
+    });
+
+/** A case's repository at its base commit, fetched with the e2e GitHub token. */
+const caseFiles = async (definition) => {
+  if (!caseTrees.has(definition.baseSha)) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reference-case-"));
+    try {
+      const auth = ["-c", `http.extraHeader=Authorization: Basic ${Buffer.from(`x-access-token:${env("E2E_GITHUB_TOKEN")}`).toString("base64")}`];
+      await execFileAsync("git", ["-C", dir, "init", "-q"]);
+      await execFileAsync("git", ["-C", dir, ...auth, "fetch", "-q", "--depth", "1", definition.cloneUrl, definition.baseSha], { timeout: 600_000 });
+      caseTrees.set(definition.baseSha, await readTree(dir, definition.baseSha));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+  return caseTrees.get(definition.baseSha);
+};
+
+/** The files a patch changes, as "a/" and "b/" paths. */
+const patchedFiles = (patch) => [...patch.matchAll(/^diff --git a\/(.+) b\/(.+)$/gm)].flatMap(([, before, after]) => [before, after]);
+
+/**
+ * Grades a case as the run's own verification judges a change: the case's
+ * environment, setup with network, then every check without; it passes when
+ * each check exits 0. The candidate diffs are applied in order to the base
+ * files, then the hidden tests over the base version of their files.
+ */
+const gradeCase = async (project, diffs) => {
+  const definition = project.case;
+  const toolchain = definition.environment?.toolchain ?? {};
+  if (!toolchain.image || !Object.keys(toolchain.checks ?? {}).length)
+    throw new Error(`${project.id}: the case's environment has no configured image and checks`);
+  const base = await caseFiles(definition);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reference-grade-"));
+  let container;
+  try {
+    for (const [file, { mode, content }] of base) {
+      fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+      fs.writeFileSync(path.join(dir, file), content, { mode: mode === "100755" ? 0o755 : 0o644 });
+    }
+    const apply = async (patch) => {
+      const file = path.join(os.tmpdir(), `reference-grade-${crypto.randomUUID()}.patch`);
+      fs.writeFileSync(file, patch);
+      try {
+        await execFileAsync("git", ["apply", "--whitespace=nowarn", file], { cwd: dir });
+      } finally {
+        fs.rmSync(file, { force: true });
+      }
+    };
+    const envArgs = Object.entries(toolchain.env ?? {}).flatMap(([name, value]) => ["-e", `${name}=${value}`]);
+    // shortcut: setup secrets and Compose services are not given to the grader; such repositories cannot be graded yet.
+    ({ stdout: container } = await docker(["create", "--cpus", "2", "--memory", "3g", ...envArgs, "-w", "/workspace", "--entrypoint", "sleep", toolchain.image, "infinity"]));
+    container = container.trim();
+    await docker(["cp", `${dir}/.`, `${container}:/workspace`]);
+    await docker(["start", container]);
+    let output = "";
+    const exec = async (command, timeout) => {
+      try {
+        const { stdout, stderr } = await docker(["exec", container, ...command], { timeout });
+        output += stdout + stderr;
+        return true;
+      } catch (error) {
+        output += `${error.stdout ?? ""}${error.stderr ?? ""}\nexit ${error.code}\n`;
+        return false;
+      }
+    };
+    // On the base files, as the run's verification does: a setup that runs the tests would otherwise fail on the hidden ones.
+    if (toolchain.setup && !(await exec(toolchain.setup, 3_600_000))) throw new Error(`${project.id}: setup fails on the base commit\n${output.slice(-1500)}`);
+
+    for (const diff of diffs.filter((candidate) => candidate.trim()))
+      try {
+        await apply(diff);
+      } catch (error) {
+        return { applied: false, output: String(error.stderr || error.message).slice(-1500) };
+      }
+    // As gradeDiff: an agent that added its test to a hidden test file must not stop the hidden tests applying.
+    for (const file of new Set(patchedFiles(definition.hidden))) {
+      const target = path.join(dir, file);
+      if (base.has(file)) fs.writeFileSync(target, base.get(file).content);
+      else fs.rmSync(target, { force: true });
+    }
+    try {
+      await apply(definition.hidden);
+    } catch (error) {
+      return { applied: false, output: `the hidden test patch no longer applies\n${String(error.stderr || error.message).slice(-1500)}` };
+    }
+    await docker(["cp", `${dir}/.`, `${container}:/workspace`]);
+    const deleted = [...base.keys()].filter((file) => !fs.existsSync(path.join(dir, file)));
+    if (deleted.length) await docker(["exec", container, "rm", "-f", "--", ...deleted]);
+    await docker(["network", "disconnect", "bridge", container]);
+    const failed = [];
+    for (const [name, command] of Object.entries(toolchain.checks)) if (!(await exec(command, 1_800_000))) failed.push(name);
+    return { applied: true, passed: !failed.length, failToPass: failed, passToPass: [], output: output.slice(-1500) };
+  } finally {
+    if (container) await docker(["rm", "-f", container]).catch(() => undefined);
     fs.rmSync(dir, { recursive: true, force: true });
   }
 };
@@ -156,6 +296,7 @@ const pushProject = async (files, message, repo) => {
  * the project sets grader.resultPattern (a regex with name and status groups).
  */
 const gradeDiff = async (project, instance, diff) => {
+  if (project.case) return gradeCase(project, [diff]);
   const patchDir = fs.mkdtempSync(path.join(os.tmpdir(), "reference-patch-"));
   try {
     fs.writeFileSync(path.join(patchDir, "agent.diff"), diff);
@@ -401,6 +542,8 @@ const main = async () => {
   const missing = skipUnless([...PIPELINE_ENV, "E2E_GITHUB_TOKEN"]);
   if (missing) throw new Error(missing);
   let projects = JSON.parse(fs.readFileSync(PROJECTS_FILE, "utf8"));
+  // Cases from corrected PRs run only when named, so a run of every project never includes them.
+  if (wanted.some((id) => id.startsWith("case/"))) projects.push(...loadCases());
   if (wanted.length) projects = projects.filter((project) => wanted.some((id) => project.id.startsWith(id)));
   // Held-out tickets run only at a phase gate, so nothing is tuned on them; --check may still prove them gradeable.
   if (!check && !args.includes("--held-out")) projects = projects.filter((project) => !project.heldOut);
@@ -428,6 +571,11 @@ const main = async () => {
       const fix = await gradeDiff(project, instance, instance.fix_patch);
       const none = await gradeDiff(project, instance, "");
       log(`${project.id}: ${files.size} files; known fix ${fix.passed ? "passes" : `FAILS (${[...(fix.failToPass ?? []), ...(fix.passToPass ?? [])].join(", ") || fix.output})`}; unchanged code ${none.passed ? "PASSES (instance is not valid)" : `fails as expected (${none.failToPass.join(", ")})`}`);
+      if (project.case) {
+        // The person's tests must catch what they corrected, or the case measures nothing.
+        const agent = await gradeCase(project, project.case.agent);
+        log(`${project.id}: the agent's published change ${agent.passed ? "PASSES the hidden tests (case is not valid: add a test that fails on it)" : agent.applied ? `fails as expected (${agent.failToPass.join(", ")})` : `does not apply (${agent.output.trim().slice(0, 300)})`}`);
+      }
     }
     return;
   }
@@ -474,4 +622,4 @@ if (require.main === module)
     process.exitCode = 1;
   });
 
-module.exports = { gradeDiff, loadInstance, loadTicket, projectFiles, writeReport };
+module.exports = { gradeCase, gradeDiff, loadCases, loadInstance, loadTicket, projectFiles, writeReport };

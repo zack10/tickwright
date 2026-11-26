@@ -239,4 +239,4 @@ if (require.main === module)
     process.exitCode = 1;
   });
 
-module.exports = { createTrace, render, renderCall };
+module.exports = { createTrace, query, render, renderCall, rows };

@@ -6,6 +6,7 @@ import { ReviewLineComment } from "../integrations/types";
 import { EXECUTION_PROMPTS, executionPromptFragment } from "../prompts";
 import { describeError } from "../utils/safeError";
 import { graphEvent } from "./agentGraph/agentCalls";
+import type { RepositoryPolicy } from "./agentGraph/repoPolicy";
 import { createFollowUpExecution } from "./executionService";
 import { commentOnWorkItem } from "./ingestionService";
 import type { Finding } from "./sandbox/tools";
@@ -26,6 +27,9 @@ export const MAX_FEEDBACK_PER_ROUND = 20;
 // Rounds per pull request unless Repository.executionPolicy.maxFollowUpRounds says otherwise; a check the agent cannot fix would start one after every push. 20 so people's own review cycles are rarely cut short (chosen 2026-11-23).
 export const DEFAULT_MAX_FOLLOW_UP_ROUNDS = 20;
 const ROUND_LIMIT_EVENT = "FOLLOW_UP_LIMIT_REACHED";
+// Rounds a review bot may start by itself per pull request (executionPolicy.maxBotRounds): each push can make the bot review again, so two agents would otherwise loop (step 10b, 2026-11-26).
+export const DEFAULT_MAX_BOT_ROUNDS = 2;
+const BOT_ROUND_LIMIT_EVENT = "BOT_ROUND_LIMIT_REACHED";
 
 const CONFLICT_EVENT = "PULL_REQUEST_CONFLICT";
 
@@ -64,6 +68,21 @@ export const formatRoundLimitComment = (rounds: number) =>
     ? `**I've made ${rounds} follow-up round${rounds === 1 ? "" : "s"} on this pull request, the limit for this repository.** `
     : "**Follow-up rounds are turned off for this repository.** ") +
   "Over to you: change the branch yourself, or raise `maxFollowUpRounds` in the repository's execution policy and I'll act on the feedback that is waiting.";
+
+export const formatBotRoundLimitComment = (rounds: number) =>
+  `**Review bots have started ${rounds} rounds on this pull request, the most this repository allows (\`maxBotRounds\`).** ` +
+  "Their new findings wait: ask for changes on the pull request or the ticket and the next round checks them too, or raise `maxBotRounds` in the repository's execution policy.";
+
+/** Rounds of a pull request that no request started: a review bot's findings did (a canceled one does not count, as for maxFollowUpRounds). */
+const botStartedRounds = async (rootId: string) => {
+  const rounds = await prisma.execution.findMany({ where: { parentExecutionId: rootId, status: { not: "CANCELED" } }, select: { id: true } });
+  const requested = await prisma.executionFeedback.findMany({
+    where: { executionId: rootId, requestsChanges: true, addressedByExecutionId: { not: null } },
+    select: { addressedByExecutionId: true },
+  });
+  const byRequest = new Set(requested.map((item) => item.addressedByExecutionId));
+  return rounds.filter((round) => !byRequest.has(round.id)).length;
+};
 
 const quote = (text: string) =>
   text
@@ -242,7 +261,7 @@ export const followUpTicket = async (
 };
 
 /** What a round addresses, as the ticket and the pull request are told. */
-export const formatFollowUpComment = (round: number, items: Pick<ExecutionFeedback, "source" | "author" | "body" | "requestsChanges">[]) =>
+export const formatFollowUpComment = (round: number, items: (Pick<ExecutionFeedback, "source" | "author" | "body" | "requestsChanges"> & { fromBot?: boolean })[]) =>
   [
     `**Working on your feedback (round ${round}).** I'll change the pull request's branch and ask you to approve the new diff before pushing it.`,
     // A set: the same check failing on two commits is one line.
@@ -255,12 +274,18 @@ export const formatFollowUpComment = (round: number, items: Pick<ExecutionFeedba
             : `- ${origin(item)}: ${item.body.trim().split("\n")[0].slice(0, 200) || "line comments"}`,
         ),
     ),
+    // A bot's text is not repeated: one line per bot with its count of findings.
+    ...[...items.filter((item) => item.fromBot).reduce((bots, item) => bots.set(item.author, (bots.get(item.author) ?? 0) + 1), new Map<string, number>())].map(
+      ([author, count]) => `- ${count} finding${count === 1 ? "" : "s"} from the review bot ${author}: I'll check each one and answer it in its thread.`,
+    ),
   ].join("\n");
 
 /**
  * Starts a round for every pull request that has feedback asking for changes
  * and no round running. The pull request must still be open on the host:
- * feedback can be stored before the poll that records a merge.
+ * feedback can be stored before the poll that records a merge. A listed review
+ * bot's findings start one by themselves only where the repository allows it
+ * (executionPolicy.botRoundsStart), up to maxBotRounds per pull request.
  */
 export const startFollowUps = async () => {
   const roots = await prisma.execution.findMany({
@@ -270,7 +295,7 @@ export const startFollowUps = async () => {
       branchName: { not: null },
       artifacts: { some: { type: "PULL_REQUEST" } },
       events: { none: { type: OUTCOME_EVENT } },
-      feedback: { some: { addressedByExecutionId: null, requestsChanges: true } },
+      feedback: { some: { addressedByExecutionId: null, OR: [{ requestsChanges: true }, { fromBot: true }] } },
       followUps: { none: { status: { notIn: ENDED } } },
     },
     include: {
@@ -278,6 +303,8 @@ export const startFollowUps = async () => {
       workItem: true,
       artifacts: { where: { type: "PULL_REQUEST" }, orderBy: { createdAt: "asc" }, take: 1 },
       feedback: { where: { addressedByExecutionId: null }, orderBy: { writtenAt: "asc" }, take: MAX_FEEDBACK_PER_ROUND },
+      // Counted apart from the 20 above, so a request behind many findings still counts as one.
+      _count: { select: { feedback: { where: { addressedByExecutionId: null, requestsChanges: true } } } },
     },
   });
   let started = 0;
@@ -285,11 +312,15 @@ export const startFollowUps = async () => {
     try {
       const number = (root.artifacts[0]?.metadata as { number?: unknown } | null)?.number;
       if (typeof number !== "number" || !root.branchName) continue;
+      const policy = root.repository.executionPolicy as RepositoryPolicy | null;
+      // Only findings wait: a bot starts the round, if this repository lets it (off by default).
+      const byBot = !root._count.feedback;
+      if (byBot && !policy?.botRoundsStart) continue;
       const sourceControl = await sourceControlFor(root.repository);
       if ((await sourceControl.pullRequestOutcome(number)).state !== "OPEN") continue;
       // Every round that ran counts, failed or blocked ones too (each was paid for); a canceled one does not.
       const rounds = await prisma.execution.count({ where: { parentExecutionId: root.id, status: { not: "CANCELED" } } });
-      const limit = (root.repository.executionPolicy as { maxFollowUpRounds?: number } | null)?.maxFollowUpRounds ?? DEFAULT_MAX_FOLLOW_UP_ROUNDS;
+      const limit = policy?.maxFollowUpRounds ?? DEFAULT_MAX_FOLLOW_UP_ROUNDS;
       if (rounds >= limit) {
         // Once per count of rounds: raising the limit and using it up again hands back again.
         const told = await prisma.executionEvent.count({ where: { executionId: root.id, type: ROUND_LIMIT_EVENT, payload: { path: ["rounds"], equals: rounds } } });
@@ -303,6 +334,22 @@ export const startFollowUps = async () => {
           console.error(`Round limit note on the pull request failed for ${root.id}: ${describeError(error)}`),
         );
         continue;
+      }
+      if (byBot) {
+        const botRounds = await botStartedRounds(root.id);
+        if (botRounds >= (policy?.maxBotRounds ?? DEFAULT_MAX_BOT_ROUNDS)) {
+          const told = await prisma.executionEvent.count({ where: { executionId: root.id, type: BOT_ROUND_LIMIT_EVENT, payload: { path: ["rounds"], equals: botRounds } } });
+          if (told) continue;
+          await graphEvent(root.id, BOT_ROUND_LIMIT_EVENT, { rounds: botRounds, limit: policy?.maxBotRounds ?? DEFAULT_MAX_BOT_ROUNDS });
+          const note = formatBotRoundLimitComment(botRounds);
+          await commentOnWorkItem(root.projectId, root.workItem, note).catch((error) =>
+            console.error(`Bot round limit note on the ticket failed for ${root.id}: ${describeError(error)}`),
+          );
+          await sourceControl.commentOnPullRequest(number, note).catch((error) =>
+            console.error(`Bot round limit note on the pull request failed for ${root.id}: ${describeError(error)}`),
+          );
+          continue;
+        }
       }
       const head = await sourceControl.branchHead(root.branchName);
       const created = await createFollowUpExecution(root, root.feedback.map((item) => item.id), head);

@@ -24,6 +24,10 @@ export interface RepositoryPolicy {
   maxFileBytes?: number;
   /** Follow-up rounds per pull request before the agent hands back; default DEFAULT_MAX_FOLLOW_UP_ROUNDS (20), 0 turns them off. */
   maxFollowUpRounds?: number;
+  /** A listed review bot's findings start a round by themselves; default off, so a person starts every round. */
+  botRoundsStart?: boolean;
+  /** Rounds review bots may start per pull request, within maxFollowUpRounds; default DEFAULT_MAX_BOT_ROUNDS (2). */
+  maxBotRounds?: number;
 }
 
 /** The policy's container and check limits; what the workspace functions take. */

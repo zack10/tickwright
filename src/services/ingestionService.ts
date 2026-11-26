@@ -26,7 +26,12 @@ export const syncIntegrationConnection = async (connectionId: string) => {
     );
 
   const trackerConfig = openIntegrationConfig(connection.encryptedConfig);
-  const { repositoryId, items } = await adapter.fetchEligibleItems(trackerConfig);
+  // A failed fetch (a renamed ready list, a tracker outage) must not stop replies on running tickets being read.
+  let fetchError: unknown;
+  const { repositoryId, items } = await adapter.fetchEligibleItems(trackerConfig).catch((error: unknown) => {
+    fetchError = error;
+    return { repositoryId: "", items: [] };
+  });
   let ingested = 0;
   for (const item of items) {
     const fields = {
@@ -71,6 +76,8 @@ export const syncIntegrationConnection = async (connectionId: string) => {
   await handleTicketReplies(adapter, trackerConfig);
   // Approvers' feedback on tickets whose pull request is open.
   if (await collectTicketFeedback(adapter, trackerConfig)) await startFollowUps();
+  // The poller records it as the connection's lastError.
+  if (fetchError) throw fetchError;
   await prisma.integrationConnection.update({
     where: { id: connectionId },
     data: { lastSyncedAt: new Date(), lastError: null },

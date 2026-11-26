@@ -183,6 +183,8 @@ const ensureFixtures = async ({ repo = env("E2E_GITHUB_REPO"), label = env("E2E_
     token: env("E2E_TRELLO_TOKEN"),
     boardId: env("E2E_TRELLO_BOARD_ID"),
     eligibleLabel: label,
+    // The list createCard puts cards in.
+    eligibleLists: [(await trello("GET", `/lists/${env("E2E_TRELLO_LIST_ID")}`, { fields: "name" })).name],
     repositoryId: repository.id,
   };
   const integrationName = `e2e-trello-${crypto.createHash("sha256").update(JSON.stringify(trelloConfig)).digest("hex").slice(0, 12)}`;

@@ -34,6 +34,7 @@ export const createRepository = asyncHandler(
       connectionId,
       githubInstallationId,
       reviewers,
+      reviewBots,
       verificationConfig,
       executionPolicy,
     } = req.body;
@@ -54,6 +55,7 @@ export const createRepository = asyncHandler(
         connectionId,
         githubInstallationId,
         reviewers,
+        reviewBots,
         verificationConfig,
         executionPolicy,
       },
@@ -64,13 +66,14 @@ export const createRepository = asyncHandler(
 /** Sets a repository's environment, policy, setup or test secrets; later executions use them. */
 export const updateRepository = asyncHandler(
   async (req: Request, res: Response) => {
-    const { verificationConfig, executionPolicy, reviewers, setupSecrets, testSecrets, environmentProposal } = req.body;
+    const { verificationConfig, executionPolicy, reviewers, reviewBots, setupSecrets, testSecrets, environmentProposal } = req.body;
     const repository = await prisma.repository.update({
       where: { id: req.params.id },
       data: {
         verificationConfig,
         executionPolicy,
         reviewers,
+        reviewBots,
         // null discards a proposed environment, so the next run discovers one again.
         ...(environmentProposal === null ? { environmentProposal: Prisma.DbNull } : {}),
         ...(setupSecrets !== undefined ? { encryptedSetupSecrets: sealSetupSecrets(setupSecrets) } : {}),

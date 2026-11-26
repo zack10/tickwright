@@ -150,6 +150,15 @@ export const commentOnPullRequest = async (installationId: string, owner: string
   });
 };
 
+/** Replies in the thread of a line comment on the pull request's diff. */
+export const replyToReviewComment = async (installationId: string, owner: string, repo: string, number: number, commentId: string, body: string) => {
+  const token = await getInstallationToken(installationId);
+  await axios.post(`https://api.github.com/repos/${owner}/${repo}/pulls/${number}/comments/${commentId}/replies`, { body }, {
+    headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" },
+    timeout: 15000,
+  });
+};
+
 interface GithubCheckRun {
   id: number;
   name: string;
@@ -231,6 +240,7 @@ export const getCommitChecks = async (installationId: string, owner: string, rep
 interface GithubReview { id: number; state: string; body: string | null; submitted_at: string | null; user: { login: string; type: string } | null }
 interface GithubIssueComment { id: number; body: string | null; created_at: string; user: { login: string; type: string } | null }
 interface GithubReviewComment {
+  id: number;
   pull_request_review_id: number | null;
   path: string;
   line: number | null;
@@ -270,6 +280,7 @@ export const getReviewFeedback = async (installationId: string, owner: string, r
     comments: comments
       .filter((comment) => comment.pull_request_review_id === review.id)
       .map((comment) => ({
+        id: String(comment.id),
         path: comment.path,
         // GitHub drops `line` once later commits change the commented code.
         line: comment.line ?? comment.original_line ?? 0,
@@ -327,4 +338,6 @@ export const githubSourceControl: SourceControlAdapter = {
     commentOnPullRequest(installationOf(target), target.repository.owner, target.repository.name, number, body),
   reviewFeedback: async (target, number) =>
     getReviewFeedback(installationOf(target), target.repository.owner, target.repository.name, number),
+  replyToReviewComment: async (target, number, commentId, body) =>
+    replyToReviewComment(installationOf(target), target.repository.owner, target.repository.name, number, commentId, body),
 };

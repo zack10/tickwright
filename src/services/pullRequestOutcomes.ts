@@ -7,7 +7,7 @@ import { sourceControlFor } from "../integrations/sourceControl";
 import { describeError } from "../utils/safeError";
 import { hashSnapshot } from "./executionService";
 import { collectCheckFeedback, collectReviewFeedback } from "./feedbackIntake";
-import { handBackConflict, startFollowUps } from "./followUps";
+import { handBackConflict, retryFindingReplies, startFollowUps } from "./followUps";
 
 export const OUTCOME_EVENT = "PULL_REQUEST_OUTCOME";
 // shortcut: PRs left open longer than this are never recorded; raise it if teams review that slowly.
@@ -59,7 +59,8 @@ export const recordPullRequestOutcomes = async () => {
       repository: true,
       workItem: true,
       artifacts: { where: { type: { in: ["PULL_REQUEST", "DIFF"] } }, orderBy: { createdAt: "desc" } },
-      _count: { select: { followUps: { where: { status: "COMPLETED" } } } },
+      // Rounds that pushed a commit; one that only answered findings changed nothing.
+      _count: { select: { followUps: { where: { status: "COMPLETED", artifacts: { some: { type: "PULL_REQUEST" } } } } } },
     },
     orderBy: { completedAt: "asc" },
     take: 50,
@@ -75,6 +76,7 @@ export const recordPullRequestOutcomes = async () => {
         await collectReviewFeedback(execution, sourceControl, number);
         if (execution.branchName) await collectCheckFeedback(execution, sourceControl, await sourceControl.branchHead(execution.branchName));
         if (outcome.conflict) await handBackConflict(execution, sourceControl, number, outcome.conflict);
+        await retryFindingReplies(execution.id, sourceControl, number);
         continue;
       }
 

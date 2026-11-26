@@ -592,3 +592,24 @@ test("a rejecting verdict carries the missing tests it names; an approving one c
   assert.equal(approved.verdict.missingTests, undefined);
   assert.equal((await review({ ...allYes, issues: [], summary: "s" })).verdict.approved, true, "missingTests is optional");
 });
+
+test("answer_finding is offered only with findings, and marks a finding fixed only after a new test failed and with a test the round wrote", async (t) => {
+  const { ANSWER_FINDING_TOOL } = require("../dist/services/sandbox/tools");
+  assert.ok(!SANDBOX_TOOLS.some((tool) => tool.name === "answer_finding"), "a run without findings does not see the tool");
+  const findings = [{ number: 2, feedbackId: "f2" }, { number: 3, feedbackId: "f3" }];
+  const { ctx, root } = workspace(t, { findings, reproduction: { shown: false, newTest: false }, changedTestFiles: async () => ["tests/rows.test.js"] });
+  fs.writeFileSync(path.join(root, "tests/rows.test.js"), 'test("reports the header as the header", () => {});\n');
+  const answer = (args) => executeTool(ctx, "answer_finding", args, [...SANDBOX_TOOLS, ANSWER_FINDING_TOOL]);
+
+  assert.match((await answer({ feedback: 1, verdict: "not_changed", reason: "x" })).output, /not a finding from a review bot\. Findings in this round: 2, 3/);
+  assert.match((await answer({ feedback: 2, verdict: "fixed", reason: "real", test: "reports the header as the header" })).output, /only after a new test failed/);
+  ctx.reproduction.shown = true;
+  assert.match((await answer({ feedback: 2, verdict: "fixed", reason: "real" })).output, /names the test/);
+  assert.match((await answer({ feedback: 2, verdict: "fixed", reason: "real", test: "a test nobody wrote" })).output, /No new or changed test file/);
+  assert.equal((await answer({ feedback: 2, verdict: "fixed", reason: "real", test: "reports the header as the header" })).status, "COMPLETED");
+  assert.equal((await answer({ feedback: 3, verdict: "not_changed", reason: "src/math.js:2 already rejects it", test: "ignored" })).status, "COMPLETED");
+  assert.deepEqual(findings.map((finding) => finding.answer), [
+    { verdict: "fixed", reason: "real", test: "reports the header as the header" },
+    { verdict: "not_changed", reason: "src/math.js:2 already rejects it" },
+  ]);
+});

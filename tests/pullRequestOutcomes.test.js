@@ -61,7 +61,9 @@ registerSourceControlAdapter({
 
 const stubDatabase = (t, executions) => {
   const saved = { artifacts: [], events: [] };
-  const real = { execution: prisma.execution, $transaction: prisma.$transaction };
+  const real = { execution: prisma.execution, executionFeedback: prisma.executionFeedback, $transaction: prisma.$transaction };
+  // No round has answers waiting to be posted; followUps.test.js covers them.
+  prisma.executionFeedback = { findMany: async () => [] };
   const tx = {
     artifact: { create: async ({ data }) => saved.artifacts.push(data) },
     executionEvent: {

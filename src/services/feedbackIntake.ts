@@ -10,7 +10,8 @@ import { isAgentComment, isApprover } from "./ticketConversation";
  * Rules for untrusted text (roadmap Phase 7, limitation 23). Feedback on the
  * agent's open pull request is read only from people a person listed: the
  * tracker connection's `approvers` for ticket replies, `Repository.reviewers`
- * for code-host reviews. Text from anyone else, from bots and from the agent
+ * for code-host reviews, `Repository.reviewBots` for review bots' findings
+ * (step 10). Text from anyone else, from other bots and from the agent
  * itself is never stored, so it can never reach a prompt. What is stored is
  * capped. Nothing here starts work: a follow-up execution (step 4b) does,
  * through the same policy, verification, review and publish approval.
@@ -50,6 +51,7 @@ type FeedbackRow = {
   /** Whether it starts a new round of changes (step 4b), or is context for the next one. */
   requestsChanges: boolean;
   writtenAt: Date;
+  fromBot?: boolean;
 };
 
 /** Stores each request once (polls see the same comments again); returns how many were new. */
@@ -66,17 +68,49 @@ const store = async (rows: FeedbackRow[]) => {
   return count;
 };
 
-/** The listed reviewers' reviews and conversation comments on an execution's open pull request. */
+/**
+ * A review bot listed by exact login (`Repository.reviewBots`, step 10). Its
+ * text reaches a round only as findings the agent checks one by one, and
+ * starts nothing (roadmap Phase 7, step 10).
+ */
+export const isListedBot = (review: Pick<ReviewFeedback, "author" | "authorIsBot">, bots: string[]) =>
+  review.authorIsBot && review.author !== "" && bots.some((bot) => bot.toLowerCase() === review.author.toLowerCase());
+
+/**
+ * One finding per line comment of a listed bot's review, so each gets its own
+ * verdict and reply; the summary of a review that has line comments says
+ * nothing they do not (Devin on dynamic-csv PR #38: "found 3 potential issues").
+ */
+const botFindings = (executionId: string, review: ReviewFeedback): FeedbackRow[] => {
+  const base = { executionId, source: "PR_REVIEW" as const, author: review.author, requestsChanges: false, fromBot: true };
+  if (!review.comments.length)
+    return review.body.trim() ? [{ ...base, externalId: review.id, body: review.body, writtenAt: review.submittedAt }] : [];
+  return review.comments.slice(0, MAX_LINE_COMMENTS).map((comment, index) => ({
+    ...base,
+    externalId: `${review.id}:${comment.id ?? index}`,
+    body: "",
+    comments: [comment],
+    // Keeps the review's order of its comments, which the round numbers its findings by.
+    writtenAt: new Date(review.submittedAt.getTime() + index),
+  }));
+};
+
+/** The listed reviewers' reviews and conversation comments, and listed bots' reviews, on an execution's open pull request. */
 export const collectReviewFeedback = async (
-  execution: { id: string; repository: { reviewers: string[] } },
+  execution: { id: string; repository: { reviewers: string[]; reviewBots?: string[] } },
   sourceControl: Pick<SourceControl, "reviewFeedback">,
   pullRequest: number,
 ) => {
   const { reviewers } = execution.repository;
+  const bots = execution.repository.reviewBots ?? [];
+  // Bots start nothing, so without a listed person no round would ever read them.
   if (!reviewers?.length) return 0;
-  const reviews = (await sourceControl.reviewFeedback(pullRequest)).filter((review) => isListedReviewer(review, reviewers));
-  return store(
-    reviews
+  const feedback = await sourceControl.reviewFeedback(pullRequest);
+  const reviews = feedback.filter((review) => isListedReviewer(review, reviewers));
+  // A bot's conversation comments are status notes (CI summaries, badges), not reviews.
+  const botReviews = feedback.filter((review) => !review.id.startsWith("comment:") && isListedBot(review, bots));
+  return store([
+    ...reviews
       // A review with neither a summary nor line comments asks for nothing in particular.
       .filter((review) => review.body.trim() || review.comments.length)
       .map((review) => ({
@@ -89,7 +123,8 @@ export const collectReviewFeedback = async (
         comments: review.comments,
         writtenAt: review.submittedAt,
       })),
-  );
+    ...botReviews.flatMap((review) => botFindings(execution.id, review)),
+  ]);
 };
 
 const ENDED: ExecutionStatus[] = ["COMPLETED", "BLOCKED", "FAILED", "CANCELED"];

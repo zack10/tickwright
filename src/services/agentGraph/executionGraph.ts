@@ -13,7 +13,7 @@ import {
   executionPromptFragment,
   renderExecutionPrompt,
 } from "../../prompts";
-import { NonRetryableError } from "../../utils/safeError";
+import { NonRetryableError, describeError } from "../../utils/safeError";
 import { parseAgentOutput } from "../../utils/llmUtils";
 import { ExecutionCanceledError, hashSnapshot, isCanceled } from "../executionService";
 import { DurableCheckpointSaver, prismaCheckpointStore } from "./checkpointer";
@@ -26,7 +26,7 @@ import {
   resolveAgentCalls,
 } from "./agentCalls";
 import type { CallModel, ReasoningEffortConfig } from "./agentCalls";
-import { RequestedTest, ReviewVerdict, SANDBOX_TOOLS, agentTestCheck, describeReproduction } from "../sandbox/tools";
+import { ANSWER_FINDING_TOOL, RequestedTest, ReviewVerdict, SANDBOX_TOOLS, agentTestCheck, describeReproduction } from "../sandbox/tools";
 import { REVIEW_MAX_TOKENS, reviewOutcome, runReviewer } from "./reviewer";
 import {
   executionToolContext,
@@ -84,7 +84,7 @@ import { ensureDiskSpace } from "../environmentSweep";
 import { fileActionsError } from "./outputFormat";
 import { RepoContext, collectRepoContext, instructionsOf } from "./repoContext";
 import { describeApprovedPlan, storedPlan } from "./planning";
-import { followUpTicket } from "../followUps";
+import { followUpTicket, onlyAnswers, replyToFindings, roundFindings, saveFindingAnswers } from "../followUps";
 import { RepositoryPolicy, checkExistingTests, checkRepositoryPolicy, onlyAddsLines } from "./repoPolicy";
 
 const MAX_ATTEMPTS = 3;
@@ -101,6 +101,7 @@ type GraphRoute =
   | "artifact"
   | "skipped"
   | "proceed"
+  | "answered"
   | undefined;
 
 const ExecutionGraphState = Annotation.Root({
@@ -684,6 +685,9 @@ const agentLoop = async (state: GraphState): Promise<typeof ExecutionGraphState.
   });
   const toolchain = requireToolchain(state);
   const ctx = await executionToolContext(state.executionId, execution.repository, toolchain, state.failingBefore, state.requestedTests);
+  // A follow-up round with review bots' findings answers each one (roadmap Phase 7, step 10).
+  if (execution.parentExecutionId) ctx.findings = await roundFindings(state.executionId);
+  const tools = ctx.findings?.length ? [...SANDBOX_TOOLS, ANSWER_FINDING_TOOL] : SANDBOX_TOOLS;
   const recorder = prismaToolCallRecorder(attempt.id);
   const prompt = renderExecutionPrompt("agent", {
     ticket,
@@ -731,12 +735,12 @@ const agentLoop = async (state: GraphState): Promise<typeof ExecutionGraphState.
       {
         system: prompt.system,
         task: prompt.user,
-        tools: SANDBOX_TOOLS,
+        tools,
         budget: attemptBudget,
       },
       {
         generate: (request) => askAgentWithTools(state, request, prompt.version),
-        runTool: (call) => runRecordedTool(ctx, call, recorder),
+        runTool: (call) => runRecordedTool(ctx, call, recorder, tools),
         hasChanges: async () => (await changedFiles(state.executionId)).length > 0,
         // One event per model call; full tool input and output are in ToolCall.
         onStep: async (step) => {
@@ -786,9 +790,15 @@ const agentLoop = async (state: GraphState): Promise<typeof ExecutionGraphState.
     (outcome.stopReason === "max_tokens" && tokensUsed >= state.maxTokens) ||
     (outcome.stopReason === "timeout" && Date.now() >= state.deadline);
   const changed = await changedFiles(state.executionId);
+  await saveFindingAnswers(ctx.findings);
   let failure: string;
   let keepChanges = false;
   if (outcome.stopReason === "done") {
+    // Every finding answered and none needed a change: the answers are the round's result.
+    if (!changed.length && onlyAnswers(ctx.findings)) {
+      await prisma.taskAttempt.update({ where: { id: attempt.id }, data: { status: "COMPLETED", completedAt: new Date() } });
+      return { attemptNumber, attemptId: attempt.id, attemptLog, keepChanges, route: "answered" as GraphRoute };
+    }
     if (changed.length > 0) {
       const codeChanged = changed.some((file) => !isTestFile(toolchain, file));
       const unmet = ctx.requestedTests?.unmet;
@@ -1101,6 +1111,30 @@ const blockExecution = async (state: typeof ExecutionGraphState.State) => {
   return {};
 };
 
+/**
+ * A follow-up round that answered every review-bot finding and changed
+ * nothing: it ends COMPLETED with its answers posted, no diff to approve
+ * (roadmap Phase 7, step 10).
+ */
+const answerFindings = async (state: typeof ExecutionGraphState.State) => {
+  const round = await prisma.execution.findUniqueOrThrow({
+    where: { id: state.executionId },
+    include: { workItem: true, repository: true, parentExecution: { include: { artifacts: { where: { type: "PULL_REQUEST" }, orderBy: { createdAt: "asc" }, take: 1 } } } },
+  });
+  const { count } = await prisma.execution.updateMany({
+    where: { id: state.executionId, status: { not: "CANCELED" } },
+    data: { status: "COMPLETED", branchName: round.parentExecution?.branchName ?? null, completedAt: new Date() },
+  });
+  if (!count) return {};
+  await graphEvent(state.executionId, "GRAPH_FINDINGS_ANSWERED", { attempts: state.attemptNumber });
+  const number = (round.parentExecution?.artifacts[0]?.metadata as { number?: unknown } | null)?.number;
+  if (typeof number === "number")
+    await replyToFindings(round, await sourceControlFor(round.repository), number, false).catch((error) =>
+      console.error(`Answers to findings failed for ${state.executionId}: ${describeError(error)}`),
+    );
+  return {};
+};
+
 const createDiffArtifact = async (state: typeof ExecutionGraphState.State) => {
   if (!state.attemptId || !state.verification) {
     throw new Error("Execution graph is missing successful attempt evidence");
@@ -1204,6 +1238,7 @@ const graph = new StateGraph(ExecutionGraphState)
   .addNode("review_diff", stoppable(reviewDiff))
   .addNode("block_execution", stoppable(blockExecution))
   .addNode("create_diff_artifact", stoppable(createDiffArtifact))
+  .addNode("answer_findings", stoppable(answerFindings))
   .addEdge(START, "load_context")
   .addConditionalEdges("load_context", (state: GraphState) => (state.route === "blocked" ? "blocked" : "inspect"), {
     inspect: "inspect_repo",
@@ -1222,6 +1257,7 @@ const graph = new StateGraph(ExecutionGraphState)
     implemented: "enforce_policy",
     retry: "analyze_failure",
     blocked: "block_execution",
+    answered: "answer_findings",
   })
   .addConditionalEdges("enforce_policy", routeAfterVerification, {
     verify: "verify_change",
@@ -1245,6 +1281,7 @@ const graph = new StateGraph(ExecutionGraphState)
   })
   .addEdge("block_execution", END)
   .addEdge("create_diff_artifact", END)
+  .addEdge("answer_findings", END)
   .compile({ checkpointer });
 
 const workspaceExists = async (executionId: string) =>

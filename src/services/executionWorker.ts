@@ -9,6 +9,7 @@ import { NonRetryableError, ReportableError, describeError } from "../utils/safe
 import { discardExecutionRun, runExecutionGraph } from "./agentGraph/executionGraph";
 import { planExecution } from "./agentGraph/planning";
 import { ExecutionCanceledError, hashSnapshot } from "./executionService";
+import { replyToFindings } from "./followUps";
 import { formatPlanComment, formatPublishComment, signed } from "./ticketConversation";
 import rabbitMQService from "./rabbitMQService";
 import { SetupFailedError, describeVerification, publishApprovedDiff } from "./workspaceService";
@@ -309,6 +310,9 @@ const publish = async (executionId: string) => {
       await sourceControl
         .commentOnPullRequest(pr.number, signed(`Pushed a commit for the feedback above.\n\n${describeVerification(diffArtifact.metadata)}`))
         .catch((error) => console.error(`Pull request comment failed for ${execution.id}: ${describeError(error)}`));
+      await replyToFindings(execution, sourceControl, pr.number, true).catch((error) =>
+        console.error(`Answers to findings failed for ${execution.id}: ${describeError(error)}`),
+      );
     } else if (!pr) {
       await publishApprovedDiff({
         executionId: execution.id,

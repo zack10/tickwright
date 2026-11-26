@@ -547,9 +547,9 @@ It then becomes the repository's `verificationConfig.toolchain`, and every later
 
 1. **GitHub App**: create one with *Contents* and *Pull requests* read/write, install it on the target repository, and set `GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY` (PEM on one line with `\n`).
 2. **Repository record**: `POST /api/repositories` with owner, name and installation ID. Its environment can be set in `verificationConfig`, or left to discovery and approved once (see [Repository environment](#repository-environment)).
-3. **Trello integration**: `POST /api/integrations` with `type: "TRELLO"` and config `apiKey`, `token`, `boardId`, `eligibleLabel`, `repositoryId`.
+3. **Trello integration**: `POST /api/integrations` with `type: "TRELLO"` and config `apiKey`, `token`, `boardId`, `eligibleLabel`, `eligibleLists` (the names of the lists whose cards are ready for the agent, e.g. `["Ready for Agent"]`), `repositoryId`. Change settings later with `PATCH /api/integrations/:id` and `{"config": {...}}`.
 4. **Agent**: `POST /api/agents` in the same project with `provider`, `model` and `config.apiKey`. The run uses the project's first agent.
-5. Label a card, then wait for the poller or call `POST /api/integrations/:id/sync`.
+5. Label a card in a ready list, then wait for the poller or call `POST /api/integrations/:id/sync`.
 6. Approve the plan and then the diff:
 
 ```json

@@ -1,4 +1,4 @@
-import { Prisma } from "@prisma/client";
+import { IntegrationType, Prisma } from "@prisma/client";
 import { Request, Response } from "express";
 import { config } from "../config";
 import prisma from "../db";
@@ -18,6 +18,7 @@ import { getTrackerAdapter } from "../integrations/trackerRegistry";
 import { syncIntegrationConnection } from "../services/ingestionService";
 import { sealSetupSecrets, sealTestSecrets } from "../services/setupSecrets";
 import {
+  openIntegrationConfig,
   redactIntegration,
   sealIntegrationConfig,
 } from "../services/integrationConfigService";
@@ -130,13 +131,37 @@ export const listRepositories = asyncHandler(
     );
   },
 );
+// Each tracker or code host knows the shape of its own config; a bad one fails here, not at the next poll.
+const checkIntegrationConfig = (type: IntegrationType, secretConfig: Record<string, unknown>) => {
+  const checked = (getTrackerAdapter(type) ?? getSourceControlAdapter(type))?.configSchema.safeParse(secretConfig);
+  if (checked && !checked.success)
+    throw AppError.badRequest(`Invalid ${type} connection config: ${checked.error.issues.map((issue) => `${issue.path.join(".")} ${issue.message}`).join("; ")}`);
+};
+
+/** Changes settings of a connection: the given config keys replace the stored ones, and the whole config is checked again. */
+export const updateIntegration = asyncHandler(
+  async (req: Request, res: Response) => {
+    const connection = await prisma.integrationConnection.findUnique({ where: { id: req.params.id } });
+    if (!connection) throw AppError.notFound("Integration not found");
+    const { config: changes, enabled } = req.body;
+    let encryptedConfig: { ciphertext: string } | undefined;
+    if (changes) {
+      const merged = { ...openIntegrationConfig(connection.encryptedConfig), ...changes };
+      checkIntegrationConfig(connection.type, merged);
+      encryptedConfig = sealIntegrationConfig(merged);
+    }
+    const updated = await prisma.integrationConnection.update({
+      where: { id: connection.id },
+      data: { ...(encryptedConfig ? { encryptedConfig } : {}), ...(enabled !== undefined ? { enabled } : {}) },
+    });
+    res.json(redactIntegration(updated));
+  },
+);
+
 export const createIntegration = asyncHandler(
   async (req: Request, res: Response) => {
     const { config: secretConfig, projectId, type, name } = req.body;
-    // Each tracker or code host knows the shape of its own config; a bad one fails here, not at the next poll.
-    const checked = (getTrackerAdapter(type) ?? getSourceControlAdapter(type))?.configSchema.safeParse(secretConfig);
-    if (checked && !checked.success)
-      throw AppError.badRequest(`Invalid ${type} connection config: ${checked.error.issues.map((issue) => `${issue.path.join(".")} ${issue.message}`).join("; ")}`);
+    checkIntegrationConfig(type, secretConfig);
     const connection = await prisma.integrationConnection.create({
       data: {
         projectId,

@@ -37,3 +37,26 @@ test("a ticket whose run opened its PR is not run again when the card changes, a
   assert.deepEqual(await syncIntegrationConnection("c"), { ingested: 1 });
   assert.deepEqual(created, ["wi-open:moved-open"]);
 });
+
+test("when the tracker's tickets cannot be fetched, replies on running tickets are still read and the error is reported", async () => {
+  setup([]);
+  registerTrackerAdapter({
+    type: "TRELLO",
+    externalSystem: "TRELLO",
+    fetchEligibleItems: async () => {
+      throw new Error('Trello list "Ready for Agent" is not on the board');
+    },
+  });
+  prisma.integrationConnection.findUniqueOrThrow = async () => ({
+    id: "c",
+    type: "TRELLO",
+    projectId: "p",
+    encryptedConfig: sealIntegrationConfig({ repositoryId: "repo", approvers: ["alice"] }),
+  });
+  const read = [];
+  prisma.execution.findMany = async ({ where }) => (read.push(where.status), []);
+
+  await assert.rejects(syncIntegrationConnection("c"), /"Ready for Agent" is not on the board/);
+  // Plan and publish replies, then feedback on open pull requests.
+  assert.equal(read.length, 2);
+});

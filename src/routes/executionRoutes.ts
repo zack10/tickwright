@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { IntegrationType } from '@prisma/client';
 import { z } from 'zod';
-import { approve, cancel, createIntegration, createPlan, createRepository, getExecution, updateRepository, approveEnvironment, getWorkItem, listExecutions, listIntegrations, listRepositories, listWorkItems, startExecution, syncIntegration } from '../controllers/executionController';
+import { approve, cancel, createIntegration, createPlan, createRepository, getExecution, updateRepository, approveEnvironment, getWorkItem, listExecutions, listIntegrations, listRepositories, listWorkItems, startExecution, syncIntegration, updateIntegration } from '../controllers/executionController';
 import { validate } from '../middleware/validate';
 import { TOOL_OUTPUT_CEILINGS } from '../services/sandbox/tools';
 import { verificationConfigSchema } from '../services/toolchain';
@@ -19,7 +19,9 @@ router.post('/repositories', validate(z.object({ body: z.object({ projectId: uui
 router.patch('/repositories/:id', validate(z.object({ params: z.object({ id: uuid }), body: z.object({ verificationConfig: verificationConfigSchema.optional(), executionPolicy: executionPolicySchema.optional(), reviewers: reviewersSchema.optional(), setupSecrets: secretsSchema.nullable().optional(), testSecrets: secretsSchema.nullable().optional(), environmentProposal: z.null().optional() }).strict().refine((body) => Object.keys(body).length > 0, 'nothing to update') })), updateRepository);
 router.post('/repositories/:id/environment/approve', validate(z.object({ params: z.object({ id: uuid }), body: z.object({ proposalHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict() })), approveEnvironment);
 router.get('/repositories', listRepositories);
-router.post('/integrations', validate(z.object({ body: z.object({ projectId: uuid, type: z.nativeEnum(IntegrationType), name: z.string().min(1), config: z.record(z.unknown()).refine((config) => config.approvers === undefined || (Array.isArray(config.approvers) && config.approvers.every((approver) => typeof approver === 'string' && approver.trim() !== '')), { message: 'approvers must be a list of tracker user names or ids', path: ['approvers'] }) }) })), createIntegration);
+const integrationConfig = z.record(z.unknown()).refine((config) => config.approvers === undefined || (Array.isArray(config.approvers) && config.approvers.every((approver) => typeof approver === 'string' && approver.trim() !== '')), { message: 'approvers must be a list of tracker user names or ids', path: ['approvers'] });
+router.post('/integrations', validate(z.object({ body: z.object({ projectId: uuid, type: z.nativeEnum(IntegrationType), name: z.string().min(1), config: integrationConfig }) })), createIntegration);
+router.patch('/integrations/:id', validate(z.object({ params: z.object({ id: uuid }), body: z.object({ config: integrationConfig.optional(), enabled: z.boolean().optional() }).strict().refine((body) => body.config !== undefined || body.enabled !== undefined, { message: 'give config or enabled' }) })), updateIntegration);
 router.get('/integrations', listIntegrations);
 router.post('/integrations/:id/sync', validate(z.object({ params: z.object({ id: uuid }) })), syncIntegration);
 router.get('/work-items', listWorkItems);

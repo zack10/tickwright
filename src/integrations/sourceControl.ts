@@ -32,6 +32,7 @@ export const bindSourceControl = (repository: SourceRepository, config: Record<s
     pullRequestOutcome: (number: number) => adapter.pullRequestOutcome(target, number),
     reviewFeedback: (number: number) => adapter.reviewFeedback(target, number),
     commentOnPullRequest: (number: number, body: string) => adapter.commentOnPullRequest(target, number, body),
+    replyToReviewComment: (number: number, commentId: string, body: string) => adapter.replyToReviewComment(target, number, commentId, body),
     commitChecks: (sha: string) => adapter.commitChecks(target, sha),
   };
 };

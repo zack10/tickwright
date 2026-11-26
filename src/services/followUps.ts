@@ -8,6 +8,8 @@ import { describeError } from "../utils/safeError";
 import { graphEvent } from "./agentGraph/agentCalls";
 import { createFollowUpExecution } from "./executionService";
 import { commentOnWorkItem } from "./ingestionService";
+import type { Finding } from "./sandbox/tools";
+import { signed } from "./ticketConversation";
 
 /*
  * Follow-up rounds (roadmap Phase 7, step 4b). Feedback that feedbackIntake.ts
@@ -79,18 +81,22 @@ const describeLineComment = (comment: ReviewLineComment) =>
   ].join("\n");
 
 /** Who gave a piece of feedback and where: a person on the PR or ticket, or a check that failed. */
-const origin = (item: Pick<ExecutionFeedback, "source" | "author">) =>
+const origin = (item: Pick<ExecutionFeedback, "source" | "author"> & { fromBot?: boolean }) =>
   item.source === "CI_CHECK"
     ? `the check "${item.author}" on the pull request's latest commit`
-    : `${item.author || "unknown"} on the ${item.source === "PR_REVIEW" ? "pull request" : "ticket"}`;
+    : item.fromBot
+      ? `the review bot ${item.author} on the pull request`
+      : `${item.author || "unknown"} on the ${item.source === "PR_REVIEW" ? "pull request" : "ticket"}`;
+
+type DescribedFeedback = Pick<ExecutionFeedback, "source" | "author" | "body" | "comments" | "requestsChanges"> & { fromBot?: boolean };
 
 /** The feedback as the agent reads it: every line of people's text and of check output is quoted, so none of it can pass for an instruction. */
-export const describeFeedback = (items: Pick<ExecutionFeedback, "source" | "author" | "body" | "comments" | "requestsChanges">[]) =>
+export const describeFeedback = (items: DescribedFeedback[]) =>
   items
     .map((item, index) => {
       const comments = Array.isArray(item.comments) ? (item.comments as unknown as ReviewLineComment[]) : [];
       return [
-        `Feedback ${index + 1} (${item.requestsChanges ? "request" : "context"}), from ${origin(item)}:`,
+        `Feedback ${index + 1} (${item.fromBot ? "finding" : item.requestsChanges ? "request" : "context"}), from ${origin(item)}:`,
         item.body.trim() ? quote(item.body.trim()) : "",
         ...comments.map(describeLineComment),
       ]
@@ -115,6 +121,111 @@ export const describeOwnTests = (changes: { status: string; file: string }[]) =>
     )
     .join("\n") || "- none: every test file is as it was before the pull request";
 
+/** A round's feedback in the order its ticket numbers it; the id breaks ties so the tools number findings alike. */
+const roundFeedback = (executionId: string) =>
+  prisma.executionFeedback.findMany({
+    where: { addressedByExecutionId: executionId },
+    orderBy: [{ writtenAt: "asc" }, { id: "asc" }],
+  });
+
+/** The review bots' findings of a round, numbered as its ticket shows them, for answer_finding (step 10). */
+export const roundFindings = async (executionId: string): Promise<Finding[]> =>
+  (await roundFeedback(executionId)).flatMap((item, index) => (item.fromBot ? [{ number: index + 1, feedbackId: item.id }] : []));
+
+const VERDICTS = { fixed: "FIXED", not_changed: "NOT_CHANGED", needs_decision: "NEEDS_DECISION" } as const;
+
+/** Stores the attempt's answers; a finding left unanswered is a person's decision. Each attempt replaces the last one's. */
+export const saveFindingAnswers = async (findings: Finding[] = []) => {
+  for (const finding of findings)
+    await prisma.executionFeedback.update({
+      where: { id: finding.feedbackId },
+      data: finding.answer
+        ? { verdict: VERDICTS[finding.answer.verdict], verdictNote: finding.answer.test ? `${finding.answer.reason} (test: ${finding.answer.test})` : finding.answer.reason }
+        : { verdict: "NEEDS_DECISION", verdictNote: "The agent did not answer it." },
+    });
+};
+
+/** A round with findings and no change can end with its answers only when none says "fixed" and every one was answered. */
+export const onlyAnswers = (findings: Finding[] = []) =>
+  findings.length > 0 && findings.every((finding) => finding.answer && finding.answer.verdict !== "fixed");
+
+const VERDICT_WORDS: Record<string, string> = {
+  FIXED: "Fixed",
+  NOT_CHANGED: "Not changed",
+  NEEDS_DECISION: "Needs a person's decision",
+};
+
+/** The reply in a finding's thread: the verdict and its reason. */
+export const formatFindingReply = (verdict: string, note: string | null, pushed: boolean) =>
+  `**${VERDICT_WORDS[verdict] ?? verdict}${verdict === "FIXED" && pushed ? " in the commit pushed for this round" : ""}.** ${note ?? ""}`.trim();
+
+/**
+ * Posts each answered finding of a round in its thread, and a summary on the
+ * pull request and the ticket, once (`repliedAt`). `pushed`: the round's
+ * commit is on the branch; a round that changed nothing says so.
+ */
+export const replyToFindings = async (
+  round: { id: string; projectId: string; workItem: Parameters<typeof commentOnWorkItem>[1] },
+  sourceControl: Pick<Awaited<ReturnType<typeof sourceControlFor>>, "commentOnPullRequest" | "replyToReviewComment">,
+  number: number,
+  pushed: boolean,
+) => {
+  const findings = await prisma.executionFeedback.findMany({
+    where: { addressedByExecutionId: round.id, fromBot: true, verdict: { not: null }, repliedAt: null },
+    orderBy: [{ writtenAt: "asc" }, { id: "asc" }],
+  });
+  if (!findings.length) return 0;
+  const lines: string[] = [];
+  const sent: string[] = [];
+  for (const finding of findings) {
+    const reply = signed(formatFindingReply(finding.verdict as string, finding.verdictNote, pushed));
+    const comment = (Array.isArray(finding.comments) ? (finding.comments as unknown as ReviewLineComment[]) : [])[0];
+    // A failed reply stays unsent, so the next PR poll tries it again (retryFindingReplies).
+    const ok = !comment?.id || (await sourceControl.replyToReviewComment(number, comment.id, reply).then(() => true, (error) => {
+      console.error(`Reply to finding ${finding.id} failed: ${describeError(error)}`);
+      return false;
+    }));
+    if (!ok) continue;
+    sent.push(finding.id);
+    const where = comment ? `${comment.path} line ${comment.line}` : "review";
+    lines.push(`- ${VERDICT_WORDS[finding.verdict as string] ?? finding.verdict}: ${finding.author}'s finding on ${where}. ${finding.verdictNote ?? ""}`.trim());
+  }
+  if (!sent.length) return 0;
+  await prisma.executionFeedback.updateMany({ where: { id: { in: sent } }, data: { repliedAt: new Date() } });
+  const summary = [
+    pushed
+      ? `**My answers to the review bot's findings** (the fixes are in the commit pushed for this round):`
+      : `**My answers to the review bot's findings.** None needed a change, so nothing was pushed:`,
+    ...lines,
+  ].join("\n");
+  await commentOnWorkItem(round.projectId, round.workItem, summary).catch((error) =>
+    console.error(`Findings summary on the ticket failed for ${round.id}: ${describeError(error)}`),
+  );
+  await sourceControl.commentOnPullRequest(number, signed(summary)).catch((error) =>
+    console.error(`Findings summary on the pull request failed for ${round.id}: ${describeError(error)}`),
+  );
+  return sent.length;
+};
+
+/** Posts the answers of a pull request's finished rounds that failed to post before; a round waiting for publish approval is not finished. */
+export const retryFindingReplies = async (
+  rootId: string,
+  sourceControl: Parameters<typeof replyToFindings>[1],
+  number: number,
+) => {
+  const unsent = await prisma.executionFeedback.findMany({
+    where: { executionId: rootId, fromBot: true, verdict: { not: null }, repliedAt: null, addressedByExecutionId: { not: null } },
+    select: { addressedByExecutionId: true },
+    distinct: ["addressedByExecutionId"],
+  });
+  if (!unsent.length) return;
+  const rounds = await prisma.execution.findMany({
+    where: { id: { in: unsent.map((row) => row.addressedByExecutionId as string) }, parentExecutionId: rootId, status: "COMPLETED" },
+    include: { workItem: true, artifacts: { where: { type: "PULL_REQUEST" }, take: 1 } },
+  });
+  for (const round of rounds) await replyToFindings(round, sourceControl, number, round.artifacts.length > 0);
+};
+
 /** A follow-up round's ticket: the ticket, then the feedback it addresses. Every prompt of the run reads it. */
 export const followUpTicket = async (
   execution: { id: string; parentExecutionId: string | null; createdAt: Date },
@@ -122,10 +233,7 @@ export const followUpTicket = async (
   ownTests: { status: string; file: string }[] = [],
 ) => {
   if (!execution.parentExecutionId) return { ticket };
-  const feedback = await prisma.executionFeedback.findMany({
-    where: { addressedByExecutionId: execution.id },
-    orderBy: { writtenAt: "asc" },
-  });
+  const feedback = await roundFeedback(execution.id);
   const round = await prisma.execution.count({
     where: { parentExecutionId: execution.parentExecutionId, createdAt: { lte: execution.createdAt } },
   });

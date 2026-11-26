@@ -261,6 +261,8 @@ model Repository {
   connectionId         String?
   /// Code-host logins whose reviews and comments on the agent's PRs count as feedback ("Request changes" starts a new round). Empty: none do.
   reviewers            String[]    @default([])
+  /// Review bots' exact logins whose reviews are findings the next round checks one by one; they start nothing. Empty: no bot is read.
+  reviewBots           String[]    @default([])
   verificationConfig   Json
   executionPolicy      Json
   /// An environment proposed by discovery and proved by a run, until a person approves it.
@@ -510,6 +512,13 @@ model ExecutionFeedback {
   /// Starts a new round of changes; false for a code-host comment that is context only (a "Comment" review, a conversation comment).
   requestsChanges Boolean @default(true)
   addressedByExecutionId String?
+  /// A finding from a listed review bot (Repository.reviewBots): one line comment, or a review with none.
+  fromBot     Boolean        @default(false)
+  /// The round's answer to a finding: FIXED, NOT_CHANGED or NEEDS_DECISION, with its reason; null until answered.
+  verdict     String?
+  verdictNote String?
+  /// When the answer was posted on the pull request.
+  repliedAt   DateTime?
 
   @@unique([source, externalId])
   @@index([executionId, addressedByExecutionId])

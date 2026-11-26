@@ -42,6 +42,16 @@ export interface ToolContext {
   changedTestFiles?: () => Promise<string[]>;
   /** The ticket's stated requirements, for submit_plan and the verdict. */
   requirements?: StatedRequirements;
+  /** A follow-up round's findings from review bots, by their feedback number; answer_finding fills in the answers. */
+  findings?: Finding[];
+}
+
+/** A review bot's finding in a follow-up round (roadmap Phase 7, step 10) and the agent's answer to it. */
+export interface Finding {
+  /** "Feedback N" in the round's ticket. */
+  number: number;
+  feedbackId: string;
+  answer?: { verdict: "fixed" | "not_changed" | "needs_decision"; reason: string; test?: string };
 }
 
 /** A case the reviewer found untested, and the repository names a test for it must use. */
@@ -285,6 +295,23 @@ export const SANDBOX_TOOLS: ToolDefinition[] = [
   },
 ];
 
+/** Given to a follow-up round only when review bots' findings are in it. */
+export const ANSWER_FINDING_TOOL: ToolDefinition = {
+  name: "answer_finding",
+  description:
+    'Record your answer to one finding from a review bot (a "Feedback N" marked as a finding). "fixed": the finding was real, a new test you wrote failed because of it and passes now; name that test. "not_changed": it is not real or not worth changing; say why, pointing at the code (file and line) or at a test that shows it. "needs_decision": fixing it would change behaviour the ticket did not ask for; say what a person must decide. Call it again to change an answer. Every answer is posted on the pull request.',
+  parameters: {
+    type: "object",
+    properties: {
+      feedback: { type: "integer", description: "The N of the finding's \"Feedback N\"" },
+      verdict: { type: "string", enum: ["fixed", "not_changed", "needs_decision"] },
+      reason: { type: "string", description: "Why, in one or two sentences" },
+      test: { type: "string", description: "fixed only: the name of the test that showed it, as written in its file" },
+    },
+    required: ["feedback", "verdict", "reason"],
+  },
+};
+
 /** The reviewer's checklist (see reviewer prompts); a "no" to any rejects. */
 const REVIEW_CHECKS = {
   sourceChanged: {
@@ -328,6 +355,12 @@ const ARGS = {
     timeoutSeconds: z.number().int().positive().optional(),
   }),
   skip_reproduction: z.object({ reason: z.string().trim().min(1) }),
+  answer_finding: z.object({
+    feedback: z.number().int().positive(),
+    verdict: z.enum(["fixed", "not_changed", "needs_decision"]),
+    reason: z.string().trim().min(1).max(1000),
+    test: z.string().trim().min(1).max(300).optional(),
+  }),
   finish: z.object({ status: z.enum(["done", "blocked"]), summary: z.string().min(1) }),
   submit_plan: z.object({
     summary: z.string().trim().min(1),
@@ -702,16 +735,37 @@ export const MAX_TEST_REQUEST_REFUSALS = 2;
  * still judges the tests. After MAX_TEST_REQUEST_REFUSALS the run goes on, so
  * a name the reviewer got wrong cannot hold it, and the reviewer is told.
  */
-const missingRequestedTests = async (ctx: ToolContext) => {
-  const request = ctx.requestedTests;
-  if (!request?.tests.length || !ctx.changedTestFiles) return "";
+/** The run's new and changed test files' text, joined. */
+const changedTestText = async (ctx: ToolContext) => {
   const contents: string[] = [];
-  for (const file of await ctx.changedTestFiles()) {
+  for (const file of (await ctx.changedTestFiles?.()) ?? []) {
     const target = checkPath(ctx, file);
     if (typeof target !== "string" && fs.existsSync(target.fullPath) && fs.statSync(target.fullPath).isFile())
       contents.push(fs.readFileSync(target.fullPath, "utf8"));
   }
-  const text = contents.join("\n");
+  return contents.join("\n");
+};
+
+/** "fixed" needs the reproduction gate's evidence: a new test failed, and the named test is in the round's test files. */
+const answerFinding = async (ctx: ToolContext, args: z.infer<typeof ARGS.answer_finding>) => {
+  const finding = ctx.findings?.find((candidate) => candidate.number === args.feedback);
+  if (!finding)
+    return failed(`Feedback ${args.feedback} is not a finding from a review bot. Findings in this round: ${(ctx.findings ?? []).map((candidate) => candidate.number).join(", ") || "none"}.`);
+  if (args.verdict === "fixed") {
+    if (!args.test) return failed('A "fixed" answer names the test that showed the finding (test).');
+    if (!ctx.reproduction.shown)
+      return failed('Answer "fixed" only after a new test failed because of the finding in run_check or run_command, and passes after your change. If no test can show it, the answer is "not_changed" or "needs_decision".');
+    if (!(await changedTestText(ctx)).includes(args.test))
+      return failed(`No new or changed test file of this round contains "${args.test}". Name the test as it is written in its file.`);
+  }
+  finding.answer = { verdict: args.verdict, reason: args.reason, ...(args.verdict === "fixed" ? { test: args.test } : {}) };
+  return completed(`Recorded: Feedback ${args.feedback} ${args.verdict.replace("_", " ")}.`);
+};
+
+const missingRequestedTests = async (ctx: ToolContext) => {
+  const request = ctx.requestedTests;
+  if (!request?.tests.length || !ctx.changedTestFiles) return "";
+  const text = await changedTestText(ctx);
   const missing = request.tests
     .map((test) => ({ case: test.case, names: test.mustReach.filter((name) => !text.includes(name)) }))
     .filter((test) => test.names.length > 0);
@@ -830,6 +884,8 @@ export const executeTool = async (
       case "skip_reproduction":
         ctx.reproduction.skipped = (parsed.data as z.infer<typeof ARGS.skip_reproduction>).reason;
         return completed("Noted. You can change files other than tests now; the reviewer will see your reason.");
+      case "answer_finding":
+        return await answerFinding(ctx, parsed.data as z.infer<typeof ARGS.answer_finding>);
       case "verdict": {
         const verdict = decideReview(parsed.data as z.infer<typeof ARGS.verdict>, ctx.requirements?.list);
         // finish ends the loop; the verdict carries the decision.

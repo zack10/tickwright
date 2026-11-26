@@ -64,6 +64,8 @@ export interface PullRequestOutcome {
 
 /** A comment on lines of the pull request's diff, inside a review. */
 export interface ReviewLineComment {
+  /** The host's id of the comment, for a reply in its thread; absent on comments stored before replies existed. */
+  id?: string;
   path: string;
   /** The commented line (the last one of a range), in the file as the reviewer saw it. */
   line: number;
@@ -140,6 +142,8 @@ export interface SourceControlAdapter {
   reviewFeedback(target: SourceControlTarget, number: number): Promise<ReviewFeedback[]>;
   /** Posts a comment on the pull request's conversation. */
   commentOnPullRequest(target: SourceControlTarget, number: number, body: string): Promise<void>;
+  /** Replies in the thread of a line comment (`ReviewLineComment.id`). */
+  replyToReviewComment(target: SourceControlTarget, number: number, commentId: string, body: string): Promise<void>;
   /** The checks that ran on a commit. */
   commitChecks(target: SourceControlTarget, sha: string): Promise<CommitChecks>;
 }

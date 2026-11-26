@@ -18,10 +18,22 @@ const approvers = ["@Zack"];
 test("only an approver's /approve approves", () => {
   assert.deepEqual(replyAction(reply("/approve"), approvers, "PLAN"), { kind: "approve", note: undefined });
   assert.deepEqual(replyAction(reply("/APPROVE keep the log line"), approvers, "PUBLISH"), { kind: "approve", note: "keep the log line" });
-  assert.deepEqual(replyAction(reply("/reject not now"), approvers, "PLAN"), { kind: "reject", reason: "not now" });
+  assert.deepEqual(replyAction(reply("/reject"), approvers, "PLAN"), { kind: "reject", reason: undefined });
   assert.equal(replyAction(reply("/approve", "mallory"), approvers, "PLAN").kind, "unauthorized");
   assert.equal(replyAction(reply("looks good, approve"), approvers, "PLAN").kind, "revise", "free text never approves");
   assert.equal(replyAction(reply("/approved"), approvers, "PLAN").kind, "hint", "a command is a whole word; a near miss gets a hint");
+});
+
+test("a rejection with feedback revises a plan or a follow-up round's change; a bare one, or one on a first change, stops", () => {
+  assert.deepEqual(replyAction(reply("/reject handle the header too"), approvers, "PLAN"), { kind: "revise", feedback: "handle the header too" });
+  assert.deepEqual(replyAction(reply("/reject the test must fail without the fix"), approvers, "PUBLISH", true), {
+    kind: "revise",
+    feedback: "the test must fail without the fix",
+  });
+  assert.deepEqual(replyAction(reply("/reject"), approvers, "PUBLISH", true), { kind: "reject", reason: undefined });
+  // A first change has no pull request yet for a new round to work on.
+  assert.deepEqual(replyAction(reply("/reject not now"), approvers, "PUBLISH"), { kind: "reject", reason: "not now" });
+  assert.match(formatPublishComment(["a"], "", true), /`\/reject <what should change>` and a new round makes the change again/);
 });
 
 test("on a plan other text is feedback; on a change it gets a hint", () => {
@@ -70,7 +82,7 @@ test("the plan comment shows the reading, the doubts and how to answer", () => {
   assert.match(text, /- back Monday 09:00 -> next run Tuesday 02:00/);
   assert.match(text, /not sure[\s\S]*- if you meant one catch-up run/);
   assert.match(text, /How I'll check it:\*\*\n- go test \.\/\.\.\.\n- new test for missed runs/);
-  assert.match(text, /`\/approve`[\s\S]*`\/reject <reason>`[\s\S]*revise the plan/);
+  assert.match(text, /`\/approve`[\s\S]*`\/reject` to stop[\s\S]*`\/reject <what should change>`[\s\S]*revise the plan/);
   assert.doesNotMatch(formatPlanComment({ summary: "s", expectedBehaviour: [], questions: [], filesToEdit: [], risk: "low", testStrategy: [] }, 1), /not sure|version/);
   const bare = { summary: "s", expectedBehaviour: [], questions: [], filesToEdit: [], risk: "low", testStrategy: [] };
   assert.doesNotMatch(formatPlanComment(bare, 1, "checks"), /Unverified|No checks/);

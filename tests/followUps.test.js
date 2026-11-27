@@ -353,3 +353,25 @@ test("a reply the code host refused stays unsent, so the next poll posts it, and
   assert.equal(await replyToFindings(round, host, 38, true), 1, "the next try posts the one that failed");
   assert.deepEqual(replied, ["f1", "f2"]);
 });
+
+test("the person approving a round's change sees its answer to each finding, and that a fixed one's test fails without the change", async (t) => {
+  const { describeFindingAnswers } = require("../dist/services/followUps");
+  const { formatPublishComment } = require("../dist/services/ticketConversation");
+  const real = prisma.executionFeedback;
+  let query;
+  prisma.executionFeedback = {
+    findMany: async (args) => ((query = args.where), [
+      { author: "devin-ai-integration[bot]", verdict: "FIXED", verdictNote: "Stops read-ahead at a record. (test: reportsOversizedFirstDataRecord)", comments: [{ path: "src/Reader.java", line: 64 }] },
+      { author: "devin-ai-integration[bot]", verdict: "NEEDS_DECISION", verdictNote: 'Not shown by a test: "headerTest" passes without your change.', comments: [{ path: "src/Reader.java", line: 51 }] },
+    ]),
+  };
+  t.after(() => (prisma.executionFeedback = real));
+  const answers = await describeFindingAnswers("round");
+  assert.deepEqual(query, { addressedByExecutionId: "round", fromBot: true, verdict: { not: null } });
+  assert.match(answers, /^\*\*Answers to the review bot's findings\*\*/);
+  assert.match(answers, /- Fixed: devin-ai-integration\[bot\]'s finding on src\/Reader\.java line 64\. .*reportsOversizedFirstDataRecord\)\. Its test fails without this change and passes with it\./);
+  assert.match(answers, /- Needs a person's decision: .* line 51\. Not shown by a test/);
+  assert.doesNotMatch(answers.split("\n")[2], /Its test fails without/, "only a fixed answer claims a test shows it");
+  const comment = formatPublishComment(["src/Reader.java"], "Checks passed: verify.", true, answers);
+  assert.ok(comment.indexOf("Answers to the review bot's findings") < comment.indexOf("Reply `/approve`"), "the answers come before the decision");
+});

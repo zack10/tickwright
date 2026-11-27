@@ -159,8 +159,12 @@ export const saveFindingAnswers = async (findings: Finding[] = []) => {
     await prisma.executionFeedback.update({
       where: { id: finding.feedbackId },
       data: finding.answer
-        ? { verdict: VERDICTS[finding.answer.verdict], verdictNote: finding.answer.test ? `${finding.answer.reason} (test: ${finding.answer.test})` : finding.answer.reason }
-        : { verdict: "NEEDS_DECISION", verdictNote: "The agent did not answer it." },
+        ? {
+            verdict: VERDICTS[finding.answer.verdict],
+            verdictNote: finding.answer.test ? `${finding.answer.reason} (test: ${finding.answer.test})` : finding.answer.reason,
+            testCommand: finding.answer.command ?? null,
+          }
+        : { verdict: "NEEDS_DECISION", verdictNote: "The agent did not answer it.", testCommand: null },
     });
 };
 
@@ -172,6 +176,30 @@ const VERDICT_WORDS: Record<string, string> = {
   FIXED: "Fixed",
   NOT_CHANGED: "Not changed",
   NEEDS_DECISION: "Needs a person's decision",
+};
+
+/**
+ * A round's answers to the review bots' findings, for the person deciding on
+ * its change: before, they reached the pull request only after the push, so
+ * the change was approved without them (row 81). A "fixed" that is left was
+ * run without the change by verification, and failed (unprovenFindingTests).
+ */
+export const describeFindingAnswers = async (roundId: string) => {
+  const findings = await prisma.executionFeedback.findMany({
+    where: { addressedByExecutionId: roundId, fromBot: true, verdict: { not: null } },
+    orderBy: [{ writtenAt: "asc" }, { id: "asc" }],
+  });
+  if (!findings.length) return "";
+  return [
+    "**Answers to the review bot's findings** (posted in each finding's thread once the change is pushed):",
+    ...findings.map((finding) => {
+      const comment = (Array.isArray(finding.comments) ? (finding.comments as unknown as ReviewLineComment[]) : [])[0];
+      const where = comment ? `${comment.path} line ${comment.line}` : "review";
+      const note = (finding.verdictNote ?? "").trim().replace(/([^.])$/, "$1.");
+      const shown = finding.verdict === "FIXED" ? " Its test fails without this change and passes with it." : "";
+      return `- ${VERDICT_WORDS[finding.verdict as string] ?? finding.verdict}: ${finding.author}'s finding on ${where}. ${note}${shown}`.trim();
+    }),
+  ].join("\n");
 };
 
 /** The reply in a finding's thread: the verdict and its reason. */

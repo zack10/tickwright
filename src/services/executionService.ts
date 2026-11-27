@@ -508,7 +508,7 @@ export const requestChangeRevision = async (
       throw AppError.conflict("Approval was already decided");
     const released = await tx.executionFeedback.updateMany({
       where: { addressedByExecutionId: executionId },
-      data: { addressedByExecutionId: null, verdict: null, verdictNote: null, repliedAt: null },
+      data: { addressedByExecutionId: null, verdict: null, verdictNote: null, testCommand: null, repliedAt: null },
     });
     await tx.executionFeedback.create({
       data: {

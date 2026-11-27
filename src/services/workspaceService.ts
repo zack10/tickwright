@@ -771,6 +771,45 @@ export const gitDiff = async (id: string) => {
 export const changedFiles = async (id: string) =>
   (await changes(id)).map((change) => change.file);
 
+/** A `git diff` split per file, each with the path it has after the change. */
+export const splitDiff = (diff: string) =>
+  diff
+    .split(/^(?=diff --git )/m)
+    .filter((part) => part.startsWith("diff --git "))
+    .map((text) => ({ file: /^diff --git a\/.+ b\/(.+)$/m.exec(text)?.[1] ?? "", text }));
+
+/**
+ * Runs `work` on the checked-out commit with only the files `keep` accepts
+ * of the change applied, then puts the whole change back, and throws if it
+ * did not come back byte for byte: what is reviewed and published must be
+ * the change that was verified. The diffs wait under .git, outside the change.
+ */
+export const withPartialChange = async <T>(id: string, keep: (file: string) => boolean, work: () => Promise<T>) => {
+  const full = await gitDiff(id);
+  const partial = splitDiff(full).filter((part) => keep(part.file)).map((part) => part.text).join("");
+  const saved = { full: path.join(workspacePath(id), ".git", "tickwright-full.diff"), partial: path.join(workspacePath(id), ".git", "tickwright-partial.diff") };
+  await fs.writeFile(saved.full, full, "utf8");
+  await fs.writeFile(saved.partial, partial, "utf8");
+  const restore = async () => {
+    await resetWorkspace(id);
+    if (full) await runDocker(id, [...SAFE_GIT_ARGS, "apply", "--binary", ".git/tickwright-full.diff"]);
+    if ((await gitDiff(id)) !== full) throw new Error("The change did not come back exactly after running tests without it; nothing from this workspace may be published");
+    await fs.rm(saved.full, { force: true });
+    await fs.rm(saved.partial, { force: true });
+  };
+  await resetWorkspace(id);
+  let result: T;
+  try {
+    if (partial) await runDocker(id, [...SAFE_GIT_ARGS, "apply", "--binary", ".git/tickwright-partial.diff"]);
+    result = await work();
+  } catch (error) {
+    await restore();
+    throw error;
+  }
+  await restore();
+  return result;
+};
+
 /** A changed file and how: A added, M modified, D deleted, T type changed. */
 export interface FileChange {
   status: string;

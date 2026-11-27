@@ -606,10 +606,14 @@ test("answer_finding is offered only with findings, and marks a finding fixed on
   ctx.reproduction.shown = true;
   assert.match((await answer({ feedback: 2, verdict: "fixed", reason: "real" })).output, /names the test/);
   assert.match((await answer({ feedback: 2, verdict: "fixed", reason: "real", test: "a test nobody wrote" })).output, /No new or changed test file/);
-  assert.equal((await answer({ feedback: 2, verdict: "fixed", reason: "real", test: "reports the header as the header" })).status, "COMPLETED");
+  assert.match((await answer({ feedback: 2, verdict: "fixed", reason: "real", test: "reports the header as the header" })).output, /gives the command that runs only the test/);
+  // A command for the whole file passes on any of its tests' failures, so it must name this test.
+  assert.match((await answer({ feedback: 2, verdict: "fixed", reason: "real", test: "reports the header as the header", command: "node --test tests/rows.test.js" })).output, /with the test's name in it/);
+  const command = 'node --test --test-name-pattern "reports the header as the header" tests/rows.test.js';
+  assert.equal((await answer({ feedback: 2, verdict: "fixed", reason: "real", test: "reports the header as the header", command })).status, "COMPLETED");
   assert.equal((await answer({ feedback: 3, verdict: "not_changed", reason: "src/math.js:2 already rejects it", test: "ignored" })).status, "COMPLETED");
   assert.deepEqual(findings.map((finding) => finding.answer), [
-    { verdict: "fixed", reason: "real", test: "reports the header as the header" },
+    { verdict: "fixed", reason: "real", test: "reports the header as the header", command },
     { verdict: "not_changed", reason: "src/math.js:2 already rejects it" },
   ]);
 });

@@ -9,7 +9,7 @@ import { NonRetryableError, ReportableError, describeError } from "../utils/safe
 import { discardExecutionRun, runExecutionGraph } from "./agentGraph/executionGraph";
 import { planExecution } from "./agentGraph/planning";
 import { ExecutionCanceledError, hashSnapshot } from "./executionService";
-import { replyToFindings } from "./followUps";
+import { describeFindingAnswers, replyToFindings } from "./followUps";
 import { formatPlanComment, formatPublishComment, signed } from "./ticketConversation";
 import rabbitMQService from "./rabbitMQService";
 import { SetupFailedError, describeVerification, publishApprovedDiff } from "./workspaceService";
@@ -229,7 +229,8 @@ const run = async (executionId: string) => {
     const files = diff
       ? [...new Set([...(await fs.readFile(diff.storagePath, "utf8")).matchAll(/^diff --git a\/\S+ b\/(\S+)$/gm)].map((match) => match[1]))]
       : [];
-    await notifyTracker(executionId, formatPublishComment(files, describeVerification(diff?.metadata), execution.parentExecutionId !== null));
+    const answers = execution.parentExecutionId ? await describeFindingAnswers(executionId) : "";
+    await notifyTracker(executionId, formatPublishComment(files, describeVerification(diff?.metadata), execution.parentExecutionId !== null, answers));
   }
 };
 

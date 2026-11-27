@@ -517,6 +517,8 @@ model ExecutionFeedback {
   /// The round's answer to a finding: FIXED, NOT_CHANGED or NEEDS_DECISION, with its reason; null until answered.
   verdict     String?
   verdictNote String?
+  /// For a FIXED answer: the command that runs just the test it names; verification runs it with and without the change.
+  testCommand String?
   /// When the answer was posted on the pull request.
   repliedAt   DateTime?
 

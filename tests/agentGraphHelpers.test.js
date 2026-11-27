@@ -251,3 +251,23 @@ test("existing tests may not be modified or deleted by any means; new tests and 
   assert.equal(onlyAddsLines("", "anything\n"), true);
   assert.match(violation, /put new tests in new lines or new files/);
 });
+
+test("a diff splits per file under the path the file has after the change, so its test files can be applied alone", () => {
+  const { splitDiff } = require("../dist/services/workspaceService");
+  const diff = [
+    "diff --git a/src/Reader.java b/src/Reader.java\nindex 1..2 100644\n--- a/src/Reader.java\n+++ b/src/Reader.java\n@@ -1 +1 @@\n-a\n+b\n",
+    "diff --git a/src/test/ReaderTest.java b/src/test/ReaderTest.java\nnew file mode 100644\n--- /dev/null\n+++ b/src/test/ReaderTest.java\n@@ -0,0 +1 @@\n+test\n",
+  ];
+  const parts = splitDiff(diff.join(""));
+  assert.deepEqual(parts.map((part) => part.file), ["src/Reader.java", "src/test/ReaderTest.java"]);
+  assert.equal(parts.map((part) => part.text).join(""), diff.join(""), "nothing is lost between the parts");
+  assert.deepEqual(splitDiff(""), []);
+});
+
+test("a finding answered fixed whose test does not show it is sent back with the finding, the test and why", () => {
+  const { describeUnprovenFindings } = require("../dist/services/agentGraph/executionGraph");
+  const text = describeUnprovenFindings([{ number: 1, test: "reportsOversizedFirstDataRecord", why: "passes without your change to the files that are not tests (command: ./mvnw test)" }]);
+  assert.match(text, /- Feedback 1: the test "reportsOversizedFirstDataRecord" passes without your change/);
+  assert.match(text, /fails on the code without your change because of what the finding describes, and passes with it/);
+  assert.match(text, /call answer_finding again with the command that runs only that test/);
+});

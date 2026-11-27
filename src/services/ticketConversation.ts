@@ -56,12 +56,13 @@ export const formatPlanComment = (
     .filter(Boolean)
     .join("\n\n");
 
-/** `verification` is what the checks and the reviewer found (describeVerification). */
-export const formatPublishComment = (files: string[], verification: string, followUp = false) =>
+/** `verification` is what the checks and the reviewer found (describeVerification); `answers`, a round's answers to review bots' findings (describeFindingAnswers). */
+export const formatPublishComment = (files: string[], verification: string, followUp = false, answers = "") =>
   [
     followUp ? "**The change for your feedback is ready.**" : "**The change is ready.**",
     files.length ? `**Changed:** ${files.join(", ")}` : "",
     verification,
+    answers,
     followUp
       ? "Reply `/approve` to push it to the pull request, `/reject <what should change>` and a new round makes the change again with your feedback, or `/reject` alone to leave the pull request as it is."
       : "Reply `/approve` to open a draft pull request, or `/reject <reason>` to stop.",

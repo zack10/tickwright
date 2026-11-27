@@ -50,7 +50,7 @@ test("a follow-up round's change rejected with feedback ends unpublished, and it
   // Everything the round addressed waits again, its answers cleared so they are never posted.
   assert.deepEqual(write("feedback.updateMany"), [{
     where: { addressedByExecutionId: "round" },
-    data: { addressedByExecutionId: null, verdict: null, verdictNote: null, repliedAt: null },
+    data: { addressedByExecutionId: null, verdict: null, verdictNote: null, testCommand: null, repliedAt: null },
   }]);
   const [{ data: stored }] = write("feedback.create");
   assert.deepEqual(

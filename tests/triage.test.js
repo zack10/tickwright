@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { describeApprovedPlan, describeRevisions, numberedRequirements, planFromReply, triageDecision } = require("../dist/services/agentGraph/planning");
+const { describeApprovedPlan, describeRevisions, numberedRequirements, planFromReply, requireExamples, triageDecision } = require("../dist/services/agentGraph/planning");
 
 test("triage only declines on an explicit decline", () => {
   assert.deepEqual(triageDecision({ decision: "decline", reason: "needs a key" }), { decision: "decline", reason: "needs a key" });
@@ -30,6 +30,12 @@ test("a plan keeps what the model wrote and invents nothing", () => {
   assert.equal(empty.summary, "Investigate and change: Nightly job ran several times");
   assert.deepEqual(empty.expectedBehaviour, []);
   assert.equal(empty.risk, "unknown");
+});
+
+// Row 83: "Investigate and change: <title>" with no examples was posted for approval twice in the 10c proof.
+test("a plan with no examples of the expected behaviour is never submitted", () => {
+  assert.throws(() => requireExamples(planFromReply({ summary: "s", expectedBehaviour: ["  "] }, "t")), { name: "PlanNotWrittenError", message: /no examples/ });
+  assert.equal(requireExamples(planFromReply({ expectedBehaviour: ["a"] }, "t")).expectedBehaviour[0], "a");
 });
 
 const stored = (version, plan, snapshotHash) => ({

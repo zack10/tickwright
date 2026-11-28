@@ -8,6 +8,7 @@ import { commentOnWorkItem } from "./ingestionService";
 import { NonRetryableError, ReportableError, describeError } from "../utils/safeError";
 import { discardExecutionRun, runExecutionGraph } from "./agentGraph/executionGraph";
 import { planExecution } from "./agentGraph/planning";
+import { PlanNotWrittenError } from "./agentGraph/planner";
 import { ExecutionCanceledError, hashSnapshot } from "./executionService";
 import { describeFindingAnswers, replyToFindings } from "./followUps";
 import { formatPlanComment, formatPublishComment, signed } from "./ticketConversation";
@@ -94,7 +95,8 @@ export const followUpCommitTitle = (feedback: { source: string }[]) =>
  */
 export const failureNote = (executionId: string, stage: string, error: unknown) => {
   const details = `The details are in Tickwright: \`npm run trace -- ${executionId}\``;
-  if (error instanceof ReportableError) return `Execution ${executionId} failed during ${stage}: ${error.message}.`;
+  if (error instanceof ReportableError || error instanceof PlanNotWrittenError)
+    return `Execution ${executionId} failed during ${stage}: ${error.message}.`;
   if (error instanceof SetupFailedError)
     return `Execution ${executionId} failed during ${stage}: the repository's setup command failed, so the agent never started. ${details}`;
   return `Execution ${executionId} failed during ${stage}. ${details}`;

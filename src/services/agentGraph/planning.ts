@@ -19,7 +19,7 @@ import {
 } from "../toolchain";
 import { cloneWorkspace, removeWorkspace, trackedFiles, workspacePath } from "../workspaceService";
 import { CallContext, askAgent, askAgentWithTools, executionTokensUsed, graphEvent, parseJsonRecord, resolveAgentCalls } from "./agentCalls";
-import { PLAN_MAX_TOKENS, runPlanner } from "./planner";
+import { PLAN_MAX_TOKENS, PlanNotWrittenError, runPlanner } from "./planner";
 import { collectRepoContext, instructionsOf } from "./repoContext";
 import { RepositoryPolicy } from "./repoPolicy";
 
@@ -54,6 +54,12 @@ export const planFromReply = (parsed: Record<string, unknown>, title: string): A
   testStrategy: strings(parsed.testStrategy),
   requirements: [],
 });
+
+/** A plan a person can approve shows at least one example of the behaviour it promises. */
+export const requireExamples = (plan: AgentPlan) => {
+  if (!plan.expectedBehaviour.length) throw new PlanNotWrittenError("Could not write a plan: the agent's plan had no examples of the expected behaviour");
+  return plan;
+};
 
 /** A stored plan as the agent wrote it, or, for one submitted through the API, its summary and criteria. */
 export const storedPlan = (plan: Plan & { tasks: PlanTask[] }): AgentPlan => {
@@ -186,7 +192,7 @@ export const planExecution = async (executionId: string): Promise<PlanningOutcom
       requirements: { list: requirements, refusals: 0 },
     };
     const reply = withTools
-      ? ((await runPlanner(tools, prompt, {
+      ? (await runPlanner(tools, prompt, {
           generate: (request) => askAgentWithTools(ctx, request, prompt.version),
           maxTokens: Math.min(PLAN_MAX_TOKENS, Math.max(0, ctx.maxTokens - (await executionTokensUsed(ctx)))),
           deadline: Date.now() + config.executionMaxDurationSeconds * 1000,
@@ -201,9 +207,9 @@ export const planExecution = async (executionId: string): Promise<PlanningOutcom
                 input: JSON.stringify(call.arguments).slice(0, 300),
               })),
             }),
-        })) ?? {})
+        }))
       : parseJsonRecord(await askAgent(ctx, prompt));
-    const plan = { ...planFromReply(reply, workItem.title), requirements };
+    const plan = { ...requireExamples(planFromReply(reply, workItem.title)), requirements };
     const coverage = testCoverage(toolchain, await trackedFiles(executionId), fsRepoFiles(root), plan.filesToEdit);
     const submitted = await submitPlan(executionId, {
       summary: plan.summary,

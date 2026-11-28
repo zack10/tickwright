@@ -426,6 +426,32 @@ test("a tool the final call did not offer is not run, and the model gets one mor
   assert.deepEqual(obeyed.ran, ["read_file", "finish"]);
 });
 
+test("a final call that is refused gets one more final call, which sees the refusal, and no more", async () => {
+  const read = { name: "read_file" };
+  const submit = { name: "submit_plan" };
+  // e7c759ab, row 83: the last call's submit_plan was refused over `"question": 0` and the plan was lost.
+  const model = scriptedModel([
+    { calls: [["read_file", { path: "a" }]] },
+    { calls: [["submit_plan", { bad: true }]] },
+    { calls: [["submit_plan", { good: true }]] },
+  ]);
+  const runTool = async (call) =>
+    call.name !== "submit_plan"
+      ? { status: "COMPLETED", output: "ok" }
+      : call.arguments.good
+        ? { status: "COMPLETED", output: "Plan submitted.", finish: { status: "done", summary: "plan" } }
+        : { status: "FAILED", output: "Invalid arguments for submit_plan: requirements.0.question Number must be greater than 0." };
+  const result = await runAgentLoop(input({ tools: [read, submit], finalTools: [submit], budget: budget({ maxSteps: 2 }) }), { ...model, runTool });
+  assert.equal(result.stopReason, "done");
+  assert.deepEqual(model.requests.map((request) => request.tools.length), [2, 1, 1]);
+  assert.match(model.requests[2].messages.at(-1).content, /requirements\.0\.question/, "the retry reads the refusal");
+
+  const stubborn = scriptedModel([{ calls: [["read_file", { path: "a" }]] }, { calls: [["submit_plan", { bad: true }]] }]);
+  const ended = await runAgentLoop(input({ tools: [read, submit], finalTools: [submit], budget: budget({ maxSteps: 2 }) }), { ...stubborn, runTool });
+  assert.equal(ended.stopReason, "max_steps");
+  assert.equal(stubborn.requests.length, 3, "one retry only");
+});
+
 test("keepRecentResults keeps more tool results in full", async () => {
   const long = "x".repeat(1000);
   const model = scriptedModel([...Array.from({ length: 12 }, (_, i) => ({ calls: [["read_file", { path: `f${i}` }]] })), { calls: [["finish", { status: "done", summary: "s" }]] }]);

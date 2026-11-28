@@ -496,7 +496,7 @@ test("the planner reads a long file to its end, then submits one plan; it cannot
   assert.equal(vague.status, "FAILED", "a plan needs at least one example");
   turn = 0;
   turns.splice(0, turns.length, [], [], []);
-  assert.equal(await runPlanner(ctx, prompt, { generate, maxTokens: 10_000, deadline: Date.now() + 60_000 }), undefined, "no plan when the loop ends without one");
+  await assert.rejects(runPlanner(ctx, prompt, { generate, maxTokens: 10_000, deadline: Date.now() + 60_000 }), /Could not write a plan: The agent stopped calling tools/, "no plan when the loop ends without one");
 });
 
 // Limitation 64: tickwright card 5 stated "P2025 (404), P2002 (409) and P2003 (400). Test each"; the plan kept only P2025.
@@ -530,6 +530,34 @@ test("submit_plan is refused until every stated requirement maps to an example o
 
   const none = workspace(t).ctx;
   assert.equal((await executeTool(none, "submit_plan", plan, PLAN_TOOLS)).status, "COMPLETED", "a ticket with no stated requirement is not gated");
+});
+
+// Row 83: e7c759ab and 9ffdfc72 sent `"question": 0` beside a real example for every requirement, and lost the whole plan.
+test("submit_plan reads an example or question of 0 or null as none, and still refuses a negative one", async (t) => {
+  const { ctx } = workspace(t, { requirements: { list: ["count updated rows", "print per property", "keep exit code"], refusals: 0 } });
+  const plan = { summary: "Count rows.", expectedBehaviour: ["given 2 rows, now nothing; after 2"], questions: [], risk: "low" };
+  const submit = (requirements) => executeTool(ctx, "submit_plan", { ...plan, requirements }, PLAN_TOOLS);
+
+  const stored = await submit([{ requirement: 1, example: 1, question: 0 }, { requirement: 2, example: 1, question: null }, { requirement: 3, example: 1, question: 0 }]);
+  assert.equal(stored.status, "COMPLETED", "the call as the model sent it is now a plan");
+  assert.equal(stored.finish.status, "done");
+
+  const onlyNone = await submit([{ requirement: 1, example: 1 }, { requirement: 2, example: 1 }, { requirement: 3, question: 0 }]);
+  assert.equal(onlyNone.status, "FAILED", "question 0 covers nothing");
+  assert.match(onlyNone.output, /3\. keep exit code/);
+  assert.match((await submit([{ requirement: 1, example: -1 }])).output, /Invalid arguments for submit_plan: requirements\.0\.example/);
+});
+
+test("the planner throws the last refusal when its loop ends without a plan", async (t) => {
+  const { ctx } = workspace(t);
+  const turn = (toolCalls) => ({ message: { role: "assistant", content: "", toolCalls }, text: "", toolCalls, stopReason: "tool_use", usage: { inputTokens: 10, outputTokens: 1 } });
+  const generate = async () => turn([{ id: "c", name: "submit_plan", arguments: { summary: "s", expectedBehaviour: [], risk: "low" } }]);
+  const prompt = { version: "planner.v1", system: "s", user: "u" };
+  await assert.rejects(runPlanner(ctx, prompt, { generate, maxTokens: 10_000, deadline: Date.now() + 60_000 }), (error) => {
+    assert.equal(error.name, "PlanNotWrittenError");
+    assert.equal(error.message, "Could not write a plan: Invalid arguments for submit_plan: expectedBehaviour Array must contain at least 1 element(s)");
+    return true;
+  });
 });
 
 test("a verdict that leaves a stated requirement unanswered, or answers no, rejects the change", async (t) => {

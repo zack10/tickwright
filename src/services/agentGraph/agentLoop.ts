@@ -248,8 +248,9 @@ export const runAgentLoop = async (
   // Steps left after the soft limit was reached; undefined before that.
   let graceLeft: number | undefined;
   let softStop: { reason: "max_tokens" | "timeout"; summary: string } | undefined;
-  // One more final-only call, past the step and token budgets, when the model called a tool
-  // the final call did not offer (deepseek-flash read files instead of submit_plan: e8528e7b).
+  // One more final-only call, past the step and token budgets, when a final call did not end the loop:
+  // a tool it did not offer (deepseek-flash read files instead of submit_plan: e8528e7b), or a refused one
+  // (`"question": 0` lost a whole plan: e7c759ab, row 83).
   let finalRetry: "pending" | "used" | undefined;
 
   for (; ;) {
@@ -318,7 +319,6 @@ export const runAgentLoop = async (
     let finish: ToolOutcome["finish"];
     for (const call of turn.toolCalls) {
       const offered = !finalOnly || finalOnly.some((tool) => tool.name === call.name);
-      if (!offered && !finalRetry) finalRetry = "pending";
       const outcome: ToolOutcome = offered
         ? await deps.runTool(call)
         : { status: "DENIED", output: `Not run: only ${finalOnly?.map((tool) => tool.name).join(", ")} can be called now. Call it with what you have found.` };
@@ -338,6 +338,8 @@ export const runAgentLoop = async (
     }
     await deps.onStep?.({ step: steps, text: turn.text, toolCalls: ran, usage: stepUsage });
     if (finish) return result(finish.status, finish.summary);
+    // The refusal or the "not run" note is the last tool result, so the retry can read it.
+    if (finalOnly && !finalRetry) finalRetry = "pending";
 
     // The warning goes into the last tool result: a separate user message
     // after tool results is not accepted by every provider.

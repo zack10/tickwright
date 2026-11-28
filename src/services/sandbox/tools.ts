@@ -341,6 +341,9 @@ const REVIEW_CHECKS = {
 const reviewCheck = (other: string[]) =>
   z.object({ answer: z.enum(["yes", "no", ...other] as [string, ...string[]]), evidence: z.string().trim().min(1) });
 
+// 0 or null means "none": `"question": 0` refused a whole plan twice (row 83, e7c759ab and 9ffdfc72).
+const noneOrNumber = z.number().int().nonnegative().nullish().transform((n) => n || undefined);
+
 const ARGS = {
   list_files: z.object({ path: z.string().optional() }),
   read_file: z.object({
@@ -372,7 +375,7 @@ const ARGS = {
     risk: z.enum(["low", "medium", "high"]),
     testStrategy: z.array(z.string()).default([]),
     requirements: z
-      .array(z.object({ requirement: z.number().int().positive(), example: z.number().int().positive().optional(), question: z.number().int().positive().optional() }))
+      .array(z.object({ requirement: z.number().int().positive(), example: noneOrNumber, question: noneOrNumber }))
       .default([]),
   }),
   verdict: z.object({

@@ -10,6 +10,7 @@ import {
   cancelExecution,
   createExecution,
   decideApproval,
+  requestChangeRevision,
   requestPlanRevision,
   submitPlan,
 } from "../services/executionService";
@@ -276,15 +277,16 @@ export const getExecution = asyncHandler(
 export const createPlan = asyncHandler(async (req: Request, res: Response) => {
   res.status(201).json(await submitPlan(req.params.id, req.body));
 });
-/** Approve, reject, or (plan only) answer with feedback so the agent revises the plan. */
+/** Approve, reject, or answer with feedback (`revise`) so the agent revises the plan, or makes a follow-up round's change again. */
 export const cancel = asyncHandler(async (req: Request, res: Response) => {
   res.json(await cancelExecution(req.params.id, config.apiAuthActor, req.body?.reason));
 });
 
 export const approve = asyncHandler(async (req: Request, res: Response) => {
   if (req.body.revise) {
-    if (req.params.type !== "plan") throw AppError.badRequest("Only a plan can be revised");
-    res.json(await requestPlanRevision(req.params.id, req.body.snapshotHash, config.apiAuthActor, req.body.comment));
+    // A follow-up round's change revised: a new round makes it again with the feedback.
+    const revise = req.params.type === "plan" ? requestPlanRevision : requestChangeRevision;
+    res.json(await revise(req.params.id, req.body.snapshotHash, config.apiAuthActor, req.body.comment));
     return;
   }
   res.json(

@@ -49,6 +49,9 @@ const makeRepository = (dir) => {
 const NEW_TEST = 'const test = require("node:test");\nconst assert = require("node:assert");\nconst { add } = require("../src/math");\ntest("two plus three is five", () => assert.equal(add(2, 3), 5));\n';
 // The second round, asked for in a review on the PR.
 const SUBTRACT_TEST = 'const test = require("node:test");\nconst assert = require("node:assert");\nconst { subtract } = require("../src/math");\ntest("five minus three is two", () => assert.equal(subtract(5, 3), 2));\n';
+// The fourth round: a real test of the finding, and a weak one that passes without the fix.
+const MULTIPLY_TEST = 'const test = require("node:test");\nconst assert = require("node:assert");\nconst { multiply } = require("../src/math");\ntest("two times three is six", () => assert.equal(multiply(2, 3), 6));\n';
+const WEAK_TEST = 'const test = require("node:test");\nconst assert = require("node:assert");\nconst { add } = require("../src/math");\ntest("weak zero", () => assert.equal(add(0, 0), 0));\n';
 
 /**
  * The model, scripted. Each kind of call is recognised by its tools or its
@@ -63,6 +66,22 @@ const scriptedReply = (body) => {
   const followUp = /follow-up round 1 /.test(user);
   const checkRound = /follow-up round 2 /.test(user);
   const call = (name, args) => ({ tool_calls: [{ id: `call-${name}-${done}`, type: "function", function: { name, arguments: JSON.stringify(args) } }] });
+  // Round 4 answers a finding "fixed" naming a test that passes without the fix, every attempt; verification must not take it.
+  if (tools.includes("answer_finding") && /follow-up round 4 /.test(user)) {
+    const number = Number(/^Feedback (\d+) \(finding\)/m.exec(user)?.[1]);
+    const steps = [
+      () => call("edit_file", { path: "test/multiply.test.js", oldText: "", newText: MULTIPLY_TEST }),
+      () => call("run_check", { check: "test" }),
+      () => call("edit_file", { path: "src/math.js", oldText: "exports.add", newText: "exports.multiply = (a, b) => a * b;\nexports.add" }),
+      () => call("edit_file", { path: "test/weak.test.js", oldText: "", newText: WEAK_TEST }),
+      () => call("answer_finding", { feedback: number, verdict: "fixed", reason: "multiply() is exported now.", test: "weak zero", command: 'node --test --test-name-pattern "weak zero" test/weak.test.js' }),
+      () => call("run_check", { check: "test" }),
+      () => call("finish", { status: "done", summary: "multiply() added." }),
+    ];
+    if (steps[done]) return steps[done]();
+  }
+  if (!tools.length && system.startsWith("Analyze this failed"))
+    return { content: JSON.stringify({ summary: "The finding's test passes without the change.", nextAttemptGuidance: "Name a test that fails without the change.", avoid: [] }) };
   // Round 3 checks a review bot's finding, finds it is not real, and changes nothing.
   if (tools.includes("answer_finding") && /follow-up round 3 /.test(user)) {
     const number = Number(/^Feedback (\d+) \(finding\)/m.exec(user)?.[1]);
@@ -281,8 +300,8 @@ test("a ticket goes from the tracker to a completed draft PR through every stage
       githubInstallationId: "fake",
       // An approved environment: discovery is skipped, and the image is small.
       verificationConfig: { toolchain: { language: "JavaScript", image: "node:20-bookworm", setup: ["sh", "-c", "test ! -f SETUP_BREAKS"], checks: { test: ["node", "--test"] } } },
-      // Two rounds: the review's and the check's; a third request gets the hand-back note.
-      executionPolicy: { maxFollowUpRounds: 3 },
+      // The review's, the check's, and two bot-finding rounds; a fifth request gets the hand-back note.
+      executionPolicy: { maxFollowUpRounds: 4 },
     },
   });
   repositoryId = repository.id;
@@ -461,18 +480,46 @@ test("a ticket goes from the tracker to a completed draft PR through every stage
   await recordPullRequestOutcomes();
   assert.equal(prComments.filter((comment) => comment.commentId === "501").length, 1, "an answer is posted once");
 
+  // A finding answered "fixed" with a test that passes without the fix: sent back twice, then left to the person, who sees why.
+  reviews = [
+    ...reviews,
+    { id: "review-bot-2", requestsChanges: false, author: "checker[bot]", authorIsBot: true, body: "Found 1 potential issue.", submittedAt: new Date(), comments: [{ id: "502", path: "src/math.js", line: 1, code: "@@ -1 +1 @@\n+exports.add = (a, b) => a + b;", body: "There is no multiply().", outdated: false }] },
+    { id: "review-5", requestsChanges: true, author: "alice", authorIsBot: false, body: "Check the new finding.", submittedAt: new Date(), comments: [] },
+  ];
+  await recordPullRequestOutcomes();
+  const weakRound = { parentExecutionId: root.id, id: { notIn: [followUp.id, roundTwo.id, roundThree.id] } };
+  let roundFour = await waitFor(["AWAITING_PUBLISH_APPROVAL"], 15, weakRound);
+  const unproven = await prisma.executionEvent.findMany({ where: { executionId: roundFour.id, type: "GRAPH_FINDING_TESTS_UNPROVEN" }, orderBy: { sequence: "asc" } });
+  assert.deepEqual(unproven.map((event) => event.payload.retry), [true, true, false], "two more attempts, then the person decides");
+  assert.match(unproven[0].payload.findings[0].why, /passes without your change/);
+  const weak = await prisma.executionFeedback.findFirstOrThrow({ where: { executionId: root.id, externalId: "review-bot-2:502" } });
+  assert.equal(weak.verdict, "NEEDS_DECISION");
+  assert.match(weak.verdictNote, /^Not shown by a test: "weak zero" passes without your change/);
+  // The change came back exactly after its tests ran without it: the verified, reviewed and published diff is the agent's.
+  const weakDiff = fs.readFileSync((await prisma.artifact.findFirstOrThrow({ where: { executionId: roundFour.id, type: "DIFF" } })).storagePath, "utf8");
+  for (const part of [/\+exports\.multiply = \(a, b\) => a \* b;/, /test\/multiply\.test\.js/, /test\/weak\.test\.js/]) assert.match(weakDiff, part);
+  for (let i = 0; i < 30 && !ticketComments.some((text) => text.includes("Answers to the review bot's findings")); i++)
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  const publishNote = ticketComments.find((text) => text.includes("Answers to the review bot's findings")) ?? "";
+  assert.match(publishNote, /Needs a person's decision: checker\[bot\]'s finding on src\/math\.js line 1\. Not shown by a test/, "the person sees the answer before approving");
+  await approve(roundFour, "PUBLISH");
+  roundFour = await waitFor(["COMPLETED"], 3, weakRound);
+  assert.equal(published.length, 4);
+  assert.equal(published[3].diff, weakDiff);
+  assert.match(prComments.find((comment) => comment.commentId === "502")?.body ?? "", /\*\*Needs a person's decision\.\*\* Not shown by a test/);
+
   // A further request: the rounds are used up, so the PR and the ticket are told once and no round starts.
   reviews = [...reviews, { id: "review-3", requestsChanges: true, author: "alice", authorIsBot: false, body: "Rename add() to sum().", submittedAt: new Date(), comments: [] }];
   await recordPullRequestOutcomes();
   await recordPullRequestOutcomes();
-  assert.equal(await prisma.execution.count({ where: followUpRound }), 3);
+  assert.equal(await prisma.execution.count({ where: followUpRound }), 4);
   assert.equal(prComments.filter((comment) => /the limit for this repository/.test(comment.body)).length, 1);
   // The target branch moved and the PR now conflicts with it: handed back once, with no round.
   conflict = { head: git(sourceRepo, "rev-parse", `agent/${root.id}`), base: "main" };
   await recordPullRequestOutcomes();
   await recordPullRequestOutcomes();
   assert.equal(prComments.filter((comment) => /merge conflict with `main`/.test(comment.body)).length, 1);
-  assert.equal(await prisma.execution.count({ where: followUpRound }), 3);
+  assert.equal(await prisma.execution.count({ where: followUpRound }), 4);
   conflict = undefined;
 
   // The merged PR's outcome is recorded on the execution that opened it.
@@ -480,6 +527,6 @@ test("a ticket goes from the tracker to a completed draft PR through every stage
   await recordPullRequestOutcomes();
   const outcome = await prisma.executionEvent.findFirstOrThrow({ where: { executionId: root.id, type: "PULL_REQUEST_OUTCOME" } });
   assert.equal(outcome.payload.state, "MERGED");
-  assert.equal(outcome.payload.followUpRounds, 2);
+  assert.equal(outcome.payload.followUpRounds, 3);
   assert.equal(await prisma.executionEvent.count({ where: { executionId: followUp.id, type: "PULL_REQUEST_OUTCOME" } }), 0);
 });

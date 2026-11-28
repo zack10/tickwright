@@ -19,7 +19,7 @@ export const EXECUTION_PROMPTS = {
   discover: "discover.v4",
   fileFormat: "file-format.v1",
   // Added to the ticket of a follow-up round, so every prompt of the run reads the feedback.
-  followUp: "follow-up.v5",
+  followUp: "follow-up.v6",
 } as const;
 
 export type ExecutionPromptName = keyof typeof EXECUTION_PROMPTS;

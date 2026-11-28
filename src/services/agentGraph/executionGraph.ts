@@ -55,6 +55,7 @@ import {
   startSandbox,
   stopSandbox,
   verifyWorkspace,
+  withPartialChange,
   workspacePath,
 } from "../workspaceService";
 import {
@@ -884,6 +885,64 @@ const enforceRepositoryPolicy = async (
   return { route: "verify" as GraphRoute };
 };
 
+/** A "fixed" answer whose test was not shown to fail without the change and pass with it. */
+interface UnprovenFinding {
+  feedbackId: string;
+  number: number;
+  test: string;
+  why: string;
+  note: string | null;
+}
+
+/**
+ * Runs each "fixed" finding's own test command with the change, where it
+ * must pass, and with only the change's test files, where it must fail: an
+ * answer is "fixed" only if its test shows the finding. On dynamic-csv PR #38
+ * a round answered "fixed" twice with a test that passed on the old code too
+ * (2026-11-26). Runs nothing when no finding was answered "fixed".
+ */
+const unprovenFindingTests = async (
+  executionId: string,
+  toolchain: Toolchain,
+  setupOutputs: string[],
+  policy: RepositoryPolicy | null,
+  secrets: Record<string, string>,
+  report: ProgressReporter,
+): Promise<UnprovenFinding[]> => {
+  const fixed = await prisma.executionFeedback.findMany({ where: { addressedByExecutionId: executionId, fromBot: true, verdict: "FIXED" } });
+  if (!fixed.length) return [];
+  const numbers = new Map((await roundFindings(executionId)).map((finding) => [finding.feedbackId, finding.number]));
+  const run = async (command: string) =>
+    (await verifyWorkspace(executionId, toolchain, { run: [{ name: "finding test", command: ["sh", "-c", command] }], unavailable: [] }, [], report, policy, secrets)).results[0];
+  const unproven: UnprovenFinding[] = [];
+  const found = (item: (typeof fixed)[number], why: string) =>
+    unproven.push({ feedbackId: item.id, number: numbers.get(item.id) ?? 0, test: /\(test: (.+)\)$/.exec(item.verdictNote ?? "")?.[1] ?? "its test", why, note: item.verdictNote });
+  const candidates: typeof fixed = [];
+  for (const item of fixed)
+    if (!item.testCommand) found(item, "has no command to run it");
+    else if (!(await run(item.testCommand)).passed) found(item, `fails with your change (command: ${item.testCommand})`);
+    else candidates.push(item);
+  if (!candidates.length) return unproven;
+  const without = await withPartialChange(executionId, (file) => isTestFile(toolchain, file), async () => {
+    // Build output from the changed code must not stand in for the old sources.
+    await prepareVerification(executionId, toolchain.image, setupOutputs);
+    const results: Array<[(typeof fixed)[number], Awaited<ReturnType<typeof run>>]> = [];
+    for (const item of candidates) results.push([item, await run(item.testCommand as string)]);
+    return results;
+  });
+  // Failing once without the change counts as shown: the test can see the finding.
+  for (const [item, result] of without)
+    if (result.passed && !result.flaky) found(item, `passes without your change to the files that are not tests (command: ${item.testCommand})`);
+  return unproven;
+};
+
+export const describeUnprovenFindings = (unproven: Pick<UnprovenFinding, "number" | "test" | "why">[]) =>
+  [
+    'Your answer "fixed" to these findings is not shown by its test:',
+    ...unproven.map((item) => `- Feedback ${item.number}: the test "${item.test}" ${item.why}.`),
+    'A "fixed" answer needs a test that fails on the code without your change because of what the finding describes, and passes with it. Write that test, or answer "not_changed" or "needs_decision", and call answer_finding again with the command that runs only that test.',
+  ].join("\n");
+
 const verifyChange = async (state: typeof ExecutionGraphState.State) => {
   if (!state.attemptId) throw new Error("Execution graph is missing attempt");
 
@@ -927,6 +986,38 @@ const verifyChange = async (state: typeof ExecutionGraphState.State) => {
       verification,
       route: state.attemptNumber < MAX_ATTEMPTS ? "retry" : "blocked",
     };
+  }
+
+  const unproven = await unprovenFindingTests(
+    state.executionId,
+    toolchain,
+    state.setupOutputs,
+    execution.repository.executionPolicy as RepositoryPolicy | null,
+    await testSecretsOf(execution.repository.id),
+    reportProgress(state.executionId),
+  );
+  if (unproven.length) {
+    const lastFailure = describeUnprovenFindings(unproven);
+    const retry = state.attemptNumber < MAX_ATTEMPTS;
+    await graphEvent(state.executionId, "GRAPH_FINDING_TESTS_UNPROVEN", {
+      attemptId: state.attemptId,
+      attemptNumber: state.attemptNumber,
+      findings: unproven.map(({ number, test, why }) => ({ number, test, why })),
+      retry,
+    });
+    if (retry) {
+      await prisma.taskAttempt.update({
+        where: { id: state.attemptId },
+        data: { status: "FAILED", error: lastFailure, completedAt: new Date() },
+      });
+      return { lastFailure, verification: { ...verification, passed: false }, route: "retry" as GraphRoute };
+    }
+    // Out of attempts: the person decides, told why, instead of reading a "fixed" no test shows (and a blocked round would strand its findings, row 80).
+    for (const item of unproven)
+      await prisma.executionFeedback.update({
+        where: { id: item.feedbackId },
+        data: { verdict: "NEEDS_DECISION", verdictNote: `Not shown by a test: "${item.test}" ${item.why}. The agent's answer was "fixed": ${item.note ?? ""}`, testCommand: null },
+      });
   }
 
   // Passing with no checks run means unverified, and the reviewer must see that.

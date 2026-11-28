@@ -463,3 +463,64 @@ export const decideApproval = async (
     );
     return decided;
   });
+
+/**
+ * Rejects a follow-up round's change with feedback, without ending the work
+ * on its pull request: the round ends unpublished, the feedback is stored on
+ * the root as a request, and everything the round addressed waits again with
+ * its answers cleared, so the next poll starts a round with all of it. Before,
+ * a rejected round kept a review bot's findings marked handled, so they were
+ * never fixed or answered (dynamic-csv PR #38, 2026-11-26).
+ */
+export const requestChangeRevision = async (
+  executionId: string,
+  snapshotHash: string,
+  actor: string,
+  feedback: string,
+) =>
+  prisma.$transaction(async (tx) => {
+    const execution = await tx.execution.findUnique({ where: { id: executionId } });
+    if (!execution) throw AppError.notFound("Execution not found");
+    if (execution.status !== "AWAITING_PUBLISH_APPROVAL")
+      throw AppError.conflict("Execution is not awaiting publish approval");
+    // shortcut: a first change has no pull request for a new round to work on, so it can only be rejected; send it back to planning with the feedback when that is built (roadmap, step 10).
+    if (!execution.parentExecutionId)
+      throw AppError.badRequest("Only a follow-up round's change can be revised; reject it to stop");
+    const approval = await tx.approval.findFirst({
+      where: { executionId, type: "PUBLISH", status: "PENDING" },
+      orderBy: { requestedAt: "desc" },
+    });
+    if (!approval) throw AppError.notFound("Pending approval not found");
+    if (approval.snapshotHash !== snapshotHash)
+      throw AppError.conflict(
+        "Snapshot hash does not match the pending approval; review the latest snapshot",
+      );
+    const decidedCount = await tx.approval.updateMany({
+      where: { id: approval.id, status: "PENDING" },
+      data: { status: "REJECTED", actor, comment: feedback, decidedAt: new Date() },
+    });
+    // CANCELED, as a rejection was before: it pushed nothing, and maxFollowUpRounds does not count it.
+    const moved = await tx.execution.updateMany({
+      where: { id: executionId, status: "AWAITING_PUBLISH_APPROVAL" },
+      data: { status: "CANCELED", lastError: `PUBLISH rejected with feedback for a new round: ${feedback}`, completedAt: new Date() },
+    });
+    if (decidedCount.count !== 1 || moved.count !== 1)
+      throw AppError.conflict("Approval was already decided");
+    const released = await tx.executionFeedback.updateMany({
+      where: { addressedByExecutionId: executionId },
+      data: { addressedByExecutionId: null, verdict: null, verdictNote: null, testCommand: null, repliedAt: null },
+    });
+    await tx.executionFeedback.create({
+      data: {
+        executionId: execution.parentExecutionId,
+        source: "TICKET_REPLY",
+        externalId: `publish-rejection:${approval.id}`,
+        author: actor.replace(/^[a-z]+:/, ""),
+        body: feedback,
+        requestsChanges: true,
+        writtenAt: new Date(),
+      },
+    });
+    await event(tx, executionId, "CHANGE_REVISION_REQUESTED", { actor, feedback, released: released.count }, execution.correlationId);
+    return { revised: true };
+  });

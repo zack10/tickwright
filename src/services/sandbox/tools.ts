@@ -51,7 +51,7 @@ export interface Finding {
   /** "Feedback N" in the round's ticket. */
   number: number;
   feedbackId: string;
-  answer?: { verdict: "fixed" | "not_changed" | "needs_decision"; reason: string; test?: string };
+  answer?: { verdict: "fixed" | "not_changed" | "needs_decision"; reason: string; test?: string; command?: string };
 }
 
 /** A case the reviewer found untested, and the repository names a test for it must use. */
@@ -299,7 +299,7 @@ export const SANDBOX_TOOLS: ToolDefinition[] = [
 export const ANSWER_FINDING_TOOL: ToolDefinition = {
   name: "answer_finding",
   description:
-    'Record your answer to one finding from a review bot (a "Feedback N" marked as a finding). "fixed": the finding was real, a new test you wrote failed because of it and passes now; name that test. "not_changed": it is not real or not worth changing; say why, pointing at the code (file and line) or at a test that shows it. "needs_decision": fixing it would change behaviour the ticket did not ask for; say what a person must decide. Call it again to change an answer. Every answer is posted on the pull request.',
+    'Record your answer to one finding from a review bot (a "Feedback N" marked as a finding). "fixed": the finding was real, a new test you wrote failed because of it and passes now; name that test, and give the command that runs only that test (it must contain the test\'s name). Verification runs that command without your change to the files that are not tests, where it must fail, and with it, where it must pass; a test that passes without your change does not show the finding. "not_changed": it is not real or not worth changing; say why, pointing at the code (file and line) or at a test that shows it. "needs_decision": fixing it would change behaviour the ticket did not ask for; say what a person must decide. Call it again to change an answer. Every answer is posted on the pull request.',
   parameters: {
     type: "object",
     properties: {
@@ -307,6 +307,7 @@ export const ANSWER_FINDING_TOOL: ToolDefinition = {
       verdict: { type: "string", enum: ["fixed", "not_changed", "needs_decision"] },
       reason: { type: "string", description: "Why, in one or two sentences" },
       test: { type: "string", description: "fixed only: the name of the test that showed it, as written in its file" },
+      command: { type: "string", description: "fixed only: the command that runs only that test, containing its name" },
     },
     required: ["feedback", "verdict", "reason"],
   },
@@ -360,6 +361,7 @@ const ARGS = {
     verdict: z.enum(["fixed", "not_changed", "needs_decision"]),
     reason: z.string().trim().min(1).max(1000),
     test: z.string().trim().min(1).max(300).optional(),
+    command: z.string().trim().min(1).max(1000).optional(),
   }),
   finish: z.object({ status: z.enum(["done", "blocked"]), summary: z.string().min(1) }),
   submit_plan: z.object({
@@ -757,8 +759,11 @@ const answerFinding = async (ctx: ToolContext, args: z.infer<typeof ARGS.answer_
       return failed('Answer "fixed" only after a new test failed because of the finding in run_check or run_command, and passes after your change. If no test can show it, the answer is "not_changed" or "needs_decision".');
     if (!(await changedTestText(ctx)).includes(args.test))
       return failed(`No new or changed test file of this round contains "${args.test}". Name the test as it is written in its file.`);
+    // A command that runs a whole class passes the check on another test's failure (dynamic-csv PR #38, twice, 2026-11-26).
+    if (!args.command?.includes(args.test))
+      return failed(`A "fixed" answer gives the command that runs only the test "${args.test}" (command), with the test's name in it. Verification runs it without your change, where it must fail, and with it, where it must pass.`);
   }
-  finding.answer = { verdict: args.verdict, reason: args.reason, ...(args.verdict === "fixed" ? { test: args.test } : {}) };
+  finding.answer = { verdict: args.verdict, reason: args.reason, ...(args.verdict === "fixed" ? { test: args.test, command: args.command } : {}) };
   return completed(`Recorded: Feedback ${args.feedback} ${args.verdict.replace("_", " ")}.`);
 };
 

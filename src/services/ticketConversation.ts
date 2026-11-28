@@ -4,7 +4,7 @@ import { IssueTrackerAdapter, TrackerComment } from "../integrations/types";
 import { describeError } from "../utils/safeError";
 import type { AgentPlan } from "./agentGraph/planning";
 import { PlanVerification, TestCoverage, describeTestCoverage } from "./toolchain";
-import { decideApproval, requestPlanRevision } from "./executionService";
+import { decideApproval, requestChangeRevision, requestPlanRevision } from "./executionService";
 
 /**
  * The conversation about an execution on its ticket: the agent posts its plan
@@ -23,7 +23,7 @@ export const signed = (text: string) => `${text}\n\n${AGENT_SIGNATURE}`;
 export const isAgentComment = (text: string) =>
   [AGENT_SIGNATURE, ...EARLIER_SIGNATURES].some((signature) => text.trimEnd().endsWith(signature));
 
-const COMMANDS = "Reply `/approve` to go ahead, `/reject <reason>` to stop, or write what should change and I'll revise the plan.";
+const COMMANDS = "Reply `/approve` to go ahead, `/reject` to stop, or write what should change (or `/reject <what should change>`) and I'll revise the plan.";
 
 // The approver should know before approving when nothing will test the change.
 const VERIFICATION_NOTES: Record<PlanVerification, string> = {
@@ -56,14 +56,15 @@ export const formatPlanComment = (
     .filter(Boolean)
     .join("\n\n");
 
-/** `verification` is what the checks and the reviewer found (describeVerification). */
-export const formatPublishComment = (files: string[], verification: string, followUp = false) =>
+/** `verification` is what the checks and the reviewer found (describeVerification); `answers`, a round's answers to review bots' findings (describeFindingAnswers). */
+export const formatPublishComment = (files: string[], verification: string, followUp = false, answers = "") =>
   [
     followUp ? "**The change for your feedback is ready.**" : "**The change is ready.**",
     files.length ? `**Changed:** ${files.join(", ")}` : "",
     verification,
+    answers,
     followUp
-      ? "Reply `/approve` to push it to the pull request, or `/reject <reason>` to leave the pull request as it is."
+      ? "Reply `/approve` to push it to the pull request, `/reject <what should change>` and a new round makes the change again with your feedback, or `/reject` alone to leave the pull request as it is."
       : "Reply `/approve` to open a draft pull request, or `/reject <reason>` to stop.",
   ]
     .filter(Boolean)
@@ -91,15 +92,18 @@ export const isApprover = (comment: Pick<TrackerComment, "authorId" | "authorNam
  * What a reply asks for. Only `/approve` approves; on a plan, any other text
  * is feedback for a revision, so a misread reply can at worst cost a revised
  * plan. On a change waiting to be published, only the commands count.
+ * `/reject <feedback>` revises a plan, or a follow-up round's change, instead
+ * of stopping (user's rule, 2026-11-26); a bare `/reject` still stops.
  */
-export const replyAction = (comment: TrackerComment, approvers: string[], type: ApprovalType): ReplyAction => {
+export const replyAction = (comment: TrackerComment, approvers: string[], type: ApprovalType, followUp = false): ReplyAction => {
   const text = comment.text.trim();
   if (!text || isAgentComment(text)) return { kind: "ignore" };
   if (!isApprover(comment, approvers)) return { kind: "unauthorized" };
   const command = COMMAND.exec(text);
   if (command) {
     const rest = command[2].trim() || undefined;
-    return command[1].toLowerCase() === "approve" ? { kind: "approve", note: rest } : { kind: "reject", reason: rest };
+    if (command[1].toLowerCase() === "approve") return { kind: "approve", note: rest };
+    return rest && (type === "PLAN" || followUp) ? { kind: "revise", feedback: rest } : { kind: "reject", reason: rest };
   }
   // A mistyped command gets a hint instead of costing a revised plan.
   if (UNKNOWN_COMMAND.test(text) || type !== "PLAN") return { kind: "hint" };
@@ -142,7 +146,7 @@ export const handleTicketReplies = async (adapter: IssueTrackerAdapter, trackerC
         if (comment.createdAt <= approval.requestedAt) continue;
         const messageId = `tracker-reply:${adapter.externalSystem}:${comment.id}`;
         if (await prisma.inboxReceipt.findUnique({ where: { messageId } })) continue;
-        const action = replyAction(comment, approvers, approval.type);
+        const action = replyAction(comment, approvers, approval.type, !!execution.parentExecutionId);
         await prisma.inboxReceipt.create({ data: { messageId, consumer: "ticket-reply" } });
         if (action.kind === "ignore") continue;
         if (action.kind === "unauthorized") {
@@ -155,7 +159,10 @@ export const handleTicketReplies = async (adapter: IssueTrackerAdapter, trackerC
         }
         const actor = `${adapter.externalSystem.toLowerCase()}:${comment.authorName}`;
         const what = approval.type === "PLAN" ? "plan" : "change";
-        if (action.kind === "revise") {
+        if (action.kind === "revise" && approval.type === "PUBLISH") {
+          await requestChangeRevision(execution.id, approval.snapshotHash, actor, action.feedback);
+          await say("Thanks. I've dropped this change and left the pull request as it is; a new round will make the change again with your feedback, and I'll ask you to approve it before pushing.");
+        } else if (action.kind === "revise") {
           const { revised } = await requestPlanRevision(execution.id, approval.snapshotHash, actor, action.feedback);
           await say(revised ? "Thanks, I'm revising the plan with your feedback." : "The plan was revised too many times without approval, so I've stopped.");
         } else {

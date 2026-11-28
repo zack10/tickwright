@@ -91,6 +91,7 @@ test("feedback on a pull request that is no longer open starts no round", async 
         workItem: {},
         artifacts: [{ metadata: { number: 9 } }],
         feedback: [item({ id: "f1" })],
+        _count: { feedback: 1 },
       }];
     },
   };
@@ -98,9 +99,9 @@ test("feedback on a pull request that is no longer open starts no round", async 
   t.after(() => Object.assign(prisma, real));
   assert.equal(await startFollowUps(), 0);
   assert.deepEqual(calls, [["outcome", 9]]);
-  // Only roots with a request not yet addressed and no round running are read.
+  // Only roots with a request or a bot's finding not yet addressed and no round running are read.
   assert.equal(query.parentExecutionId, null);
-  assert.deepEqual(query.feedback, { some: { addressedByExecutionId: null, requestsChanges: true } });
+  assert.deepEqual(query.feedback, { some: { addressedByExecutionId: null, OR: [{ requestsChanges: true }, { fromBot: true }] } });
   assert.deepEqual(query.followUps, { none: { status: { notIn: ["COMPLETED", "BLOCKED", "FAILED", "CANCELED"] } } });
 });
 
@@ -125,6 +126,7 @@ test("a pull request that used its rounds starts no more, and both the PR and th
       workItem: {},
       artifacts: [{ metadata: { number: 9 } }],
       feedback: [item({ id: "f1" })],
+      _count: { feedback: 1 },
     }],
     count: async (args) => (counted.push(args.where), 2),
     findUniqueOrThrow: async () => ({ correlationId: "c" }),
@@ -144,6 +146,85 @@ test("a pull request that used its rounds starts no more, and both the PR and th
   assert.equal(prComments.length, 1, "told once, not on every poll");
   assert.match(prComments[0].body, /I've made 2 follow-up rounds on this pull request, the limit for this repository/);
   assert.match(prComments[0].body, /raise `maxFollowUpRounds`/);
+});
+
+// A pull request whose only waiting feedback is a review bot's findings, under a given policy.
+const botOnlyRoot = (executionPolicy) => ({
+  id: "root",
+  projectId: "p",
+  branchName: "agent/root",
+  repository: { provider: "GITHUB", connectionId: null, executionPolicy },
+  workItem: {},
+  artifacts: [{ metadata: { number: 9 } }],
+  feedback: [item({ id: "f1", author: "devin-ai-integration[bot]", body: "", requestsChanges: false, fromBot: true })],
+  _count: { feedback: 0 },
+});
+
+const stubBotRounds = (t, root, { rounds = [], requestedRounds = [] } = {}) => {
+  const calls = [];
+  const prComments = [];
+  const events = [];
+  registerSourceControlAdapter({
+    type: "GITHUB",
+    configSchema: { safeParse: () => ({ success: true }) },
+    pullRequestOutcome: async () => (calls.push("outcome"), { state: "OPEN" }),
+    branchHead: async () => (calls.push("head"), "abc"),
+    commentOnPullRequest: async (_target, _number, body) => void prComments.push(body),
+  });
+  const real = { execution: prisma.execution, executionFeedback: prisma.executionFeedback, plan: prisma.plan, executionEvent: prisma.executionEvent };
+  prisma.execution = {
+    // The roots query, then the rounds of the root (bot-started ones are those no request was addressed by).
+    findMany: async (args) => (args.where.parentExecutionId === null ? [root] : rounds.map((id) => ({ id }))),
+    count: async () => rounds.length,
+    findUniqueOrThrow: async () => ({ correlationId: "c" }),
+  };
+  prisma.executionFeedback = { findMany: async () => requestedRounds.map((id) => ({ addressedByExecutionId: id })) };
+  prisma.executionEvent = { count: async () => events.length, findFirst: async () => null, create: async (args) => void events.push(args.data) };
+  // Reaching round creation is what these tests look for; the round itself is covered by the pipeline test.
+  prisma.plan = { findFirst: async () => (calls.push("create"), null) };
+  t.mock.method(console, "error", () => {});
+  t.after(() => Object.assign(prisma, real));
+  return { calls, prComments, events };
+};
+
+test("a review bot's findings start no round by themselves unless the repository allows it", async (t) => {
+  const { calls } = stubBotRounds(t, botOnlyRoot(null));
+  assert.equal(await startFollowUps(), 0);
+  assert.deepEqual(calls, [], "not even the code host is asked: the findings wait for a person");
+});
+
+test("where the repository allows it, a review bot's findings start a round by themselves", async (t) => {
+  const { calls } = stubBotRounds(t, botOnlyRoot({ botRoundsStart: true }), { rounds: ["r1"], requestedRounds: ["r1"] });
+  await startFollowUps();
+  // r1 was a person's round, so no bot-started round has run yet.
+  assert.deepEqual(calls, ["outcome", "head", "create"]);
+});
+
+test("review bots start at most maxBotRounds rounds per pull request, and the PR is told once", async (t) => {
+  // r1 a person's round, r2 and r3 started by the bot: the default cap of 2 is used up.
+  const { calls, prComments, events } = stubBotRounds(t, botOnlyRoot({ botRoundsStart: true }), { rounds: ["r1", "r2", "r3"], requestedRounds: ["r1"] });
+  assert.equal(await startFollowUps(), 0);
+  assert.equal(await startFollowUps(), 0);
+  assert.ok(!calls.includes("create"), "no round past the cap");
+  assert.deepEqual(events.map((event) => [event.type, event.payload]), [["BOT_ROUND_LIMIT_REACHED", { rounds: 2, limit: 2 }]]);
+  assert.equal(prComments.length, 1, "told once, not on every poll");
+  assert.match(prComments[0], /Review bots have started 2 rounds on this pull request/);
+  assert.match(prComments[0], /raise `maxBotRounds`/);
+});
+
+test("a person's request starts a round even with bot rounds off and the bot cap used up", async (t) => {
+  const root = { ...botOnlyRoot({ maxBotRounds: 0 }), _count: { feedback: 1 } };
+  const { calls } = stubBotRounds(t, root, { rounds: ["r1"] });
+  await startFollowUps();
+  assert.deepEqual(calls, ["outcome", "head", "create"]);
+});
+
+test("the note of a round names each review bot once with its count of findings, not their text", () => {
+  const finding = item({ author: "devin-ai-integration[bot]", body: "", requestsChanges: false, fromBot: true, comments: [{ body: "Off by one" }] });
+  const note = formatFollowUpComment(3, [finding, { ...finding }, item()]);
+  assert.match(note, /- 2 findings from the review bot devin-ai-integration\[bot\]: I'll check each one and answer it in its thread\./);
+  assert.match(note, /- alice on the pull request: Handle a directory path too\./);
+  assert.doesNotMatch(note, /Off by one/);
 });
 
 test("a round's commit says a failing check was fixed only when checks are all it answered", () => {
@@ -271,4 +352,26 @@ test("a reply the code host refused stays unsent, so the next poll posts it, and
   down = false;
   assert.equal(await replyToFindings(round, host, 38, true), 1, "the next try posts the one that failed");
   assert.deepEqual(replied, ["f1", "f2"]);
+});
+
+test("the person approving a round's change sees its answer to each finding, and that a fixed one's test fails without the change", async (t) => {
+  const { describeFindingAnswers } = require("../dist/services/followUps");
+  const { formatPublishComment } = require("../dist/services/ticketConversation");
+  const real = prisma.executionFeedback;
+  let query;
+  prisma.executionFeedback = {
+    findMany: async (args) => ((query = args.where), [
+      { author: "devin-ai-integration[bot]", verdict: "FIXED", verdictNote: "Stops read-ahead at a record. (test: reportsOversizedFirstDataRecord)", comments: [{ path: "src/Reader.java", line: 64 }] },
+      { author: "devin-ai-integration[bot]", verdict: "NEEDS_DECISION", verdictNote: 'Not shown by a test: "headerTest" passes without your change.', comments: [{ path: "src/Reader.java", line: 51 }] },
+    ]),
+  };
+  t.after(() => (prisma.executionFeedback = real));
+  const answers = await describeFindingAnswers("round");
+  assert.deepEqual(query, { addressedByExecutionId: "round", fromBot: true, verdict: { not: null } });
+  assert.match(answers, /^\*\*Answers to the review bot's findings\*\*/);
+  assert.match(answers, /- Fixed: devin-ai-integration\[bot\]'s finding on src\/Reader\.java line 64\. .*reportsOversizedFirstDataRecord\)\. Its test fails without this change and passes with it\./);
+  assert.match(answers, /- Needs a person's decision: .* line 51\. Not shown by a test/);
+  assert.doesNotMatch(answers.split("\n")[2], /Its test fails without/, "only a fixed answer claims a test shows it");
+  const comment = formatPublishComment(["src/Reader.java"], "Checks passed: verify.", true, answers);
+  assert.ok(comment.indexOf("Answers to the review bot's findings") < comment.indexOf("Reply `/approve`"), "the answers come before the decision");
 });
